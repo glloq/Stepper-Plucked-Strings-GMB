@@ -52,6 +52,33 @@ TEST(validator_rejects_zero_microsteps) {
     CHECK(!ProfileValidator::isActivatable(p));
 }
 
+TEST(validator_rejects_invalid_transmission_params) {
+    // Belt with zero teeth -> reject (would silently fall back to custom ratio).
+    Profile belt = uke();
+    belt.strings[0].transmission = Transmission::BeltGt2;
+    belt.strings[0].pulleyTeeth = 0;
+    CHECK(!ProfileValidator::isActivatable(belt));
+
+    // Screw with non-positive lead -> reject.
+    Profile screw = uke();
+    screw.strings[0].transmission = Transmission::Screw;
+    screw.strings[0].leadPerRevolutionMm = 0.0;
+    CHECK(!ProfileValidator::isActivatable(screw));
+
+    // Custom with non-positive steps/mm -> reject.
+    Profile custom = uke();
+    custom.strings[0].transmission = Transmission::Custom;
+    custom.strings[0].customStepsPerMm = 0.0;
+    CHECK(!ProfileValidator::isActivatable(custom));
+
+    // A valid screw axis stays activatable (lead is what matters, teeth ignored).
+    Profile okScrew = uke();
+    okScrew.strings[0].transmission = Transmission::Screw;
+    okScrew.strings[0].leadPerRevolutionMm = 8.0;
+    okScrew.strings[0].pulleyTeeth = 0;  // irrelevant for a screw
+    CHECK(ProfileValidator::isActivatable(okScrew));
+}
+
 TEST(validator_rejects_nonmonotonic_frets) {
     Profile p = uke();
     p.strings[0].calibratedFretMm = {0.0, 30.0, 20.0};  // goes backward

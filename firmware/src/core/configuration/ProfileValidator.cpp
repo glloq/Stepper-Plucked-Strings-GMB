@@ -76,6 +76,26 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
         if (a.maxSpeedMmS <= 0.0) err(t + ".maxSpeedMmS", "Max speed must be > 0");
         if (a.maxAccelMmS2 <= 0.0) err(t + ".maxAccelMmS2", "Max acceleration must be > 0");
 
+        // Transmission-specific parameters must be physically valid for the
+        // SELECTED type, otherwise stepsPerMm() silently falls back to the custom
+        // ratio and the axis moves the wrong distance.
+        switch (a.transmission) {
+            case Transmission::BeltGt2:
+                if (a.pulleyTeeth == 0)
+                    err(t + ".pulleyTeeth", "Belt: pulley teeth must be > 0");
+                if (a.beltPitchMm <= 0.0)
+                    err(t + ".beltPitchMm", "Belt: pitch must be > 0");
+                break;
+            case Transmission::Screw:
+                if (a.leadPerRevolutionMm <= 0.0)
+                    err(t + ".leadPerRevolutionMm", "Screw: lead per revolution must be > 0");
+                break;
+            case Transmission::Custom:
+                if (a.customStepsPerMm <= 0.0)
+                    err(t + ".customStepsPerMm", "Custom: steps/mm must be > 0");
+                break;
+        }
+
         // Ensure the calculated span physically fits.
         double lastFret = gmb::fretPositionMm(a.scaleLengthMm, a.maxFret);
         if (lastFret > a.maxPositionMm - a.minPositionMm + 0.001) {

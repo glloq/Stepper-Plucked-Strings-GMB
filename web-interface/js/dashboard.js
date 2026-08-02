@@ -96,7 +96,13 @@
     if (!st.faults || !st.faults.length) {
       fb.appendChild(h('div.pill.ok', 'No active faults'));
     } else {
-      st.faults.forEach(function (f) { fb.appendChild(h('div.pill.error', f)); });
+      st.faults.forEach(function (f) {
+        // The firmware sends {source, message, atMs}; tolerate a bare string too.
+        var text = (f && typeof f === 'object')
+          ? ((f.source ? f.source + ': ' : '') + (f.message || ''))
+          : String(f);
+        fb.appendChild(h('div.pill.error', text));
+      });
     }
 
     var env = document.querySelector('.dash-env');

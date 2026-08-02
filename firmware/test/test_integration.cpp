@@ -121,6 +121,27 @@ TEST(controller_prepare_on_complete_selection) {
     CHECK_EQ(ic.target(2).velocity, 110);      // velocity attached at trigger time
 }
 
+// A complete CC selection that never gets its Note On must not reserve the
+// string forever: tick() expires the preparation and frees the string.
+TEST(controller_prepare_expires_without_note) {
+    Profile p = ukulele();
+    p.selector.mode = SelectionMode::Explicit;
+    p.selector.prepareOnCompleteSelection = true;
+    InstrumentController ic;
+    ic.load(p);
+    ic.handleEvent(cc(0, 20, 3), 0);   // string 3 -> index 2
+    ic.handleEvent(cc(0, 21, 5), 0);   // completes -> pre-positioned
+    CHECK(ic.target(2).active);
+    ic.tick(1'000'000);                // 1 s later, still within the hold window
+    CHECK(ic.target(2).active);
+    ic.tick(3'000'000);                // 3 s: past the 2 s hold -> released
+    CHECK(!ic.target(2).active);
+    // The string is free again for a fresh automatic note.
+    ic.handleEvent(noteOn(0, 62, 100), 3'100'000);
+    ic.tick(3'110'000);
+    CHECK_EQ(ic.soundingCount(), 1);
+}
+
 // With prepareOnCompleteSelection off, no pre-positioning happens before Note On.
 TEST(controller_prepare_disabled) {
     Profile p = ukulele();
@@ -134,6 +155,29 @@ TEST(controller_prepare_disabled) {
     ic.handleEvent(noteOn(0, 69, 100), 100);
     CHECK(ic.target(2).active);
     CHECK_EQ(ic.soundingCount(), 1);
+}
+
+// CC7 (volume) and CC11 (expression) scale the attack intensity of later plucks.
+TEST(controller_cc7_cc11_scale_attack) {
+    Profile p = ukulele();
+    p.selector.mode = SelectionMode::Explicit;
+    p.selector.prepareOnCompleteSelection = false;
+    InstrumentController ic;
+    ic.load(p);
+    ic.handleEvent(cc(0, 20, 3), 0);   // string index 2
+    ic.handleEvent(cc(0, 21, 5), 0);   // fret 5
+    ic.handleEvent(noteOn(0, 69, 100), 0);
+    double full = ic.target(2).intensity;
+    CHECK(full > 0.0);
+    ic.handleEvent(noteOff(0, 69), 100);
+    // Halve the volume: the next pluck should attack softer.
+    ic.handleEvent(cc(0, 7, 64), 200);
+    ic.handleEvent(cc(0, 20, 3), 300);
+    ic.handleEvent(cc(0, 21, 5), 300);
+    ic.handleEvent(noteOn(0, 69, 100), 300);
+    double half = ic.target(2).intensity;
+    CHECK(half > 0.0);
+    CHECK(half < full);
 }
 
 // A 4-note chord uses four distinct strings (criterion 14 at ukulele scale).

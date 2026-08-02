@@ -24,7 +24,15 @@ void StepperBank::begin(const std::vector<AxisConfig>& axes,
         rt.limitActiveHigh = i < limitActiveHigh.size() ? limitActiveHigh[i] : false;
         rt.homeDeb.configure(3, false);   // 3 ms contact debounce
         rt.limitDeb.configure(3, false);
-        axes_.push_back(rt);
+
+        // A disabled axis is never attached and never faults the bank: it may
+        // legitimately carry no STEP/DIR/HOME pins at all.
+        if (!axes[i].enabled) {
+            rt.attachFault = false;
+            axes_.push_back(rt);
+            steppers_.push_back(nullptr);
+            continue;
+        }
 
         FastAccelStepper* s = nullptr;
         if (rt.pins.step >= 0) {
@@ -39,8 +47,10 @@ void StepperBank::begin(const std::vector<AxisConfig>& axes,
             s->setSpeedInHz(static_cast<uint32_t>(sps > 1 ? sps : 1));
             s->setAcceleration(static_cast<uint32_t>(acc > 1 ? acc : 1));
         } else {
-            attachFault_ = true;  // no free RMT/MCPWM unit or STEP pin missing
+            rt.attachFault = true;  // no free RMT/MCPWM unit or STEP pin missing
+            attachFault_ = true;    // at least one ENABLED axis failed to attach
         }
+        axes_.push_back(rt);
         steppers_.push_back(s);
 
         if (rt.pins.home >= 0) pinMode(rt.pins.home, INPUT_PULLUP);

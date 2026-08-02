@@ -30,6 +30,49 @@ void sendJson(AsyncWebServerRequest* req, JsonDocument& doc, int code = 200) {
     req->send(code, "application/json", out);
 }
 
+// RAII guard for the shared-state lock supplied by the main loop. Held only while
+// a read-only handler samples g_profile / instrument / steppers / sysex so a
+// reload in loop() is never observed half-applied.
+struct WebStateLock {
+    const WebContext& ctx;
+    explicit WebStateLock(const WebContext& c) : ctx(c) { if (ctx.lockState) ctx.lockState(); }
+    ~WebStateLock() { if (ctx.unlockState) ctx.unlockState(); }
+};
+
+const char* stringStateName(StringState s) {
+    switch (s) {
+        case StringState::Disabled:        return "disabled";
+        case StringState::Homing:          return "homing";
+        case StringState::Idle:            return "idle";
+        case StringState::ReleasingFinger: return "releasing";
+        case StringState::Moving:          return "moving";
+        case StringState::PressingFinger:  return "pressing";
+        case StringState::Settling:        return "settling";
+        case StringState::ReadyToPluck:    return "ready";
+        case StringState::Plucking:        return "plucking";
+        case StringState::Sustaining:      return "sustaining";
+        case StringState::Damping:         return "damping";
+        case StringState::Cancelling:      return "cancelling";
+        case StringState::Fault:           return "fault";
+        default:                           return "idle";
+    }
+}
+
+// Whether the finger is pressed for this state (open strings never press).
+bool fingerDown(StringState s, bool openString) {
+    if (openString) return false;
+    switch (s) {
+        case StringState::PressingFinger:
+        case StringState::Settling:
+        case StringState::ReadyToPluck:
+        case StringState::Plucking:
+        case StringState::Sustaining:
+            return true;
+        default:
+            return false;
+    }
+}
+
 const char* midiTypeName(uint8_t type) {
     switch (type) {
         case 0x80: return "noteOff";
@@ -81,15 +124,36 @@ void WebApi::fillStatus(JsonDocument& doc) {
         }
     JsonArray strings = doc["strings"].to<JsonArray>();
     if (ctx_.instrument && ctx_.steppers) {
+        int8_t capo = ctx_.profile ? ctx_.profile->instrument.capo : 0;
+        int8_t transpose = ctx_.profile ? ctx_.profile->midi.transpose : 0;
         for (size_t i = 0; i < ctx_.instrument->stringCount(); ++i) {
+            const StringController& sc = ctx_.instrument->string(i);
+            const StringTarget& tgt = ctx_.instrument->target(i);
+            StringState st = sc.state();
+            bool open = sc.openString();
+            double pos = ctx_.steppers->positionMm(i);
+            uint8_t openNote =
+                (ctx_.profile && i < ctx_.profile->strings.size())
+                    ? ctx_.profile->strings[i].openNote : 0;
             JsonObject s = strings.add<JsonObject>();
             s["index"] = i;
-            s["fret"] = ctx_.instrument->target(i).fret;
-            s["active"] = ctx_.instrument->target(i).active;
-            s["positionMm"] = ctx_.steppers->positionMm(i);
-            s["targetMm"] = ctx_.instrument->target(i).positionMm;
+            s["openNote"] = openNote;
+            s["state"] = stringStateName(st);
+            s["fret"] = tgt.fret;
+            s["active"] = tgt.active;
+            // MIDI note currently sounding (best-effort from open note + fret).
+            if (tgt.active)
+                s["note"] = static_cast<int>(openNote) + tgt.fret + capo + transpose;
+            else
+                s["note"] = nullptr;
+            s["positionMm"] = pos;
+            s["targetMm"] = tgt.positionMm;
+            s["distanceMm"] = tgt.positionMm - pos;
             s["home"] = ctx_.steppers->homeActive(i);
             s["limit"] = ctx_.steppers->limitActive(i);
+            s["finger"] = fingerDown(st, open) ? "down" : "up";
+            s["plectrum"] = (st == StringState::Plucking) ? "strike" : "rest";
+            s["lastFault"] = (st == StringState::Fault) ? "fault" : "none";
         }
     }
 }
@@ -121,7 +185,7 @@ void WebApi::registerRoutes() {
     // ---- GET /api/status ----
     server_->on("/api/status", HTTP_GET, [this](AsyncWebServerRequest* req) {
         JsonDocument doc;
-        fillStatus(doc);
+        { WebStateLock lk(ctx_); fillStatus(doc); }
         sendJson(req, doc);
     });
 
@@ -158,23 +222,35 @@ void WebApi::registerRoutes() {
         sendJson(req, doc);
     });
 
-    // ---- POST /api/pins/auto ----
-    server_->on("/api/pins/auto", HTTP_POST, [this](AsyncWebServerRequest* req) {
-        const BoardProfile* b = builtinBoardProfile("esp32-s3-devkitc-1");
-        PinManager pm(*b);
-        PinRequest r;
-        r.stringCount = ctx_.profile ? ctx_.profile->instrument.stringCount : 4;
-        bool ok = pm.autoAssign(r);
-        JsonDocument doc;
-        doc["ok"] = ok;
-        JsonArray pins = doc["pins"].to<JsonArray>();
-        for (const auto& a : pm.assignments()) {
-            JsonObject o = pins.add<JsonObject>();
-            o["signal"] = a.signal;
-            o["gpio"] = a.gpio;
-        }
-        sendJson(req, doc);
-    });
+    // ---- POST /api/pins/auto (auto-assign GPIO for the wizard's draft) ----
+    // Reads the wizard's request body so the assignment matches the DRAFT being
+    // edited (string count, USB reservation, PCA/OE, LIMIT switches), not the
+    // currently-active profile.
+    auto* pinsAuto = new AsyncCallbackJsonWebHandler(
+        "/api/pins/auto", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            const BoardProfile* b = builtinBoardProfile("esp32-s3-devkitc-1");
+            PinManager pm(*b);
+            PinRequest r;
+            int fallback = ctx_.profile ? ctx_.profile->instrument.stringCount : 4;
+            r.stringCount = body["stringCount"] | fallback;
+            r.useI2cServos = body["useI2cServos"] | body["usePca"] | true;
+            r.globalEnable = body["globalEnable"] | true;
+            r.servoSafetyOe = body["servoSafetyOe"] | body["useOe"] | true;
+            r.reserveUsb = body["reserveUsb"] | true;
+            r.useLimitSwitches = body["useLimitSwitches"] | body["useLimits"] | false;
+            bool ok = pm.autoAssign(r);
+            JsonDocument doc;
+            doc["ok"] = ok;
+            JsonArray pins = doc["pins"].to<JsonArray>();
+            for (const auto& a : pm.assignments()) {
+                JsonObject o = pins.add<JsonObject>();
+                o["signal"] = a.signal;
+                o["gpio"] = a.gpio;
+            }
+            sendJson(req, doc, ok ? 200 : 422);
+        });
+    pinsAuto->setMethod(HTTP_POST);
+    server_->addHandler(pinsAuto);
 
     // ---- POST /api/panic ----
     server_->on("/api/panic", HTTP_POST, [this](AsyncWebServerRequest* req) {
@@ -187,6 +263,7 @@ void WebApi::registerRoutes() {
     // ---- GET /api/capabilities ----
     server_->on("/api/capabilities", HTTP_GET, [this](AsyncWebServerRequest* req) {
         JsonDocument doc;
+        WebStateLock lk(ctx_);  // snapshot may be rebuilt by loop() on a fault
         if (ctx_.sysex) {
             const CapabilitySnapshot& s = ctx_.sysex->snapshot();
             doc["revision"] = s.revision;
@@ -206,7 +283,8 @@ void WebApi::registerRoutes() {
     // ---- GET /api/profile ----
     server_->on("/api/profile", HTTP_GET, [this](AsyncWebServerRequest* req) {
         JsonDocument doc;
-        if (ctx_.profile) ProfileStorage::toJson(*ctx_.profile, doc);
+        { WebStateLock lk(ctx_);  // g_profile may be swapped by loop() on activate
+          if (ctx_.profile) ProfileStorage::toJson(*ctx_.profile, doc); }
         sendJson(req, doc);
     });
 
@@ -392,17 +470,20 @@ void WebApi::registerRoutes() {
         "/api/test/servo", [this](AsyncWebServerRequest* req, JsonVariant& body) {
             if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
             JsonDocument doc;
-            if (!ctx_.servos || !ctx_.safety || !ctx_.safety->actuatorsAllowed()) {
+            if (!ctx_.safety || !ctx_.safety->actuatorsAllowed()) {
                 doc["ok"] = false;
                 doc["error"] = "actuators not armed";
                 sendJson(req, doc, 409);
                 return;
             }
+            // Never drive a servo from the async task: enqueue for loop(), which
+            // also rejects an invalid / disabled index.
             int idx = body["index"] | -1;
             bool active = body["active"] | true;
-            if (active) ctx_.servos->toActive(idx); else ctx_.servos->toRest(idx);
-            doc["ok"] = true;
-            sendJson(req, doc);
+            bool queued = ctx_.onTestServo && ctx_.onTestServo(idx, active);
+            doc["ok"] = queued;
+            if (!queued) doc["error"] = "busy or unavailable";
+            sendJson(req, doc, queued ? 200 : 503);
         });
     testServo->setMethod(HTTP_POST);
     server_->addHandler(testServo);
@@ -417,6 +498,7 @@ void WebApi::registerRoutes() {
                 return;
             }
             size_t axis = body["axis"] | 0;
+            WebStateLock lk(ctx_);  // steppers vector may be rebuilt by loop()
             doc["ok"] = true;
             doc["home"] = ctx_.steppers->homeActive(axis);
             doc["limit"] = ctx_.steppers->limitActive(axis);
@@ -458,6 +540,14 @@ void WebApi::registerRoutes() {
                                 sendJson(req, doc, 401); return; }
             if (!ctx_.onSetAdminToken) { doc["ok"] = false; sendJson(req, doc, 409); return; }
             std::string t = body["token"] | "";
+            // Reject an empty/too-short token: storing "" would silently leave the
+            // write routes unauthenticated (first-run bootstrap state).
+            if (t.size() < 8) {
+                doc["ok"] = false;
+                doc["error"] = "token must be at least 8 characters";
+                sendJson(req, doc, 422);
+                return;
+            }
             ctx_.onSetAdminToken(t);
             doc["ok"] = true;
             doc["note"] = "admin token stored";
