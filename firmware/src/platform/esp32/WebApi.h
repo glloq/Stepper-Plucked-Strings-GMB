@@ -39,6 +39,12 @@ struct WebContext {
     std::function<bool(uint8_t, uint8_t, uint8_t, uint16_t)> onTestNote;  // ch,note,vel,ms
     // Only the flagged passwords are written (empty fields are left unchanged).
     std::function<void(bool, const std::string&, bool, const std::string&)> onSetWifi;
+    // Returns true if the supplied token authorises a write (or if no admin
+    // token has been configured yet — first-run bootstrap).
+    std::function<bool(const std::string&)> checkToken;
+    std::function<void(const std::string&)> onSetAdminToken;
+    // True once an admin token is configured (surfaced so the UI can warn).
+    std::function<bool()> authConfigured;
 };
 
 class WebApi {
@@ -61,6 +67,7 @@ private:
     AsyncWebSocket midiWs_{"/ws/midi"};
     void registerRoutes();
     void fillStatus(JsonDocument& doc);
+    bool authOk(AsyncWebServerRequest* req);  // token gate for write routes
 #endif
 };
 

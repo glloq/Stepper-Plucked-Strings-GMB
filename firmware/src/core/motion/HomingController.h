@@ -12,6 +12,7 @@ namespace gmb {
 enum class HomingState : uint8_t {
     Idle,
     CheckSensor,
+    ReleaseAtStart,  // sensor already active at start: back off until it clears
     SeekFast,
     BrakeFast,   // stop and wait for standstill before reversing (backoff)
     Backoff,

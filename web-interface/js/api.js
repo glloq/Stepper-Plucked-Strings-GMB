@@ -614,14 +614,36 @@
   var api = {
     mock: false,
     _forceMock: false,
+    // Admin token attached to write requests (X-GMB-Token). Persisted locally so
+    // it survives reloads; set via setAdminToken().
+    _adminToken: (typeof localStorage !== 'undefined' && localStorage.getItem('gmbAdminToken')) || '',
 
     // Force mock mode (used by a "Demo mode" toggle if desired).
     useMock: function (on) { this._forceMock = !!on; if (on) this.mock = true; },
+
+    // Remember an admin token locally (does NOT store it on the device — use
+    // setAdminTokenRemote for that).
+    setAdminToken: function (t) {
+      this._adminToken = t || '';
+      if (typeof localStorage !== 'undefined') localStorage.setItem('gmbAdminToken', this._adminToken);
+    },
+    // Configure the device's admin token (POST /api/auth) and remember it.
+    setAdminTokenRemote: function (t) {
+      var self = this;
+      return this._call('/api/auth', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: t })
+      }, function () { return { ok: true }; }).then(function (r) { self.setAdminToken(t); return r; });
+    },
 
     _fetch: function (path, opts) {
       var self = this;
       if (this._forceMock) {
         var fm = new Error('forced-mock'); fm.network = true; return Promise.reject(fm);
+      }
+      // Attach the admin token to write requests when one is configured.
+      if (this._adminToken && opts && opts.method && opts.method !== 'GET') {
+        opts.headers = opts.headers || {};
+        opts.headers['X-GMB-Token'] = this._adminToken;
       }
       return fetch(path, opts).then(function (r) {
         // Backend replied. Whatever the status, we are NOT offline.

@@ -107,10 +107,28 @@ lecture **mais** :
   (`Preferences`), jamais dans le profil exportable, et se règlent via
   `POST /api/wifi`. Le point d'accès peut être protégé en WPA2 (mot de passe ≥ 8
   caractères) ; sinon il reste ouvert.
-* **Limitation connue** : l'API Web n'a pas encore d'authentification. Sur un
-  réseau non maîtrisé, protégez le point d'accès par mot de passe. Une
-  authentification de l'API reste un point ouvert (voir la note de limitations
-  dans le [`README`](../README.md)).
+### Authentification de l'API Web
+
+Les routes qui **déplacent la mécanique ou changent la configuration**
+(`PUT /api/profile`, `/api/profiles*`, `/api/reset`, `/api/test/note`,
+`/api/test/servo`, `/api/wifi`) sont protégées par un **jeton administrateur**
+stocké en NVS :
+
+* tant qu'aucun jeton n'est défini (premier démarrage), les écritures sont
+  autorisées pour permettre la configuration initiale ;
+* une fois défini via `POST /api/auth`, chaque écriture doit fournir l'en-tête
+  `X-GMB-Token` correspondant ; sinon la requête est refusée (401) ;
+* `POST /api/panic` reste **toujours** accessible (sécurité) ;
+* le statut expose `authConfigured` et `apOpen` pour que l'interface avertisse
+  quand le point d'accès est ouvert **et** sans jeton.
+
+**Recommandation** : sur un réseau non maîtrisé, définir un mot de passe AP
+(WPA2, ≥ 8 caractères) **et** un jeton administrateur.
+
+**Limitations connues restantes** : pas encore de protection CSRF/origine
+dédiée, ni de confirmation physique locale pour le reset/homing, ni de
+séparation formelle réseau MIDI / réseau d'administration — voir la note de
+limitations du [`README`](../README.md).
 
 ---
 

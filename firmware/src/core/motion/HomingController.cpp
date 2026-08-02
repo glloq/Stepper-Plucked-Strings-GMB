@@ -30,9 +30,29 @@ HomingCommand HomingController::update(uint32_t nowMs, bool rawSensor,
 
         case HomingState::CheckSensor:
             startPosMm_ = currentPosMm;
-            if (sensor) return fail(HomingFault::SensorActiveAtStart);
+            if (sensor) {
+                // The machine is parked on/near the sensor — this is normal.
+                // Back off slowly in the opposite direction until it clears,
+                // rather than declaring a fault straight away.
+                state_ = HomingState::ReleaseAtStart;
+                return {MoveKind::MoveVelocity, cfg_.slowSpeedMmS * -dir, 0.0};
+            }
             state_ = HomingState::SeekFast;
             return {MoveKind::MoveVelocity, cfg_.fastSpeedMmS * dir, 0.0};
+
+        case HomingState::ReleaseAtStart: {
+            if (timedOut(nowMs)) return fail(HomingFault::Timeout);
+            // Give it a bounded distance to clear; otherwise the sensor is stuck.
+            if (std::fabs(currentPosMm - startPosMm_) > cfg_.backoffMm * 4.0 + 1.0)
+                return fail(HomingFault::SensorNotReleased);
+            if (!sensor) {
+                // Released: brake, then a safety back-off, then re-approach slow.
+                triggerPosMm_ = currentPosMm;
+                state_ = HomingState::BrakeFast;
+                return {MoveKind::Stop, 0.0, 0.0};
+            }
+            return {MoveKind::MoveVelocity, cfg_.slowSpeedMmS * -dir, 0.0};
+        }
 
         case HomingState::SeekFast: {
             if (timedOut(nowMs)) return fail(HomingFault::Timeout);

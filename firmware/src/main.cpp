@@ -381,6 +381,24 @@ void setup() {
         if (hasAp) p.putString("appass", String(ap.c_str()));      // provided fields
         p.end();
     };
+    // Write-route authentication: an admin token stored in NVS. Until one is set
+    // (first-run bootstrap) writes are allowed; once set, the X-GMB-Token header
+    // must match. Panic stays unauthenticated (safety).
+    ctx.checkToken = [](const std::string& provided) -> bool {
+        Preferences p; p.begin("gmb", true);
+        String stored = p.getString("admintoken", ""); p.end();
+        if (stored.length() == 0) return true;
+        return provided == std::string(stored.c_str());
+    };
+    ctx.onSetAdminToken = [](const std::string& t) {
+        Preferences p; p.begin("gmb", false);
+        p.putString("admintoken", String(t.c_str())); p.end();
+    };
+    ctx.authConfigured = []() -> bool {
+        Preferences p; p.begin("gmb", true);
+        String stored = p.getString("admintoken", ""); p.end();
+        return stored.length() > 0;
+    };
     ctx.appState = []() -> std::string {
         if (g_phase == AppPhase::Ready) return g_degraded ? "readyDegraded" : "ready";
         return g_phase == AppPhase::Homing ? "homing" : "boot";

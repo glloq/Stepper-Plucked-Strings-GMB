@@ -66,6 +66,9 @@ void WebApi::fillStatus(JsonDocument& doc) {
     doc["stringsReady"] = ctx_.readyStrings ? ctx_.readyStrings() : (armed ? total : 0);
     doc["notesPlaying"] = ctx_.instrument ? ctx_.instrument->soundingCount() : 0;
     doc["safety"] = armed ? "armed" : "safe";
+    doc["authConfigured"] = ctx_.authConfigured ? ctx_.authConfigured() : false;
+    doc["apOpen"] = ctx_.net && ctx_.net->accessPointActive() &&
+                    ctx_.profile && !ctx_.authConfigured ? true : false;
     JsonArray faults = doc["faults"].to<JsonArray>();
     if (ctx_.safety)
         for (const auto& f : ctx_.safety->faults()) {
@@ -106,6 +109,12 @@ void WebApi::begin(const WebContext& ctx, uint16_t port) {
     server_->begin();
 }
 
+bool WebApi::authOk(AsyncWebServerRequest* req) {
+    if (!ctx_.checkToken) return true;
+    std::string tok = std::string(req->header("X-GMB-Token").c_str());
+    return ctx_.checkToken(tok);
+}
+
 void WebApi::registerRoutes() {
     // ---- GET /api/status ----
     server_->on("/api/status", HTTP_GET, [this](AsyncWebServerRequest* req) {
@@ -116,6 +125,8 @@ void WebApi::registerRoutes() {
 
     // ---- POST /api/reset (recover from panic / E-stop, then re-home) ----
     server_->on("/api/reset", HTTP_POST, [this](AsyncWebServerRequest* req) {
+        if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized";
+                            sendJson(req, d, 401); return; }
         bool ok = ctx_.onReset && ctx_.onReset();
         JsonDocument doc;
         doc["ok"] = ok;
@@ -239,6 +250,7 @@ void WebApi::registerRoutes() {
     // ---- PUT /api/profile (validate + activate) ----
     auto* putProfile = new AsyncCallbackJsonWebHandler(
         "/api/profile", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
             Profile p;
             JsonDocument doc;
             if (!ProfileStorage::fromJson(body, p)) {
@@ -284,6 +296,7 @@ void WebApi::registerRoutes() {
     // ---- POST /api/profiles (save to a slot) ----
     auto* saveProfile = new AsyncCallbackJsonWebHandler(
         "/api/profiles", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
             JsonDocument doc;
             int slot = body["slot"] | -1;
             Profile p;
@@ -307,6 +320,7 @@ void WebApi::registerRoutes() {
     // ---- POST /api/profiles/load (activate a stored slot) ----
     auto* loadProfile = new AsyncCallbackJsonWebHandler(
         "/api/profiles/load", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
             JsonDocument doc;
             int slot = body["slot"] | -1;
             Profile p;
@@ -346,6 +360,7 @@ void WebApi::registerRoutes() {
     // ---- POST /api/profiles/delete ----
     auto* deleteProfile = new AsyncCallbackJsonWebHandler(
         "/api/profiles/delete", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
             JsonDocument doc;
             int slot = body["slot"] | -1;
             bool ok = slot >= 0 && ctx_.storage && ctx_.storage->remove(slot);
@@ -358,6 +373,7 @@ void WebApi::registerRoutes() {
     // ---- POST /api/test/note (Note On + scheduled Note Off, Ready only) ----
     auto* testNote = new AsyncCallbackJsonWebHandler(
         "/api/test/note", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
             JsonDocument doc;
             bool ok = ctx_.onTestNote &&
                       ctx_.onTestNote(body["channel"] | 0, body["note"] | 60,
@@ -372,6 +388,7 @@ void WebApi::registerRoutes() {
     // ---- POST /api/test/servo (pulse a servo to rest/active) ----
     auto* testServo = new AsyncCallbackJsonWebHandler(
         "/api/test/servo", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
             JsonDocument doc;
             if (!ctx_.servos || !ctx_.safety || !ctx_.safety->actuatorsAllowed()) {
                 doc["ok"] = false;
@@ -409,6 +426,7 @@ void WebApi::registerRoutes() {
     // ---- POST /api/wifi (store credentials in NVS, never exported) ----
     auto* setWifi = new AsyncCallbackJsonWebHandler(
         "/api/wifi", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
             JsonDocument doc;
             if (!ctx_.onSetWifi) {
                 doc["ok"] = false;
@@ -429,6 +447,22 @@ void WebApi::registerRoutes() {
         });
     setWifi->setMethod(HTTP_POST);
     server_->addHandler(setWifi);
+
+    // ---- POST /api/auth (set the admin token; first-run bootstrap allowed) ----
+    auto* setAuth = new AsyncCallbackJsonWebHandler(
+        "/api/auth", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            JsonDocument doc;
+            if (!authOk(req)) { doc["ok"] = false; doc["error"] = "unauthorized";
+                                sendJson(req, doc, 401); return; }
+            if (!ctx_.onSetAdminToken) { doc["ok"] = false; sendJson(req, doc, 409); return; }
+            std::string t = body["token"] | "";
+            ctx_.onSetAdminToken(t);
+            doc["ok"] = true;
+            doc["note"] = "admin token stored";
+            sendJson(req, doc);
+        });
+    setAuth->setMethod(HTTP_POST);
+    server_->addHandler(setAuth);
 
     // ---- POST /api/sysex/request (run a SysEx buffer through the service) ----
     auto* sysexReq = new AsyncCallbackJsonWebHandler(

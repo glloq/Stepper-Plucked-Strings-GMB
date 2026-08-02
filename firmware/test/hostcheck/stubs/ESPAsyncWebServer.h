@@ -11,6 +11,8 @@ enum AwsEventType { WS_EVT_CONNECT, WS_EVT_DISCONNECT, WS_EVT_DATA, WS_EVT_PONG,
 class AsyncWebServerRequest {
 public:
   void send(int, const String&, const String&) {}
+  bool hasHeader(const char*) const { return false; }
+  String header(const char*) const { return String(""); }
 };
 
 using ArRequestHandlerFunction = std::function<void(AsyncWebServerRequest*)>;
