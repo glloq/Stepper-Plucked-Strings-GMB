@@ -32,6 +32,43 @@ static MidiEvent noteOff(uint8_t ch, uint8_t note) {
     return e;
 }
 
+// Auto allocation must honour the capo: with capo +2 the open A string (69)
+// sounds at MIDI 71, so note 71 is played OPEN (fret 0), not fret 2.
+TEST(controller_auto_capo_shifts_open) {
+    Profile p = ukulele();  // strings {67,60,64,69}
+    p.instrument.capo = 2;
+    InstrumentController ic;
+    ic.load(p);
+    ic.handleEvent(noteOn(0, 71, 100), 0);  // 69 + capo 2
+    ic.tick(5000);
+    CHECK_EQ(ic.soundingCount(), 1);
+    // Find the string that took the note; it must be open (fret 0), the A string.
+    int played = -1;
+    for (size_t i = 0; i < ic.stringCount(); ++i)
+        if (ic.target(i).active) played = static_cast<int>(i);
+    CHECK(played >= 0);
+    CHECK_EQ(ic.target(played).fret, 0);
+}
+
+// Auto allocation must honour MIDI transpose: with transpose -12 a note one
+// octave higher lands on the same fret it would without transpose.
+TEST(controller_auto_transpose) {
+    Profile p = ukulele();
+    p.midi.transpose = -12;
+    InstrumentController ic;
+    ic.load(p);
+    // Effective open C string = 60 - 12 = 48, so MIDI 50 sounds at fret 2 (and
+    // is out of range on the other strings) — proves the transpose is applied.
+    ic.handleEvent(noteOn(0, 50, 100), 0);
+    ic.tick(5000);
+    CHECK_EQ(ic.soundingCount(), 1);
+    int played = -1;
+    for (size_t i = 0; i < ic.stringCount(); ++i)
+        if (ic.target(i).active) played = static_cast<int>(i);
+    CHECK(played >= 0);
+    CHECK_EQ(ic.target(played).fret, 2);
+}
+
 // Automatic mode: a bare Note On is grouped, then allocated on flush.
 TEST(controller_automatic_note) {
     InstrumentController ic;

@@ -55,7 +55,11 @@ struct WebContext {
 class WebApi {
 public:
     void begin(const WebContext& ctx, uint16_t port = 80);
-    void broadcastStatus();  // push live state over the status WebSocket
+    // Rebuild the cached status DTO from live state. MUST be called from loop()
+    // (the state owner) only. GET /api/status and the WS broadcast then serve this
+    // immutable copy, so the async web task never reads the live vectors.
+    void refreshStatus();
+    void broadcastStatus();  // push the cached status snapshot over the WebSocket
 #if defined(ARDUINO)
     void broadcastMidi(const MidiEvent& e);  // push a MIDI event over /ws/midi
 #else
@@ -73,6 +77,9 @@ private:
     void registerRoutes();
     void fillStatus(JsonDocument& doc);
     bool authOk(AsyncWebServerRequest* req);  // token gate for write routes
+    // Cached, serialized status DTO produced by loop() via refreshStatus(); read
+    // by the async web task under the state lock so it never touches live state.
+    std::string cachedStatus_ = "{}";
 #endif
 };
 

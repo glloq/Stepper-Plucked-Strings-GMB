@@ -35,10 +35,19 @@ void InstrumentController::load(const Profile& p) {
     volume_ = 1.0;
     expression_ = 1.0;
 
+    // Effective open pitch seen by the automatic allocator must include capo and
+    // both transposes, exactly like the explicit selector's coherence check —
+    // otherwise a capo'd/transposed note is allocated to the wrong fret/string.
+    const int pitchShift =
+        p.instrument.capo + p.instrument.transpose + p.midi.transpose;
+
     std::vector<StringSpec> specs;
     for (const auto& s : p.strings) {
         StringSpec spec;
-        spec.openNote = s.openNote;
+        int eff = static_cast<int>(s.openNote) + pitchShift;
+        if (eff < 0) eff = 0;
+        if (eff > 127) eff = 127;
+        spec.openNote = static_cast<uint8_t>(eff);
         spec.maxFret = s.maxFret;
         spec.enabled = s.enabled;
         specs.push_back(spec);
