@@ -8,11 +8,18 @@ namespace fs { class FS; }
 enum WebRequestMethod { HTTP_GET = 1, HTTP_POST = 2, HTTP_PUT = 4, HTTP_DELETE = 8 };
 enum AwsEventType { WS_EVT_CONNECT, WS_EVT_DISCONNECT, WS_EVT_DATA, WS_EVT_PONG, WS_EVT_ERROR };
 
+class AsyncWebParameter {
+public:
+  String value() const { return String(""); }
+};
+
 class AsyncWebServerRequest {
 public:
   void send(int, const String&, const String&) {}
   bool hasHeader(const char*) const { return false; }
   String header(const char*) const { return String(""); }
+  bool hasParam(const char*) const { return false; }
+  AsyncWebParameter* getParam(const char*) const { return nullptr; }
 };
 
 using ArRequestHandlerFunction = std::function<void(AsyncWebServerRequest*)>;

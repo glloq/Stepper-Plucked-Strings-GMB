@@ -107,12 +107,43 @@ std::vector<StringSched> g_sched;
 enum class CmdType : uint8_t { Panic, Reset, ActivateProfile, TestNote, TestServo };
 struct AppCommand {
     CmdType type;
+    uint32_t id = 0;             // for result tracking (GET /api/commands)
     Profile* profile = nullptr;  // owned by the command (ActivateProfile)
     uint8_t channel = 0, note = 0, velocity = 0;
     uint16_t durationMs = 0;
     int16_t servoIndex = -1;
     bool servoActive = false;
 };
+
+// Result registry so a 202-accepted command can be followed up by the web UI:
+// GET /api/commands?id=N reports queued / succeeded / refused (audit P1-18).
+std::atomic<uint32_t> g_nextCmdId{1};
+struct CmdResult { uint32_t id = 0; uint8_t state = 0; };  // 0=queued 1=done 2=refused
+constexpr int kCmdResultRing = 16;
+CmdResult g_cmdResults[kCmdResultRing];
+SemaphoreHandle_t g_resultMutex = nullptr;  // guards the tiny result ring
+
+void setCommandResult(uint32_t id, uint8_t state) {
+    if (id == 0) return;
+    if (g_resultMutex) xSemaphoreTake(g_resultMutex, portMAX_DELAY);
+    for (auto& r : g_cmdResults)  // update in place if already present
+        if (r.id == id) { r.state = state; if (g_resultMutex) xSemaphoreGive(g_resultMutex); return; }
+    // else overwrite the oldest slot (ring)
+    static int next = 0;
+    g_cmdResults[next] = {id, state};
+    next = (next + 1) % kCmdResultRing;
+    if (g_resultMutex) xSemaphoreGive(g_resultMutex);
+}
+
+// "queued" / "succeeded" / "refused" / "unknown" for a command id.
+std::string commandStateStr(uint32_t id) {
+    const char* s = "unknown";
+    if (g_resultMutex) xSemaphoreTake(g_resultMutex, portMAX_DELAY);
+    for (const auto& r : g_cmdResults)
+        if (r.id == id) { s = r.state == 0 ? "queued" : r.state == 1 ? "succeeded" : "refused"; break; }
+    if (g_resultMutex) xSemaphoreGive(g_resultMutex);
+    return s;
+}
 QueueHandle_t g_cmdQueue = nullptr;      // holds AppCommand* pointers
 // In-memory runtime state (profile / sysex snapshot / status). loop() takes this
 // only for short in-memory work — NEVER across a LittleFS write — so the safety
@@ -130,15 +161,19 @@ std::atomic<bool> g_panicRequested{false};
 
 // Enqueue a command (called from the AsyncTCP task). Returns false if the queue
 // is full so the caller can report back-pressure instead of silently dropping.
-bool enqueueCommand(const AppCommand& c) {
-    if (!g_cmdQueue) return false;
+// Returns the assigned command id (0 if the queue is full / unavailable).
+uint32_t enqueueCommand(const AppCommand& in) {
+    if (!g_cmdQueue) return 0;
+    AppCommand c = in;
+    c.id = g_nextCmdId.fetch_add(1);
     AppCommand* h = new AppCommand(c);
     if (xQueueSend(g_cmdQueue, &h, 0) != pdTRUE) {
         delete h->profile;  // transfer failed: don't leak the owned profile
         delete h;
-        return false;
+        return 0;
     }
-    return true;
+    setCommandResult(c.id, 0);  // queued
+    return c.id;
 }
 
 // RAII guard for the shared-state mutex (used by loop() around reloads and by the
@@ -554,19 +589,21 @@ void drainCommands(uint32_t nowMs) {
     AppCommand* c = nullptr;
     for (int n = 0; n < kMaxCommandsPerTick && xQueueReceive(g_cmdQueue, &c, 0) == pdTRUE;
          ++n) {
+        bool ok = true;
         switch (c->type) {
             case CmdType::Panic: doPanic(); purgeCommands(); break;
-            case CmdType::Reset: doReset(nowMs); break;
+            case CmdType::Reset: ok = doReset(nowMs); break;
             case CmdType::ActivateProfile:
-                if (c->profile) doActivateProfile(*c->profile, nowMs);
+                ok = c->profile && doActivateProfile(*c->profile, nowMs);
                 break;
             case CmdType::TestNote:
-                doTestNote(c->channel, c->note, c->velocity, c->durationMs, nowMs);
+                ok = doTestNote(c->channel, c->note, c->velocity, c->durationMs, nowMs);
                 break;
             case CmdType::TestServo:
-                doTestServo(c->servoIndex, c->servoActive);
+                ok = doTestServo(c->servoIndex, c->servoActive);
                 break;
         }
+        setCommandResult(c->id, ok ? 1 : 2);  // succeeded / refused
         delete c->profile;  // owned copy (null for non-profile commands)
         delete c;
     }
@@ -759,6 +796,7 @@ void setup() {
     g_cmdQueue = xQueueCreate(16, sizeof(AppCommand*));
     g_stateMutex = xSemaphoreCreateMutex();
     g_storageMutex = xSemaphoreCreateMutex();
+    g_resultMutex = xSemaphoreCreateMutex();
 
     g_storage.begin();
     if (g_storage.degraded()) {
@@ -813,18 +851,19 @@ void setup() {
     // /api/panic can truthfully report success.
     ctx.onPanic = []() { g_panicRequested.store(true); };
     ctx.onTestNote = [](uint8_t channel, uint8_t note, uint8_t vel,
-                        uint16_t durationMs) -> bool {
+                        uint16_t durationMs) -> uint32_t {
         AppCommand c{CmdType::TestNote};
         c.channel = channel; c.note = note; c.velocity = vel;
         c.durationMs = durationMs;
         return enqueueCommand(c);
     };
-    ctx.onTestServo = [](int index, bool active) -> bool {
+    ctx.onTestServo = [](int index, bool active) -> uint32_t {
         AppCommand c{CmdType::TestServo};
         c.servoIndex = static_cast<int16_t>(index);
         c.servoActive = active;
         return enqueueCommand(c);
     };
+    ctx.commandState = [](uint32_t id) -> std::string { return commandStateStr(id); };
     // Storage reformat runs in the web task under the storage lock (loop() never
     // touches LittleFS, so this can't stall the safety loop).
     ctx.onFormatStorage = []() -> bool { return g_storage.format(); };
@@ -873,15 +912,15 @@ void setup() {
             if (g_anchored[i] && !g_homing[i].failed()) ++n;
         return n;
     };
-    ctx.onActivateProfile = [](const Profile& p) -> bool {
+    ctx.onActivateProfile = [](const Profile& p) -> uint32_t {
         // Validate synchronously (pure, safe off the main loop) so an invalid
         // profile is rejected immediately; enqueue the actual apply for loop().
-        if (!ProfileValidator::isActivatable(p)) return false;
+        if (!ProfileValidator::isActivatable(p)) return 0u;
         AppCommand c{CmdType::ActivateProfile};
         c.profile = new Profile(p);  // ownership transfers to the queued command
         return enqueueCommand(c);
     };
-    ctx.onReset = []() -> bool { return enqueueCommand(AppCommand{CmdType::Reset}); };
+    ctx.onReset = []() -> uint32_t { return enqueueCommand(AppCommand{CmdType::Reset}); };
     g_web.begin(ctx, 80);
 
     // Home every axis before allowing play; unhomed axes never move for notes.

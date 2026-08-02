@@ -32,12 +32,15 @@ struct WebContext {
     SafetyManager* safety = nullptr;
     ProfileStorage* storage = nullptr;
     std::function<void()> onPanic;
-    std::function<bool()> onReset;                          // recover from panic/E-stop
-    std::function<std::string()> appState;                  // "boot"/"homing"/"ready"
-    std::function<int()> readyStrings;                      // axes homed & not faulted
-    std::function<bool(const Profile&)> onActivateProfile;  // validate + enqueue apply
-    std::function<bool(uint8_t, uint8_t, uint8_t, uint16_t)> onTestNote;  // ch,note,vel,ms
-    std::function<bool(int, bool)> onTestServo;  // enqueue a servo pulse (index, active)
+    // The enqueue callbacks return the assigned command id (0 = queue full), so
+    // the 202 response can carry it and GET /api/commands can report the outcome.
+    std::function<uint32_t()> onReset;                     // recover from panic/E-stop
+    std::function<std::string()> appState;                 // "boot"/"homing"/"ready"
+    std::function<int()> readyStrings;                     // axes homed & not faulted
+    std::function<uint32_t(const Profile&)> onActivateProfile;  // validate + enqueue
+    std::function<uint32_t(uint8_t, uint8_t, uint8_t, uint16_t)> onTestNote;  // ch,note,vel,ms
+    std::function<uint32_t(int, bool)> onTestServo;  // enqueue a servo pulse (index, active)
+    std::function<std::string(uint32_t)> commandState;  // queued/succeeded/refused/unknown
     std::function<bool()> onFormatStorage;       // deliberate LittleFS reformat
     // Guard shared state during read-only handlers so a reload in loop() is never
     // observed half-applied. Both may be null (host build / no locking).
