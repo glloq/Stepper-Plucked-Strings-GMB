@@ -44,10 +44,9 @@ void InstrumentController::load(const Profile& p) {
     std::vector<StringSpec> specs;
     for (const auto& s : p.strings) {
         StringSpec spec;
-        int eff = static_cast<int>(s.openNote) + pitchShift;
-        if (eff < 0) eff = 0;
-        if (eff > 127) eff = 127;
-        spec.openNote = static_cast<uint8_t>(eff);
+        // Signed, unclamped effective open pitch (audit P0-5): a transposed
+        // reference below 0 / above 127 stays exact so the fret math is right.
+        spec.openNote = static_cast<int16_t>(static_cast<int>(s.openNote) + pitchShift);
         spec.maxFret = s.maxFret;
         spec.enabled = s.enabled;
         specs.push_back(spec);
@@ -122,6 +121,7 @@ bool InstrumentController::triggerPreparedNote(int stringIndex, int fret,
     t.active = true;
     t.velocity = velocity;
     t.intensity = applyVelocityCurve(velocityCurve_, velocity) * attackGain();
+    t.strumGroup = nextStrumGroup_++;  // a triggered prepared note is its own group
     active_.push_back({channel, note, stringIndex, false});
     preparedFret_[stringIndex] = -1;
     preparedId_[stringIndex] = 0;
@@ -149,6 +149,7 @@ void InstrumentController::startNote(int stringIndex, int fret, uint8_t channel,
     t.commandId = id;
     t.velocity = velocity;
     t.intensity = applyVelocityCurve(velocityCurve_, velocity) * attackGain();
+    t.strumGroup = nextStrumGroup_++;  // a single explicit note is its own group
     active_.push_back({channel, note, stringIndex, false});
 }
 
@@ -268,6 +269,9 @@ void InstrumentController::flushChord() {
     for (const auto& n : chordBuffer_) notes.push_back(n.note);
 
     std::vector<Allocation> alloc = allocator_.allocateChord(notes);
+    // All notes flushed together form ONE chord -> one shared strum group, so the
+    // shared strummer sweeps once when every member is in position.
+    uint32_t group = nextStrumGroup_++;
     for (const auto& a : alloc) {
         if (!a.assigned) continue;
         const PendingNote& src = chordBuffer_[a.index];
@@ -283,6 +287,7 @@ void InstrumentController::flushChord() {
         t.commandId = id;
         t.velocity = src.velocity;
         t.intensity = applyVelocityCurve(velocityCurve_, src.velocity) * attackGain();
+        t.strumGroup = group;
         active_.push_back({src.channel, src.note, a.stringIndex, false});
     }
     chordBuffer_.clear();

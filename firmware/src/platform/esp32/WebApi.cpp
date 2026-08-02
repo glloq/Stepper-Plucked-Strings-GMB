@@ -39,6 +39,14 @@ struct WebStateLock {
     ~WebStateLock() { if (ctx.unlockState) ctx.unlockState(); }
 };
 
+// RAII guard for the LittleFS lock (distinct from the state lock: loop() never
+// waits on it, so a flash write here can't stall the safety loop).
+struct WebStorageLock {
+    const WebContext& ctx;
+    explicit WebStorageLock(const WebContext& c) : ctx(c) { if (ctx.lockStorage) ctx.lockStorage(); }
+    ~WebStorageLock() { if (ctx.unlockStorage) ctx.unlockStorage(); }
+};
+
 const char* stringStateName(StringState s) {
     switch (s) {
         case StringState::Disabled:        return "disabled";
@@ -299,6 +307,7 @@ void WebApi::registerRoutes() {
         JsonDocument doc;
         JsonArray arr = doc["profiles"].to<JsonArray>();
         if (ctx_.storage) {
+            WebStorageLock sl(ctx_);  // don't cross a concurrent save/delete (P1-2)
             auto names = ctx_.storage->list();
             for (size_t i = 0; i < names.size(); ++i) {
                 JsonObject o = arr.add<JsonObject>();
@@ -391,21 +400,24 @@ void WebApi::registerRoutes() {
             JsonDocument doc;
             int slot = body["slot"] | -1;
             Profile p;
-            // Serialise storage access and the live-profile copy under the state
-            // lock so concurrent save/load/delete can't corrupt the temp/.bak files
-            // and the *ctx_.profile read can't race a reload in loop().
-            WebStateLock lk(ctx_);
-            bool parsed = body["profile"].is<JsonObject>()
-                              ? ProfileStorage::fromJson(body["profile"], p)
-                              : (ctx_.profile ? (p = *ctx_.profile, true) : false);
+            // Copy the live profile (when no body profile) under the STATE lock —
+            // brief, in-memory. The actual flash write below is under the STORAGE
+            // lock so loop() never waits on it.
+            bool parsed;
+            { WebStateLock lk(ctx_);
+              parsed = body["profile"].is<JsonObject>()
+                           ? ProfileStorage::fromJson(body["profile"], p)
+                           : (ctx_.profile ? (p = *ctx_.profile, true) : false); }
             if (slot < 0 || !parsed || !ctx_.storage) {
                 doc["ok"] = false;
                 doc["error"] = "slot and profile required";
                 sendJson(req, doc, 400);
                 return;
             }
-            bool saved = ctx_.storage->save(slot, p);
-            if (saved && (body["startup"] | false)) ctx_.storage->setStartupSlot(slot);
+            bool saved;
+            { WebStorageLock sl(ctx_);  // serialise LittleFS; loop() never waits here
+              saved = ctx_.storage->save(slot, p);
+              if (saved && (body["startup"] | false)) ctx_.storage->setStartupSlot(slot); }
             doc["ok"] = saved;
             sendJson(req, doc, saved ? 200 : 500);
         });
@@ -420,7 +432,7 @@ void WebApi::registerRoutes() {
             int slot = body["slot"] | -1;
             Profile p;
             bool loaded;
-            { WebStateLock lk(ctx_);  // serialise with other storage operations
+            { WebStorageLock sl(ctx_);  // serialise LittleFS (loop never waits here)
               loaded = slot >= 0 && ctx_.storage && ctx_.storage->load(slot, p); }
             if (!loaded) {
                 doc["ok"] = false;
@@ -445,7 +457,7 @@ void WebApi::registerRoutes() {
             int slot = body["slot"] | -1;
             Profile p;
             bool loaded;
-            { WebStateLock lk(ctx_);  // serialise with other storage operations
+            { WebStorageLock sl(ctx_);  // serialise LittleFS (loop never waits here)
               loaded = slot >= 0 && ctx_.storage && ctx_.storage->load(slot, p); }
             if (!loaded) {
                 JsonDocument err;
@@ -467,7 +479,7 @@ void WebApi::registerRoutes() {
             if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
             JsonDocument doc;
             int slot = body["slot"] | -1;
-            WebStateLock lk(ctx_);  // serialise with other storage operations
+            WebStorageLock sl(ctx_);  // serialise LittleFS (loop never waits here)
             bool ok = slot >= 0 && ctx_.storage && ctx_.storage->remove(slot);
             doc["ok"] = ok;
             sendJson(req, doc, ok ? 200 : 400);

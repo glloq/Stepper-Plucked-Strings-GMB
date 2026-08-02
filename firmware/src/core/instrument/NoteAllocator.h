@@ -20,7 +20,10 @@ enum class SaturationStrategy : uint8_t {
 };
 
 struct StringSpec {
-    uint8_t openNote = 0;   // MIDI note of the open string
+    // Effective open pitch (open note + capo + transpose). SIGNED and NOT clamped
+    // to the MIDI domain: a transposed reference can legitimately fall below 0 or
+    // above 127, and clamping it would corrupt the fret math (audit P0-5).
+    int16_t openNote = 0;
     uint8_t maxFret = 12;
     bool enabled = true;
     bool faulted = false;

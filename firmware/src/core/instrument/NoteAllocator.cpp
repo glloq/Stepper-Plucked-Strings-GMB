@@ -13,12 +13,13 @@ bool NoteAllocator::canPlay(int stringIndex, uint8_t note) const {
     if (stringIndex < 0 || stringIndex >= static_cast<int>(specs_.size())) return false;
     const StringSpec& s = specs_[stringIndex];
     if (!s.enabled || s.faulted) return false;
-    return note >= s.openNote && note <= s.openNote + s.maxFret;
+    int n = static_cast<int>(note);
+    return n >= s.openNote && n <= s.openNote + s.maxFret;
 }
 
 int NoteAllocator::fretFor(int stringIndex, uint8_t note) const {
     if (!canPlay(stringIndex, note)) return -1;
-    return note - specs_[stringIndex].openNote;
+    return static_cast<int>(note) - specs_[stringIndex].openNote;
 }
 
 int NoteAllocator::cost(int stringIndex, uint8_t note) const {
