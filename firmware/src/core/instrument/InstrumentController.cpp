@@ -35,10 +35,19 @@ void InstrumentController::load(const Profile& p) {
     volume_ = 1.0;
     expression_ = 1.0;
 
+    // Effective open pitch seen by the automatic allocator must include capo and
+    // both transposes, exactly like the explicit selector's coherence check —
+    // otherwise a capo'd/transposed note is allocated to the wrong fret/string.
+    const int pitchShift =
+        p.instrument.capo + p.instrument.transpose + p.midi.transpose;
+
     std::vector<StringSpec> specs;
     for (const auto& s : p.strings) {
         StringSpec spec;
-        spec.openNote = s.openNote;
+        int eff = static_cast<int>(s.openNote) + pitchShift;
+        if (eff < 0) eff = 0;
+        if (eff > 127) eff = 127;
+        spec.openNote = static_cast<uint8_t>(eff);
         spec.maxFret = s.maxFret;
         spec.enabled = s.enabled;
         specs.push_back(spec);
@@ -201,7 +210,15 @@ void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
     if (e.isNoteOn()) {
         NoteResolution r = selector_.onNoteOn(e, nowUs);
         if (!r.play) return;
-        if (r.source == ResolveSource::Explicit) {
+        // An explicit selection may resolve to a string that has since faulted or
+        // is disabled: rather than dropping the note, fall back to automatic
+        // allocation so a working string can still play it (runtime availability).
+        bool explicitPlayable =
+            r.source == ResolveSource::Explicit &&
+            r.stringIndex < strings_.size() &&
+            strings_[r.stringIndex].state() != StringState::Fault &&
+            strings_[r.stringIndex].state() != StringState::Disabled;
+        if (r.source == ResolveSource::Explicit && explicitPlayable) {
             // Reuse the anticipated move if this string was prepared for this fret;
             // otherwise start a fresh note.
             if (!triggerPreparedNote(r.stringIndex, r.fret, e.channel, e.data1,

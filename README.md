@@ -67,7 +67,7 @@ cd firmware/test
 make            # compile et exécute la suite de tests
 ```
 
-Résultat attendu : `112 tests, … checks, 0 failures`. Les tests couvrent les
+Résultat attendu : `119 tests, … checks, 0 failures`. Les tests couvrent les
 critères d'acceptation des trois spécifications (attribution/validation GPIO,
 sélection corde/frette, accords, homing, machine d'état, SysEx…).
 
@@ -104,7 +104,7 @@ PCA9685 **et** GPIO direct, Wi-Fi non bloquant, API REST/WebSocket), interface
 Web, profils d'exemple, documentation. Le matériel dédié (schéma, PCB — phase 5
 du cahier des charges) reste au stade de documentation.
 
-Le cœur C++ est vérifié par des tests natifs (112 tests) exécutés en CI ; la CI
+Le cœur C++ est vérifié par des tests natifs (119 tests) exécutés en CI ; la CI
 compile aussi le firmware ESP32 réel (`pio run`) avec la chaîne Arduino-ESP32
 3.x (fork *pioarduino*, voir [`firmware/platformio.ini`](firmware/platformio.ini)
 et [`docs/ARDUINO_IDE.md`](docs/ARDUINO_IDE.md)).
@@ -130,3 +130,8 @@ réel) :
 * **Vélocité** : appliquée à la profondeur d'attaque du servo ; d'autres
   mappings (vitesse, courbe par actionneur) restent possibles.
 * **TMC2209 `DIAG` / détection de décrochage** : non exploités.
+* **MIDI UDP — datagrammes autonomes** : chaque datagramme est décodé
+  indépendamment (le running status et les messages SysEx ne peuvent pas
+  s'étendre sur plusieurs datagrammes), afin qu'un client ne puisse jamais
+  poursuivre ou terminer le message d'un autre. Envoyez un message MIDI complet
+  par datagramme.

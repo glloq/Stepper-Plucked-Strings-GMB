@@ -81,3 +81,9 @@ struct SerialStub {
   template <typename T> void print(T) {}
 };
 static SerialStub Serial;
+
+// Minimal ESP object (chip identity).
+struct EspClass {
+  uint64_t getEfuseMac() { return 0; }
+};
+static EspClass ESP;

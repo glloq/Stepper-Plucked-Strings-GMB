@@ -15,6 +15,7 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 
+#include <atomic>
 #include <vector>
 
 #include "core/configuration/Profile.h"
@@ -51,6 +52,12 @@ AppPhase g_phase = AppPhase::Boot;
 bool g_degraded = false;  // Ready but with one or more axes disabled by a fault
 uint32_t g_lastSharedStrumMs = 0;  // dedupe the shared strummer within a chord
 
+// Pre-homing finger-lift: homing must not move a carriage while a finger is still
+// pressed on the string. beginHoming() commands every finger to rest and waits
+// until this deadline before the seek starts.
+bool g_homingStarted = false;
+uint32_t g_homeReleaseUntilMs = 0;
+
 std::vector<HomingController> g_homing;
 std::vector<bool> g_anchored;
 std::vector<bool> g_axisFaulted;  // runtime fault (homing fail, LIMIT, etc.)
@@ -71,6 +78,7 @@ struct StringSched {
     uint32_t phaseStartMs = 0;
     uint32_t commandId = 0;
     int fingerIndex = -1;
+    uint32_t readySinceMs = 0;  // when this string reached Ready (shared-strum sync)
 };
 std::vector<StringSched> g_sched;
 
@@ -94,6 +102,11 @@ struct AppCommand {
 };
 QueueHandle_t g_cmdQueue = nullptr;      // holds AppCommand* pointers
 SemaphoreHandle_t g_stateMutex = nullptr;  // guards shared-state reads vs reloads
+
+// A STOP must never be lost or delayed behind other queued commands: /api/panic
+// sets this flag (lock-free, no allocation) and loop() honours it FIRST, before
+// draining anything else. Separate from the FreeRTOS queue on purpose.
+std::atomic<bool> g_panicRequested{false};
 
 // Enqueue a command (called from the AsyncTCP task). Returns false if the queue
 // is full so the caller can report back-pressure instead of silently dropping.
@@ -247,6 +260,12 @@ bool beginHoming(uint32_t nowMs) {
     g_degraded = false;
     g_steppers.enableDrivers(true);
     g_servos.outputEnable(true);   // servos hold their rest position (fingers up)
+
+    // Drive every finger to its REST position and wait for it to lift before any
+    // carriage moves — a still-pressed finger must never drag along the string as
+    // the axis seeks HOME. The homing controllers are started only once this
+    // deadline passes (see doHoming).
+    uint32_t releaseWaitMs = 0;
     for (size_t i = 0; i < g_homing.size(); ++i) {
         g_anchored[i] = false;
         if (!g_profile.strings[i].enabled) {
@@ -254,8 +273,16 @@ bool beginHoming(uint32_t nowMs) {
             continue;
         }
         g_instrument.string(i).setHoming();
-        g_homing[i].start(nowMs);
+        int fi = g_servos.fingerIndex(static_cast<int>(i));
+        if (fi >= 0) {
+            g_servos.release(fi);  // command finger up (to rest)
+            uint32_t w = static_cast<uint32_t>(g_servos.travelMs(fi)) +
+                         g_servos.settleMs(fi);
+            if (w > releaseWaitMs) releaseWaitMs = w;
+        }
     }
+    g_homingStarted = false;
+    g_homeReleaseUntilMs = nowMs + releaseWaitMs;
     g_phase = AppPhase::Homing;
     return true;
 }
@@ -282,6 +309,15 @@ bool doReset(uint32_t nowMs) {
 }
 
 void doHoming(uint32_t nowMs) {
+    // Hold every axis still until the fingers have physically lifted, then start
+    // the homing controllers (their internal timers begin here, not before).
+    if (!g_homingStarted) {
+        if (static_cast<int32_t>(nowMs - g_homeReleaseUntilMs) < 0) return;
+        for (size_t i = 0; i < g_homing.size(); ++i)
+            if (g_profile.strings[i].enabled) g_homing[i].start(nowMs);
+        g_homingStarted = true;
+    }
+
     bool allDone = true;
     int active = 0, faulted = 0;
     for (size_t i = 0; i < g_homing.size(); ++i) {
@@ -298,7 +334,8 @@ void doHoming(uint32_t nowMs) {
         if (g_homing[i].failed()) {
             g_instrument.faultString(i);  // remove from allocator + selection too
             g_axisFaulted[i] = true;
-            g_steppers.stop(i);
+            g_steppers.emergencyStop(i);  // HARD stop: a failed axis must not keep
+                                          // decelerating past the arming instant
             ++faulted;
             continue;
         }
@@ -322,6 +359,12 @@ void doHoming(uint32_t nowMs) {
         }
     }
     if (!allDone) return;
+
+    // Never arm while a faulted axis is still physically moving (shared ENABLE
+    // stays live for all drivers): wait for every faulted axis to report stopped.
+    for (size_t i = 0; i < g_homing.size(); ++i) {
+        if (g_axisFaulted[i] && g_steppers.isRunning(i)) return;  // still braking
+    }
 
     // Refuse to arm with zero working axes: neutralise and stay safely in Boot.
     if (active - faulted <= 0) {
@@ -406,22 +449,48 @@ bool doTestNote(uint8_t channel, uint8_t note, uint8_t vel, uint16_t durationMs,
     return true;
 }
 
-// Web servo test: only when armed and only for a real, enabled servo.
+// Web servo test: only when armed and only for a real, enabled servo. Uses
+// press()/release() (not the raw toActive/toRest) so the servo's runtime mode is
+// updated and update() honours disableAtRest correctly.
 bool doTestServo(int index, bool active) {
     if (!g_safety.actuatorsAllowed()) return false;
     if (!g_servos.commandable(index)) return false;
-    if (active) g_servos.toActive(index); else g_servos.toRest(index);
+    if (active) g_servos.press(index); else g_servos.release(index);
     return true;
 }
 
-// Drain every queued web command. Runs at the top of loop(): loop() is the sole
-// owner of the mechanical state, so these run without racing the AsyncTCP task.
-void drainCommands(uint32_t nowMs) {
+// Discard every queued command without executing it (used after a panic so a
+// stale profile activation / test can't fire once the STOP has latched).
+void purgeCommands() {
     if (!g_cmdQueue) return;
     AppCommand* c = nullptr;
     while (xQueueReceive(g_cmdQueue, &c, 0) == pdTRUE) {
+        delete c->profile;
+        delete c;
+    }
+}
+
+// Honour a pending STOP before anything else. Returns true if a panic ran, so
+// the caller can skip the rest of this tick's command/motion work.
+bool servicePanic(uint32_t nowMs) {
+    (void)nowMs;
+    if (!g_panicRequested.exchange(false)) return false;
+    doPanic();
+    purgeCommands();  // drop anything queued behind the STOP
+    return true;
+}
+
+// Drain a BOUNDED number of queued web commands so a long burst (e.g. many
+// profile activations) can never starve the E-stop / panic checks that run each
+// loop. The rest wait for the next tick.
+void drainCommands(uint32_t nowMs) {
+    if (!g_cmdQueue) return;
+    static constexpr int kMaxCommandsPerTick = 2;
+    AppCommand* c = nullptr;
+    for (int n = 0; n < kMaxCommandsPerTick && xQueueReceive(g_cmdQueue, &c, 0) == pdTRUE;
+         ++n) {
         switch (c->type) {
-            case CmdType::Panic: doPanic(); break;
+            case CmdType::Panic: doPanic(); purgeCommands(); break;
             case CmdType::Reset: doReset(nowMs); break;
             case CmdType::ActivateProfile:
                 if (c->profile) doActivateProfile(*c->profile, nowMs);
@@ -436,6 +505,26 @@ void drainCommands(uint32_t nowMs) {
         delete c->profile;  // owned copy (null for non-profile commands)
         delete c;
     }
+}
+
+// Does a given string rely on the shared strummer (shared modes, or no
+// individual plectrum of its own)?
+bool usesSharedStrum(size_t i) {
+    PluckMode mode = g_profile.instrument.pluckMode;
+    int pi = g_servos.pluckIndex(static_cast<int>(i));
+    return (mode == PluckMode::SharedStrum || mode == PluckMode::Both) || pi < 0;
+}
+
+// Shared-strum barrier: every active string that will be swept by the shared
+// strummer must have reached its fret position (scheduler phase Ready) before the
+// sweep fires, so one sweep hits the whole chord instead of the fastest string.
+bool sharedGroupPositioned() {
+    for (size_t j = 0; j < g_instrument.stringCount(); ++j) {
+        if (!g_instrument.target(j).active) continue;
+        if (!usesSharedStrum(j)) continue;
+        if (g_sched[j].phase != StringSched::Ready) return false;  // still travelling
+    }
+    return true;
 }
 
 // Drive one string's mechanical sequence toward a plucked note.
@@ -473,10 +562,26 @@ void tickString(size_t i, uint32_t nowMs) {
         faultRuntimeAxis(i, "LIMIT tripped", nowMs);
         return;
     }
+    // HOME is also a physical extremity. Asserting it while the carriage position
+    // says it is well away from home is a position/reference fault (lost steps,
+    // drift, stuck/inverted sensor) — fault rather than trust a bad coordinate.
+    // Positions legitimately near home (open string / low frets) are not faulted.
+    static constexpr double kHomeMismatchMm = 10.0;
+    if (g_steppers.homeActive(i) && g_steppers.positionMm(i) > kHomeMismatchMm) {
+        faultRuntimeAxis(i, "HOME asserted away from home (position drift)", nowMs);
+        return;
+    }
 
     if (sch.commandId != tgt.commandId) {
-        // New note: lift the finger and WAIT for it to travel up before moving
-        // the carriage, so the finger never drags along the string (§16).
+        // New note replacing a previous one on this string (e.g. the allocator's
+        // ReplaceOldest): explicitly damp the still-vibrating string before moving
+        // it, so it is not dragged to a new fret and re-plucked while ringing.
+        if (sch.phase != StringSched::Idle && sch.phase != StringSched::WaitStopped) {
+            int di = g_servos.damperIndex(static_cast<int>(i));
+            if (di >= 0) g_servos.strike(di);
+        }
+        // Lift the finger and WAIT for it to travel up before moving the carriage,
+        // so the finger never drags along the string (§16).
         sch.commandId = tgt.commandId;
         sch.fingerIndex = g_servos.fingerIndex(static_cast<int>(i));
         if (sch.fingerIndex >= 0) g_servos.release(sch.fingerIndex);
@@ -498,10 +603,13 @@ void tickString(size_t i, uint32_t nowMs) {
             }
             break;
         case StringSched::MovingToFret:
-            if (g_steppers.atTarget(i)) {
+            // Arrived only when the carriage is stopped AND actually at the fret
+            // position (a refused/interrupted move must not be read as "reached").
+            if (g_steppers.reachedTarget(i)) {
                 sc.motionReached();
                 if (sc.openString() || sch.fingerIndex < 0) {
                     sch.phase = StringSched::Ready;  // no finger press for open string
+                    sch.readySinceMs = nowMs;
                 } else {
                     g_servos.press(sch.fingerIndex);
                     sch.phase = StringSched::PressingFinger;
@@ -520,30 +628,39 @@ void tickString(size_t i, uint32_t nowMs) {
             if (nowMs - sch.phaseStartMs >= g_servos.settleMs(sch.fingerIndex)) {
                 sc.settled();
                 sch.phase = StringSched::Ready;
+                sch.readySinceMs = nowMs;
             }
             break;
-        case StringSched::Ready:
-            if (sc.pluckArmed() && sc.executePluck(tgt.commandId)) {
-                PluckMode mode = g_profile.instrument.pluckMode;
-                int pi = g_servos.pluckIndex(static_cast<int>(i));
-                bool doIndividual = (mode == PluckMode::Individual ||
-                                     mode == PluckMode::Both) && pi >= 0;
-                // Shared strummer for the shared modes, or as a fallback when a
-                // string has no individual plectrum.
-                bool doShared = (mode == PluckMode::SharedStrum ||
-                                 mode == PluckMode::Both) || pi < 0;
-                if (doIndividual) g_servos.strike(pi, tgt.intensity);
-                if (doShared) {
-                    int si = g_servos.sharedStrumIndex();
-                    // One sweep per chord: dedupe strikes within a short window.
-                    static constexpr uint32_t kStrumDedupeMs = 30;
-                    if (si >= 0 && nowMs - g_lastSharedStrumMs >= kStrumDedupeMs) {
-                        g_servos.strike(si, tgt.intensity);
-                        g_lastSharedStrumMs = nowMs;
-                    }
+        case StringSched::Ready: {
+            if (!sc.pluckArmed()) break;  // not armed (prepared / already plucked)
+            PluckMode mode = g_profile.instrument.pluckMode;
+            int pi = g_servos.pluckIndex(static_cast<int>(i));
+            bool doIndividual = (mode == PluckMode::Individual ||
+                                 mode == PluckMode::Both) && pi >= 0;
+            bool doShared = usesSharedStrum(i);
+            // Shared-strum barrier: wait until the whole active shared group is in
+            // position (or a bounded timeout, so a stuck string can't deadlock the
+            // chord) before firing — one synchronised sweep per chord.
+            if (doShared) {
+                static constexpr uint32_t kMaxStrumWaitMs = 250;
+                if (!sharedGroupPositioned() &&
+                    nowMs - sch.readySinceMs < kMaxStrumWaitMs) {
+                    break;  // stay armed in Ready, keep waiting for the group
+                }
+            }
+            if (!sc.executePluck(tgt.commandId)) break;
+            if (doIndividual) g_servos.strike(pi, tgt.intensity);
+            if (doShared) {
+                int si = g_servos.sharedStrumIndex();
+                // One sweep per chord: dedupe strikes within a short window.
+                static constexpr uint32_t kStrumDedupeMs = 30;
+                if (si >= 0 && nowMs - g_lastSharedStrumMs >= kStrumDedupeMs) {
+                    g_servos.strike(si, tgt.intensity);
+                    g_lastSharedStrumMs = nowMs;
                 }
             }
             break;
+        }
         case StringSched::WaitStopped:
         case StringSched::Idle:
             break;
@@ -568,6 +685,14 @@ void setup() {
     if (!g_storage.load(g_storage.startupSlot(), g_profile) ||
         !ProfileValidator::isActivatable(g_profile)) {
         g_profile = Profile::makeDefault("Ukulele", 4, {67, 60, 64, 69}, 12);
+    }
+    // Stable per-device SysEx identity from the ESP32 MAC, so two instruments on
+    // the same network are distinguishable (set before applyProfile's rebuild).
+    {
+        uint64_t mac = ESP.getEfuseMac();
+        uint8_t id[5];
+        for (int i = 0; i < 5; ++i) id[i] = static_cast<uint8_t>((mac >> (8 * i)) & 0x7F);
+        g_sysex.setDeviceId(id);
     }
     applyProfile();  // also resolves the E-stop pin from the profile
     // Answer StringConfig discovery with the richer v2 block (CC bounds, offsets,
@@ -595,7 +720,10 @@ void setup() {
     ctx.storage = &g_storage;
     // Every mutating callback below only ENQUEUES a command; loop() executes it.
     // The returned bool means "accepted into the queue", not "already done".
-    ctx.onPanic = []() { enqueueCommand(AppCommand{CmdType::Panic}); };
+    // STOP is never enqueued (it must not be lost behind a full queue): it sets a
+    // lock-free flag loop() honours first. Setting the flag always succeeds, so
+    // /api/panic can truthfully report success.
+    ctx.onPanic = []() { g_panicRequested.store(true); };
     ctx.onTestNote = [](uint8_t channel, uint8_t note, uint8_t vel,
                         uint16_t durationMs) -> bool {
         AppCommand c{CmdType::TestNote};
@@ -665,6 +793,7 @@ void setup() {
     // beginHoming() itself refuses if the profile is invalid or a channel failed
     // to attach, leaving the system safely in Boot.
     beginHoming(millis());
+    g_web.refreshStatus();  // seed the cached status before the first GET
 }
 
 void loop() {
@@ -673,7 +802,27 @@ void loop() {
 
     g_net.tick(nowMs);
     g_steppers.updateSensors(nowMs);  // debounce HOME/LIMIT before any read
-    drainCommands(nowMs);             // apply queued web commands (sole owner)
+
+    // SAFETY FIRST, before any queued command runs this tick:
+    // 1) Hardware E-stop (active-low). Must assert IMMEDIATELY: trip on the raw
+    //    press this instant (a false trip only fails safe); the debounced level
+    //    only filters the RELEASE so contact bounce can't un-latch it. (Still a
+    //    software safety, not a substitute for a hardware cut of ENABLE / power.)
+    if (g_estopPin >= 0) {
+        bool rawPressed = digitalRead(g_estopPin) == LOW;
+        bool debouncedPressed = !g_estopDeb.update(nowMs, digitalRead(g_estopPin) == HIGH);
+        if ((rawPressed || debouncedPressed) &&
+            g_safety.state() != SafetyState::EmergencyStop) {
+            doEmergencyStop();
+            purgeCommands();  // drop anything queued behind the E-stop
+        }
+    }
+    // 2) Web/CC STOP flag: honoured before draining, and it purges the queue.
+    bool panicked = servicePanic(nowMs);
+
+    // Apply a BOUNDED number of queued web commands (skip if we just stopped, so
+    // no stale activation/test runs after a STOP).
+    if (!panicked) drainCommands(nowMs);
 
     // Wi-Fi loss policy (cahier des charges §21.4, default): cancel pending
     // commands and release notes in a controlled way, but stay armed/READY.
@@ -686,20 +835,6 @@ void loop() {
                              nowMs);
     }
     wasConnected = nowConnected;
-
-    // Hardware E-stop (active-low). An E-stop must assert IMMEDIATELY: trip on the
-    // raw press this instant (a false trip only fails safe), and use the debounced
-    // level solely to filter the RELEASE so contact bounce can't un-latch it.
-    // (This remains a software safety, not a substitute for a hardware cut of the
-    // driver ENABLE / motor power.)
-    if (g_estopPin >= 0) {
-        bool rawPressed = digitalRead(g_estopPin) == LOW;
-        bool debouncedPressed = !g_estopDeb.update(nowMs, digitalRead(g_estopPin) == HIGH);
-        if ((rawPressed || debouncedPressed) &&
-            g_safety.state() != SafetyState::EmergencyStop) {
-            doEmergencyStop();
-        }
-    }
 
     // Deliver any scheduled test-note Note Offs that are due.
     for (size_t k = 0; k < g_testOffs.size();) {
@@ -723,7 +858,11 @@ void loop() {
         if (g_phase == AppPhase::Ready) g_instrument.handleEvent(e, nowUs);
     }
     for (auto& sx : g_midi.sysexPackets()) {
-        auto resp = g_sysex.handleMessage(sx.bytes.data(), sx.bytes.size(), nowMs);
+        // Serialise with the Web /api/sysex/request route (shared rate limiter +
+        // snapshot); both take g_stateMutex.
+        std::vector<uint8_t> resp;
+        { StateGuard lock;
+          resp = g_sysex.handleMessage(sx.bytes.data(), sx.bytes.size(), nowMs); }
         if (!resp.empty()) g_midi.reply(sx, resp.data(), resp.size());
     }
     g_midi.clear();
@@ -742,7 +881,8 @@ void loop() {
     static uint32_t lastStatusMs = 0;
     if (nowMs - lastStatusMs >= 100) {
         lastStatusMs = nowMs;
-        g_web.broadcastStatus();
+        g_web.refreshStatus();     // rebuild the cached snapshot from live state...
+        g_web.broadcastStatus();   // ...then push it (GET /api/status serves it too)
     }
 }
 

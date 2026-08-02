@@ -67,17 +67,22 @@ void StepperBank::enableDrivers(bool on) {
 
 void StepperBank::moveToMm(size_t axis, double mm) {
     if (axis >= steppers_.size() || !steppers_[axis]) return;
-    long steps = axes_[axis].geom.mmToSteps(axes_[axis].geom.clampToLimits(mm));
-    steppers_[axis]->moveTo(steps);
+    double clamped = axes_[axis].geom.clampToLimits(mm);
+    axes_[axis].cmdTargetMm = clamped;
+    axes_[axis].hasTarget = true;
+    steppers_[axis]->moveTo(axes_[axis].geom.mmToSteps(clamped));
 }
 
 void StepperBank::moveToMmRaw(size_t axis, double mm) {
     if (axis >= steppers_.size() || !steppers_[axis]) return;
+    axes_[axis].cmdTargetMm = mm;
+    axes_[axis].hasTarget = true;
     steppers_[axis]->moveTo(axes_[axis].geom.mmToSteps(mm));
 }
 
 void StepperBank::setVelocityMm(size_t axis, double mmS) {
     if (axis >= steppers_.size() || !steppers_[axis]) return;
+    axes_[axis].hasTarget = false;  // velocity cruise has no position target
     double hz = std::fabs(mmS) * axes_[axis].stepsPerMm;
     steppers_[axis]->setSpeedInHz(static_cast<uint32_t>(hz > 1 ? hz : 1));
     if (mmS >= 0) steppers_[axis]->runForward();
@@ -114,6 +119,14 @@ double StepperBank::positionMm(size_t axis) const {
 bool StepperBank::atTarget(size_t axis) const {
     if (axis >= steppers_.size() || !steppers_[axis]) return true;
     return !steppers_[axis]->isRunning();
+}
+
+bool StepperBank::reachedTarget(size_t axis) const {
+    if (axis >= steppers_.size() || !steppers_[axis]) return true;
+    if (steppers_[axis]->isRunning()) return false;
+    if (!axes_[axis].hasTarget) return true;  // no position move commanded yet
+    static constexpr double kPosToleranceMm = 0.5;
+    return std::fabs(positionMm(axis) - axes_[axis].cmdTargetMm) <= kPosToleranceMm;
 }
 
 bool StepperBank::isRunning(size_t axis) const {
@@ -161,10 +174,19 @@ void StepperBank::begin(const std::vector<AxisConfig>& axes,
 void StepperBank::updateSensors(uint32_t) {}
 void StepperBank::enableDrivers(bool on) { enabled_ = on; }
 void StepperBank::moveToMm(size_t axis, double mm) {
-    if (axis < axes_.size()) axes_[axis].position = axes_[axis].geom.mmToSteps(axes_[axis].geom.clampToLimits(mm));
+    if (axis < axes_.size()) {
+        double clamped = axes_[axis].geom.clampToLimits(mm);
+        axes_[axis].cmdTargetMm = clamped;
+        axes_[axis].hasTarget = true;
+        axes_[axis].position = axes_[axis].geom.mmToSteps(clamped);
+    }
 }
 void StepperBank::moveToMmRaw(size_t axis, double mm) {
-    if (axis < axes_.size()) axes_[axis].position = axes_[axis].geom.mmToSteps(mm);
+    if (axis < axes_.size()) {
+        axes_[axis].cmdTargetMm = mm;
+        axes_[axis].hasTarget = true;
+        axes_[axis].position = axes_[axis].geom.mmToSteps(mm);
+    }
 }
 void StepperBank::setVelocityMm(size_t, double) {}
 void StepperBank::stop(size_t) {}
@@ -177,6 +199,7 @@ double StepperBank::positionMm(size_t axis) const {
     return axis < axes_.size() ? axes_[axis].geom.stepsToMm(axes_[axis].position) : 0.0;
 }
 bool StepperBank::atTarget(size_t) const { return true; }
+bool StepperBank::reachedTarget(size_t) const { return true; }
 bool StepperBank::isRunning(size_t) const { return false; }
 bool StepperBank::homeActive(size_t) const { return false; }
 bool StepperBank::homeRawHigh(size_t) const { return false; }

@@ -26,6 +26,15 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
         err("homing", "Exactly one homing configuration is required per axis");
     }
 
+    // The same signal name must not appear twice (an ambiguous STEP1/HOME2/... —
+    // buildStepperPins would silently take the last one).
+    for (size_t a = 0; a < p.pins.size(); ++a)
+        for (size_t b = a + 1; b < p.pins.size(); ++b)
+            if (!p.pins[a].signal.empty() && p.pins[a].signal == p.pins[b].signal) {
+                err("pins." + p.pins[a].signal, "Duplicate signal assignment");
+                break;
+            }
+
     // Mandatory mechanical pins must be present, not merely conflict-free.
     auto hasPin = [&](const std::string& sig) {
         for (const auto& a : p.pins)
@@ -125,6 +134,26 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
             if (h.timeoutMs == 0) err(t + ".homing.timeout", "Homing timeout must be > 0");
             if (h.maxSearchMm <= 0.0)
                 err(t + ".homing.maxSearch", "Homing max search distance must be > 0");
+            // Offsets and seek distances must fit the axis: homing uses raw
+            // (unclamped) moves, so an invalid offset could command out of travel.
+            if (h.offsetMm < 0.0)
+                err(t + ".homing.offset", "Homing offset must be >= 0");
+            double travel = a.maxPositionMm - a.minPositionMm;
+            if (h.offsetMm > travel)
+                err(t + ".homing.offset", "Homing offset exceeds the axis travel");
+            if (h.backoffMm > travel)
+                err(t + ".homing.backoff", "Homing back-off exceeds the axis travel");
+            if (h.maxSearchMm > travel + 1e-6 && travel > 0.0)
+                warn(t + ".homing.maxSearch",
+                     "Homing max search distance exceeds the axis travel");
+            // Seek speeds must not exceed the axis speed limit, and the slow seek
+            // should be slower than the fast seek.
+            if (h.fastSpeedMmS > a.maxSpeedMmS)
+                err(t + ".homing.fastSpeed", "Homing fast speed exceeds the axis max speed");
+            if (h.slowSpeedMmS > a.maxSpeedMmS)
+                err(t + ".homing.slowSpeed", "Homing slow speed exceeds the axis max speed");
+            if (h.slowSpeedMmS > h.fastSpeedMmS)
+                warn(t + ".homing.slowSpeed", "Homing slow speed is faster than the fast speed");
         }
     }
 
@@ -139,7 +168,9 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
             err("pins." + e.signal, msg);
         }
     } else {
-        warn("board", "Unknown board profile; pins cannot be validated");
+        // A board we don't know is a hard error: no pin can be validated, so the
+        // profile must not be activatable on this firmware.
+        err("board", "Unknown board profile; pins cannot be validated");
     }
 
     // Servo configuration: PCA vs direct GPIO, with or without a PCA9685.
@@ -228,6 +259,15 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
                 err("servos.sharedStrum",
                     "A sharedStrum servo is required for the shared-strum pluck mode");
         }
+        // A fretted string (maxFret > 0) MUST have a finger servo: without one the
+        // scheduler would treat every note as an open string and pluck a wrong
+        // pitch. An open-only course (maxFret == 0) legitimately needs no finger.
+        for (size_t i = 0; i < p.strings.size(); ++i)
+            if (p.strings[i].enabled && p.strings[i].maxFret > 0 &&
+                !hasServoRole("finger", static_cast<int>(i)))
+                err("servos.finger",
+                    "String " + std::to_string(i) +
+                        " is fretted (maxFret > 0) and needs a finger servo");
     }
 
     // String/fret selection CC configuration (selection spec section 18).
@@ -238,6 +278,26 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
         err("selector.fret.cc", "Fret CC must be 0..119 (120..127 are mode messages)");
     if (s.string.ccNumber == s.fret.ccNumber)
         err("selector.cc", "String and fret CC numbers must differ");
+    // CC7 (volume) and CC11 (expression) are consumed before selection/sustain,
+    // so no selectable CC may collide with them or with each other. Reject any
+    // overlap among {7, 11, sustain (if enabled), string, fret} — the first
+    // handler would otherwise silently swallow a CC meant for something else.
+    {
+        struct NamedCc { int cc; const char* field; };
+        std::vector<NamedCc> ccs = {
+            {7, "volume (CC7)"},
+            {11, "expression (CC11)"},
+            {s.string.ccNumber, "selector.string.cc"},
+            {s.fret.ccNumber, "selector.fret.cc"},
+        };
+        if (p.midi.sustainPedal) ccs.push_back({p.midi.sustainCc, "midi.sustainCc"});
+        for (size_t a = 0; a < ccs.size(); ++a)
+            for (size_t b = a + 1; b < ccs.size(); ++b)
+                if (ccs[a].cc == ccs[b].cc)
+                    err("midi.ccCollision",
+                        std::string("CC ") + std::to_string(ccs[a].cc) +
+                            " is used by both " + ccs[a].field + " and " + ccs[b].field);
+    }
     if (s.selectionTimeoutMs < 5 || s.selectionTimeoutMs > 2000)
         err("selector.timeout", "Selection timeout must be 5..2000 ms");
     if (s.queueDepth < 16 || s.queueDepth > 256)

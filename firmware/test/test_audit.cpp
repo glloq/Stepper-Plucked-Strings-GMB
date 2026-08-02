@@ -52,6 +52,44 @@ TEST(validator_rejects_zero_microsteps) {
     CHECK(!ProfileValidator::isActivatable(p));
 }
 
+TEST(validator_requires_finger_servo_for_fretted_string) {
+    Profile p = uke();               // all four strings fretted, with finger servos
+    CHECK(ProfileValidator::isActivatable(p));
+    // Remove the finger servo of string 0: a fretted string without a finger is
+    // rejected (would pluck a wrong pitch).
+    for (auto& sv : p.servos)
+        if (sv.function == "finger" && sv.stringIndex == 0) sv.enabled = false;
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
+TEST(validator_rejects_unknown_board) {
+    Profile p = uke();
+    p.boardIdentifier = "totally-unknown-board";
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
+TEST(validator_rejects_bad_homing_params) {
+    Profile neg = uke();
+    neg.homing[0].offsetMm = -1.0;
+    CHECK(!ProfileValidator::isActivatable(neg));
+
+    Profile fast = uke();
+    fast.homing[0].fastSpeedMmS = fast.strings[0].maxSpeedMmS + 100.0;  // > axis max
+    CHECK(!ProfileValidator::isActivatable(fast));
+}
+
+TEST(validator_rejects_cc_collisions) {
+    // String-select CC colliding with volume (CC7) is rejected.
+    Profile v = uke();
+    v.selector.string.ccNumber = 7;
+    CHECK(!ProfileValidator::isActivatable(v));
+    // Sustain CC colliding with the fret CC (when sustain is enabled) is rejected.
+    Profile s = uke();
+    s.midi.sustainPedal = true;
+    s.midi.sustainCc = s.selector.fret.ccNumber;
+    CHECK(!ProfileValidator::isActivatable(s));
+}
+
 TEST(validator_rejects_invalid_transmission_params) {
     // Belt with zero teeth -> reject (would silently fall back to custom ratio).
     Profile belt = uke();

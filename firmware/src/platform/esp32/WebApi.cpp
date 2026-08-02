@@ -184,20 +184,25 @@ bool WebApi::authOk(AsyncWebServerRequest* req) {
 void WebApi::registerRoutes() {
     // ---- GET /api/status ----
     server_->on("/api/status", HTTP_GET, [this](AsyncWebServerRequest* req) {
-        JsonDocument doc;
-        { WebStateLock lk(ctx_); fillStatus(doc); }
-        sendJson(req, doc);
+        // Serve the immutable snapshot produced by loop(); never read live state
+        // from the async web task.
+        std::string s;
+        { WebStateLock lk(ctx_); s = cachedStatus_; }
+        req->send(200, "application/json", String(s.c_str()));
     });
 
     // ---- POST /api/reset (recover from panic / E-stop, then re-home) ----
     server_->on("/api/reset", HTTP_POST, [this](AsyncWebServerRequest* req) {
         if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized";
                             sendJson(req, d, 401); return; }
-        bool ok = ctx_.onReset && ctx_.onReset();
+        bool queued = ctx_.onReset && ctx_.onReset();
         JsonDocument doc;
-        doc["ok"] = ok;
-        if (!ok) doc["error"] = "reset refused (E-stop/LIMIT active or invalid config)";
-        sendJson(req, doc, ok ? 200 : 409);
+        doc["ok"] = queued;
+        doc["accepted"] = queued;
+        // The reset is executed by loop(); it may still be refused there (E-stop /
+        // LIMIT active). Poll /api/status for the outcome.
+        doc["note"] = queued ? "reset queued; watch /api/status" : "command queue full";
+        sendJson(req, doc, queued ? 202 : 503);
     });
 
     // ---- GET /api/board/{id} ----
@@ -267,6 +272,7 @@ void WebApi::registerRoutes() {
         if (ctx_.sysex) {
             const CapabilitySnapshot& s = ctx_.sysex->snapshot();
             doc["revision"] = s.revision;
+            doc["valid"] = s.valid;  // false => no playable string (degraded to nil)
             doc["noteMin"] = s.capabilities.noteMin;
             doc["noteMax"] = s.capabilities.noteMax;
             doc["polyphony"] = s.capabilities.polyphony;
@@ -355,9 +361,14 @@ void WebApi::registerRoutes() {
                 sendJson(req, doc, 422);  // real error, not masked as success
                 return;
             }
-            bool applied = ctx_.onActivateProfile && ctx_.onActivateProfile(p);
-            doc["ok"] = applied;
-            sendJson(req, doc, applied ? 200 : 409);
+            // Validated above; the actual activation runs in loop() (motor stop,
+            // reconfigure, re-home). Report ACCEPTED, not "done".
+            bool queued = ctx_.onActivateProfile && ctx_.onActivateProfile(p);
+            doc["ok"] = queued;
+            doc["accepted"] = queued;
+            doc["note"] = queued ? "activation queued; watch /api/status"
+                                 : "command queue full";
+            sendJson(req, doc, queued ? 202 : 503);
         });
     putProfile->setMethod(HTTP_PUT);
     server_->addHandler(putProfile);
@@ -380,6 +391,10 @@ void WebApi::registerRoutes() {
             JsonDocument doc;
             int slot = body["slot"] | -1;
             Profile p;
+            // Serialise storage access and the live-profile copy under the state
+            // lock so concurrent save/load/delete can't corrupt the temp/.bak files
+            // and the *ctx_.profile read can't race a reload in loop().
+            WebStateLock lk(ctx_);
             bool parsed = body["profile"].is<JsonObject>()
                               ? ProfileStorage::fromJson(body["profile"], p)
                               : (ctx_.profile ? (p = *ctx_.profile, true) : false);
@@ -404,15 +419,21 @@ void WebApi::registerRoutes() {
             JsonDocument doc;
             int slot = body["slot"] | -1;
             Profile p;
-            if (slot < 0 || !ctx_.storage || !ctx_.storage->load(slot, p)) {
+            bool loaded;
+            { WebStateLock lk(ctx_);  // serialise with other storage operations
+              loaded = slot >= 0 && ctx_.storage && ctx_.storage->load(slot, p); }
+            if (!loaded) {
                 doc["ok"] = false;
                 doc["error"] = "slot not found";
                 sendJson(req, doc, 404);
                 return;
             }
-            bool applied = ctx_.onActivateProfile && ctx_.onActivateProfile(p);
-            doc["ok"] = applied;
-            sendJson(req, doc, applied ? 200 : 422);
+            bool queued = ctx_.onActivateProfile && ctx_.onActivateProfile(p);
+            doc["ok"] = queued;
+            doc["accepted"] = queued;
+            doc["note"] = queued ? "activation queued; watch /api/status"
+                                 : "invalid profile or queue full";
+            sendJson(req, doc, queued ? 202 : 422);
         });
     loadProfile->setMethod(HTTP_POST);
     server_->addHandler(loadProfile);
@@ -423,7 +444,10 @@ void WebApi::registerRoutes() {
         "/api/profiles/read", [this](AsyncWebServerRequest* req, JsonVariant& body) {
             int slot = body["slot"] | -1;
             Profile p;
-            if (slot < 0 || !ctx_.storage || !ctx_.storage->load(slot, p)) {
+            bool loaded;
+            { WebStateLock lk(ctx_);  // serialise with other storage operations
+              loaded = slot >= 0 && ctx_.storage && ctx_.storage->load(slot, p); }
+            if (!loaded) {
                 JsonDocument err;
                 err["ok"] = false;
                 err["error"] = "slot not found";
@@ -443,6 +467,7 @@ void WebApi::registerRoutes() {
             if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
             JsonDocument doc;
             int slot = body["slot"] | -1;
+            WebStateLock lk(ctx_);  // serialise with other storage operations
             bool ok = slot >= 0 && ctx_.storage && ctx_.storage->remove(slot);
             doc["ok"] = ok;
             sendJson(req, doc, ok ? 200 : 400);
@@ -455,12 +480,14 @@ void WebApi::registerRoutes() {
         "/api/test/note", [this](AsyncWebServerRequest* req, JsonVariant& body) {
             if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
             JsonDocument doc;
-            bool ok = ctx_.onTestNote &&
+            bool queued = ctx_.onTestNote &&
                       ctx_.onTestNote(body["channel"] | 0, body["note"] | 60,
                                       body["velocity"] | 100, body["durationMs"] | 500);
-            doc["ok"] = ok;
-            if (!ok) doc["error"] = "instrument not ready (homing) or unavailable";
-            sendJson(req, doc, ok ? 200 : 409);
+            doc["ok"] = queued;
+            doc["accepted"] = queued;
+            // Played by loop() only if Ready; watch /api/status for the result.
+            doc["note"] = queued ? "test note queued" : "command queue full";
+            sendJson(req, doc, queued ? 202 : 503);
         });
     testNote->setMethod(HTTP_POST);
     server_->addHandler(testNote);
@@ -482,8 +509,9 @@ void WebApi::registerRoutes() {
             bool active = body["active"] | true;
             bool queued = ctx_.onTestServo && ctx_.onTestServo(idx, active);
             doc["ok"] = queued;
-            if (!queued) doc["error"] = "busy or unavailable";
-            sendJson(req, doc, queued ? 200 : 503);
+            doc["accepted"] = queued;
+            doc["note"] = queued ? "servo test queued" : "command queue full";
+            sendJson(req, doc, queued ? 202 : 503);
         });
     testServo->setMethod(HTTP_POST);
     server_->addHandler(testServo);
@@ -568,7 +596,11 @@ void WebApi::registerRoutes() {
             std::vector<uint8_t> in;
             for (JsonVariant v : body["bytes"].as<JsonArray>())
                 in.push_back(static_cast<uint8_t>(v.as<int>() & 0xFF));
-            auto out = ctx_.sysex->handleMessage(in.data(), in.size(), millis());
+            // Serialise with loop()'s UDP SysEx handling: the service shares a rate
+            // limiter and snapshot that are not internally synchronised.
+            std::vector<uint8_t> out;
+            { WebStateLock lk(ctx_);
+              out = ctx_.sysex->handleMessage(in.data(), in.size(), millis()); }
             doc["ok"] = true;
             JsonArray resp = doc["response"].to<JsonArray>();
             for (uint8_t b : out) resp.add(b);
@@ -578,13 +610,25 @@ void WebApi::registerRoutes() {
     server_->addHandler(sysexReq);
 }
 
-void WebApi::broadcastStatus() {
-    if (statusWs_.count() == 0) return;
+// Built by loop() (the state owner); serialised once and cached under the state
+// lock so the async web task only ever reads the immutable copy.
+void WebApi::refreshStatus() {
     JsonDocument doc;
-    fillStatus(doc);  // same DTO as GET /api/status
+    fillStatus(doc);
     String out;
     serializeJson(doc, out);
-    statusWs_.textAll(out);
+    if (ctx_.lockState) ctx_.lockState();
+    cachedStatus_ = std::string(out.c_str());
+    if (ctx_.unlockState) ctx_.unlockState();
+}
+
+void WebApi::broadcastStatus() {
+    if (statusWs_.count() == 0) return;
+    std::string s;
+    if (ctx_.lockState) ctx_.lockState();
+    s = cachedStatus_;
+    if (ctx_.unlockState) ctx_.unlockState();
+    statusWs_.textAll(String(s.c_str()));
 }
 
 void WebApi::broadcastMidi(const MidiEvent& e) {
@@ -604,6 +648,7 @@ void WebApi::broadcastMidi(const MidiEvent& e) {
 #else  // non-Arduino: no-op so the file is analysable off-target.
 
 void WebApi::begin(const WebContext& ctx, uint16_t) { ctx_ = ctx; }
+void WebApi::refreshStatus() {}
 void WebApi::broadcastStatus() {}
 
 #endif
