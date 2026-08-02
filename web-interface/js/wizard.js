@@ -16,6 +16,8 @@
     'Servos', 'Notes', 'Test', 'Validation'
   ];
   var step = 0;
+  var board = null;              // board profile (for GPIO capability filtering)
+  var motorPos = {};            // per-string mock motor position (fret editor)
 
   var TUNINGS = {
     ukulele: { notes: [67, 60, 64, 69], maxFret: 12 },       // G C E A
@@ -28,6 +30,13 @@
   var TYPE_ID = { ukulele: 0x04, guitar: 0x04, bass: 0x05, mandolin: 0x04, banjo: 0x04 };
 
   function render(host) {
+    // The Homing/Servos steps filter free GPIOs, so make sure the board profile
+    // is loaded (mirrors pins.js). Cached after the first fetch.
+    if (!board) {
+      GMB.api.getBoard(GMB.state.profile.board.profile).then(function (b) { board = b; GMB.render(); });
+      host.appendChild(h('div.card', 'Loading board profile…'));
+      return;
+    }
     host.appendChild(h('div.card.wizard-card', [
       h('div.stepper', STEPS.map(function (label, i) {
         return h('button.step' + (i === step ? '.active' : '') + (i < step ? '.done' : ''),
@@ -215,12 +224,81 @@
   }
   GMB.stepsPerMm = stepsPerMm;
 
-  // ---- Step 5: Homing -------------------------------------------------------
+  // ---- Shared GPIO / servo helpers (Homing + Servos steps) ------------------
+  // Reuses the same capability filtering as pins.js: reserved/USB pins are never
+  // offered, caution pins only in Advanced, and anything already used by a
+  // stepper signal or another servo is excluded.
+  function pinSignalGpio(signal) {
+    var a = GMB.state.profile.pins.filter(function (x) { return x.signal === signal; })[0];
+    return a ? a.gpio : -1;
+  }
+  function setPinSignal(signal, kind, gpio) {
+    var pins = GMB.state.profile.pins;
+    var a = pins.filter(function (x) { return x.signal === signal; })[0];
+    if (gpio < 0 && kind === 'limit') {                 // optional signal: drop when cleared
+      if (a) pins.splice(pins.indexOf(a), 1);
+      GMB.markDirty();
+      return;
+    }
+    if (!a) { a = { signal: signal, kind: kind, gpio: -1 }; pins.push(a); }
+    a.gpio = gpio; a.kind = kind;
+    GMB.markDirty();
+  }
+  // Map of GPIO -> owner label, excluding one signal or one servo being edited.
+  function usedGpios(opts) {
+    opts = opts || {};
+    var m = {};
+    GMB.state.profile.pins.forEach(function (a) {
+      if (a.gpio >= 0 && a.signal !== opts.exceptSignal) m[a.gpio] = 'signal ' + a.signal;
+    });
+    (GMB.state.profile.servos || []).forEach(function (sv) {
+      if (sv === opts.exceptServo) return;
+      if (sv.source === 'gpio' && sv.gpio >= 0) m[sv.gpio] = 'servo ' + (sv.function || '');
+    });
+    return m;
+  }
+  function gpioCandidates(kind, used) {
+    var reserveUsb = GMB.state.profile.board.reserveUsb;
+    var wantKind = GMB.SIGNAL_KIND[kind] || 'generic';
+    return board.pins.filter(function (cap) {
+      if (used[cap.gpio]) return false;
+      if (cap.reserved || cap.preference === 'reserved') return false;
+      if (cap.usb && reserveUsb) return false;
+      if (cap.preference === 'caution' && !GMB.isAdvanced()) return false;
+      return GMB.pinSupports(cap, wantKind);
+    });
+  }
+  // A <select> of compatible free GPIOs; keeps the current pin visible even if
+  // it is a caution pin so an advanced choice survives a mode switch.
+  function gpioSelect(kind, curGpio, used, onChange) {
+    var sel = h('select');
+    sel.appendChild(h('option', { value: -1, selected: curGpio < 0 }, '— unassigned —'));
+    var seen = {};
+    gpioCandidates(kind, used).forEach(function (cap) {
+      seen[cap.gpio] = true;
+      sel.appendChild(h('option', { value: cap.gpio, selected: cap.gpio === curGpio },
+        'GPIO' + cap.gpio + (cap.preference === 'caution' ? ' (caution)' : '')));
+    });
+    if (curGpio >= 0 && !seen[curGpio]) {
+      sel.appendChild(h('option', { value: curGpio, selected: true }, 'GPIO' + curGpio + ' (current)'));
+    }
+    sel.addEventListener('change', function () { onChange(Number(sel.value)); });
+    return sel;
+  }
+
+  // ---- Step 5: Homing & endstops -------------------------------------------
   function stepHoming(body) {
-    body.appendChild(h('h3', 'Homing per axis'));
+    body.appendChild(h('h3', 'Homing & endstops per string'));
+    body.appendChild(h('p.muted', 'Each string homes on its own HOME switch. Pick the GPIO and the homing behaviour; a LIMIT switch is optional (Advanced).'));
     GMB.state.profile.strings.forEach(function (s, i) {
       var hm = s.homing;
+      var homeSignal = 'HOME' + (i + 1), limitSignal = 'LIMIT' + (i + 1);
+      var homeGpio = pinSignalGpio(homeSignal), limitGpio = pinSignalGpio(limitSignal);
       var fields = [
+        GMB.field('HOME sensor GPIO',
+          gpioSelect('home', homeGpio, usedGpios({ exceptSignal: homeSignal }),
+            function (g) { setPinSignal(homeSignal, 'home', g); drawStep(); }),
+          'Endstop that defines the zero.'),
         GMB.field('Sensor active level', GMB.input(hm, 'sensorActiveHigh', {
           type: 'select', options: [{ value: true, label: 'Active high' }, { value: false, label: 'Active low' }],
           coerce: function (v) { return v === 'true' || v === true; }
@@ -237,89 +315,309 @@
           GMB.field('Backoff (mm)', GMB.input(hm, 'backoffMm', { type: 'number' })),
           GMB.field('Offset after zero (mm)', GMB.input(hm, 'offsetMm', { type: 'number' })),
           GMB.field('Timeout (ms)', GMB.input(hm, 'timeoutMs', { type: 'number' })),
-          GMB.field('Max search (mm)', GMB.input(hm, 'maxSearchMm', { type: 'number' }))
+          GMB.field('Max search (mm)', GMB.input(hm, 'maxSearchMm', { type: 'number' })),
+          GMB.field('LIMIT switch GPIO (optional)',
+            gpioSelect('limit', limitGpio, usedGpios({ exceptSignal: limitSignal }),
+              function (g) { setPinSignal(limitSignal, 'limit', g); drawStep(); }),
+            'Optional end-of-travel safety switch.')
         ]);
       }
+      var readout = h('div.endstop-readout', h('span.muted', 'Press “Test endstop” to read the live level.'));
       body.appendChild(h('div.substring', [
-        h('div.substring-head', [h('strong', 'String ' + (i + 1) + ' homing')]),
-        h('div.form-grid', fields)
+        h('div.substring-head', [h('strong', 'String ' + (i + 1) + ' homing'),
+          h('span.pill.mini', GMB.noteName(s.openNote)),
+          homeGpio < 0 ? h('span.pill.mini.error', 'no HOME pin') : h('span.pill.mini.ok', 'HOME GPIO' + homeGpio)]),
+        h('div.form-grid', fields),
+        h('div.toolbar', [GMB.button('Test endstop', function () { testEndstop(i, s, readout); }, 'ghost')]),
+        readout
       ]));
     });
-    body.appendChild(h('div.toolbar', [GMB.button('Start homing (test)', function () {
+    body.appendChild(h('div.toolbar', [GMB.button('Start homing (test all axes)', function () {
       GMB.api.testNote({ homing: true, string: 0, fret: 0, stringCc: 20, fretCc: 21, note: 60, velocity: 1, channel: 0 })
         .then(function () { GMB.toast('Homing command sent to all axes.', 'ok'); });
     }, 'primary')]));
   }
 
-  // ---- Step 6: Servos -------------------------------------------------------
-  function stepServos(body) {
-    body.appendChild(h('h3', 'Servo calibration'));
-    var p = GMB.state.profile;
-    p.servos.forEach(function (sv, i) {
-      var fields = [
-        GMB.field('Enabled', GMB.input(sv, 'enabled', { type: 'checkbox' })),
-        GMB.field('Function', GMB.input(sv, 'function', {
-          type: 'select', options: ['finger', 'pluck', 'damper', 'aux']
-        })),
-        GMB.field('PCA9685 channel', GMB.input(sv, 'channel', { type: 'number', min: 0, max: 15 })),
-        GMB.field('Rest (µs)', GMB.input(sv, 'restUs', { type: 'number' })),
-        GMB.field('Active (µs)', GMB.input(sv, 'activeUs', { type: 'number' }))
-      ];
-      if (GMB.isAdvanced()) {
-        fields = fields.concat([
-          GMB.field('Pulse min (µs)', GMB.input(sv, 'pulseMinUs', { type: 'number' })),
-          GMB.field('Pulse max (µs)', GMB.input(sv, 'pulseMaxUs', { type: 'number' })),
-          GMB.field('Inverted', GMB.input(sv, 'inverted', { type: 'checkbox' })),
-          GMB.field('Travel (ms)', GMB.input(sv, 'travelMs', { type: 'number' })),
-          GMB.field('Settle (ms)', GMB.input(sv, 'settleMs', { type: 'number' })),
-          GMB.field('Disable at rest', GMB.input(sv, 'disableAtRest', { type: 'checkbox' }))
-        ]);
-      }
-      body.appendChild(h('div.substring', [
-        h('div.substring-head', [h('strong', 'Servo ' + (i + 1) + ' — ' + sv.function),
-          h('span.muted', 'channel ' + sv.channel)]),
-        h('div.form-grid', fields)
-      ]));
-    });
-    body.appendChild(h('div.toolbar', [
-      GMB.button('Add servo', function () {
-        p.servos.push({ enabled: true, channel: p.servos.length, function: 'finger', pulseMinUs: 500,
-          pulseMaxUs: 2500, restUs: 1000, activeUs: 1800, inverted: false, travelMs: 120, settleMs: 30, disableAtRest: true });
-        GMB.markDirty(); drawStep();
-      }, 'ghost')
-    ]));
+  function testEndstop(i, s, readout) {
+    var homeGpio = pinSignalGpio('HOME' + (i + 1)), limitGpio = pinSignalGpio('LIMIT' + (i + 1));
+    GMB.api.testEndstop({ string: i, homeGpio: homeGpio, limitGpio: limitGpio, sensorActiveHigh: s.homing.sensorActiveHigh })
+      .then(function (res) {
+        readout.innerHTML = '';
+        if (res.home && res.home.unassigned) {
+          readout.appendChild(h('span.pill.mini.error', 'HOME switch has no GPIO assigned.'));
+        } else {
+          readout.appendChild(endstopLed('HOME', res.home));
+        }
+        if (res.limit) readout.appendChild(endstopLed('LIMIT', res.limit));
+      });
+  }
+  function endstopLed(name, r) {
+    return h('div.endstop-line', [
+      h('span.leddot' + (r.active ? '.on' : '')),
+      h('span.endstop-name', name + ' GPIO' + r.gpio),
+      h('span.pill.mini' + (r.active ? '.ok' : '.muted'), r.level + (r.active ? ' · active' : ' · idle'))
+    ]);
   }
 
-  // ---- Step 7: Notes --------------------------------------------------------
+  // ---- Step 6: Servos per string -------------------------------------------
+  var ROLE_LABEL = {
+    finger: 'Finger (doigt)', pluck: 'Pluck (médiator)', strum: 'Strum (grattage)',
+    damper: 'Damper (étouffoir)', sharedStrum: 'Shared strum', sharedDamper: 'Shared damper', aux: 'Auxiliary'
+  };
+  function roleLabel(fn) { return ROLE_LABEL[fn] || fn; }
+
+  function stepServos(body) {
+    body.appendChild(h('h3', 'Servos per string'));
+    body.appendChild(h('p.muted', 'Add the servos each string uses. Every servo is driven either by a PCA9685 channel or directly from a free ESP32 GPIO — mix them freely, or use no PCA at all.'));
+    body.appendChild(channelMap());
+    var p = GMB.state.profile;
+    for (var i = 0; i < p.instrument.stringCount; i++) body.appendChild(stringServoSection(i));
+    if (GMB.isAdvanced()) body.appendChild(sharedServoSection());
+  }
+
+  // Compact PCA channel availability map; duplicates are flagged in red.
+  function channelMap() {
+    var seen = {}, dup = {}, boardsUsed = {};
+    (GMB.state.profile.servos || []).forEach(function (sv) {
+      if (!sv.enabled || sv.source !== 'pca') return;
+      var key = sv.pcaBoard + ':' + sv.channel;
+      boardsUsed[sv.pcaBoard] = true;
+      if (seen[key]) dup[key] = true; else seen[key] = sv;
+    });
+    var boards = Object.keys(boardsUsed).map(Number).sort(function (a, b) { return a - b; });
+    if (!boards.length) {
+      return h('div.note-box', [h('strong', 'No PCA9685 channel in use'),
+        ' — every servo is on a direct GPIO (or none added yet).']);
+    }
+    return h('div.chan-map', boards.map(function (b) {
+      var chips = [];
+      for (var c = 0; c < 16; c++) {
+        var key = b + ':' + c;
+        var cls = dup[key] ? 'dup' : (seen[key] ? 'used' : 'free');
+        chips.push(h('span.chan-chip.' + cls, { title: seen[key] ? roleLabel(seen[key].function) : 'free' }, String(c)));
+      }
+      return h('div.chan-row', [
+        h('span.chan-board', 'Board ' + b + ' (0x' + (0x40 + b).toString(16) + ')'),
+        h('div.chan-chips', chips)
+      ]);
+    }));
+  }
+
+  function stringServoSection(i) {
+    var p = GMB.state.profile, s = p.strings[i];
+    var servos = p.servos.filter(function (sv) { return sv.stringIndex === i; });
+    return h('div.substring', [
+      h('div.substring-head', [h('strong', 'String ' + (i + 1)), h('span.pill.mini', GMB.noteName(s.openNote)),
+        h('span.muted', servos.length + ' servo' + (servos.length === 1 ? '' : 's'))]),
+      servos.length ? h('div.servo-list', servos.map(servoRow)) : h('p.muted', 'No servo yet — add one below.'),
+      h('div.toolbar.wrap', [
+        GMB.button('+ Finger (doigt)', function () { addServo('finger', i); }, 'ghost'),
+        GMB.button('+ Strum (grattage)', function () { addServo('strum', i); }, 'ghost'),
+        GMB.button('+ Damper (étouffoir)', function () { addServo('damper', i); }, 'ghost'),
+        GMB.button('+ Pluck (médiator)', function () { addServo('pluck', i); }, 'ghost')
+      ])
+    ]);
+  }
+
+  function sharedServoSection() {
+    var p = GMB.state.profile;
+    var servos = p.servos.filter(function (sv) { return sv.stringIndex === -1; });
+    return h('div.substring', [
+      h('div.substring-head', [h('strong', 'Shared / auxiliary servos'), h('span.muted', 'stringIndex −1 (span several strings)')]),
+      servos.length ? h('div.servo-list', servos.map(servoRow)) : h('p.muted', 'No shared servo.'),
+      h('div.toolbar.wrap', [
+        GMB.button('+ Shared strum', function () { addServo('sharedStrum', -1); }, 'ghost'),
+        GMB.button('+ Auxiliary', function () { addServo('aux', -1); }, 'ghost')
+      ])
+    ]);
+  }
+
+  function nextFreeChannel(bd) {
+    var used = {};
+    GMB.state.profile.servos.forEach(function (sv) {
+      if (sv.source === 'pca' && sv.pcaBoard === bd) used[sv.channel] = true;
+    });
+    for (var c = 0; c < 16; c++) if (!used[c]) return c;
+    return 0;
+  }
+  function addServo(fn, stringIndex) {
+    var opts = { source: 'pca', pcaBoard: 0, channel: nextFreeChannel(0) };
+    if (fn === 'pluck' || fn === 'strum' || fn === 'sharedStrum') { opts.activeUs = 1700; opts.travelMs = 90; opts.settleMs = 20; }
+    if (fn === 'damper' || fn === 'sharedDamper') { opts.activeUs = 1600; }
+    GMB.state.profile.servos.push(GMB.servoDefaults(fn, stringIndex, opts));
+    GMB.markDirty(); drawStep();
+  }
+  function removeServo(sv) {
+    var arr = GMB.state.profile.servos, idx = arr.indexOf(sv);
+    if (idx >= 0) arr.splice(idx, 1);
+    GMB.markDirty(); drawStep();
+  }
+  function onSourceChange(sv, v) {
+    if (v === 'gpio') { if (sv.gpio === undefined) sv.gpio = -1; }
+    else { sv.gpio = -1; sv.channel = nextFreeChannel(sv.pcaBoard || 0); }
+    GMB.markDirty(); drawStep();
+  }
+  function pcaDuplicate(sv) {
+    if (sv.source !== 'pca' || !sv.enabled) return false;
+    return GMB.state.profile.servos.some(function (o) {
+      return o !== sv && o.source === 'pca' && o.enabled && o.pcaBoard === sv.pcaBoard && o.channel === sv.channel;
+    });
+  }
+  function testServo(sv, to) {
+    GMB.api.testServo({
+      function: sv.function, source: sv.source, pcaBoard: sv.pcaBoard, channel: sv.channel,
+      gpio: sv.gpio, to: to, restUs: sv.restUs, activeUs: sv.activeUs
+    }).then(function (res) { GMB.toast(res.message || 'Servo tested.', 'ok'); });
+  }
+
+  function servoRow(sv) {
+    var srcFields;
+    if (sv.source === 'gpio') {
+      srcFields = GMB.field('Direct GPIO',
+        gpioSelect('servo', sv.gpio, usedGpios({ exceptServo: sv }),
+          function (g) { sv.gpio = g; GMB.markDirty(); drawStep(); }),
+        'Free ESP32 pin (50 Hz LEDC PWM).');
+    } else {
+      srcFields = [
+        GMB.field('PCA board', GMB.input(sv, 'pcaBoard', {
+          type: 'select', coerce: Number, onChange: function () { onSourceChange(sv, 'pca'); },
+          options: [{ value: 0, label: 'Board 0 (0x40)' }, { value: 1, label: 'Board 1 (0x41)' },
+            { value: 2, label: 'Board 2 (0x42)' }, { value: 3, label: 'Board 3 (0x43)' }]
+        })),
+        GMB.field('Channel (0–15)', GMB.input(sv, 'channel', {
+          type: 'number', min: 0, max: 15, onChange: function () { drawStep(); }
+        }), pcaDuplicate(sv) ? '⚠ board + channel already used' : 'PCA9685 output channel')
+      ];
+    }
+    var dup = pcaDuplicate(sv);
+    var head = h('div.servo-head', [
+      h('strong', roleLabel(sv.function)),
+      h('span.pill.mini', sv.source === 'gpio'
+        ? ('GPIO' + (sv.gpio >= 0 ? sv.gpio : '—'))
+        : ('B' + sv.pcaBoard + ' · ch' + sv.channel)),
+      sv.enabled ? null : h('span.pill.mini.muted', 'disabled'),
+      dup ? h('span.pill.mini.error', 'duplicate') : null
+    ]);
+    var fields = [
+      GMB.field('Enabled', GMB.input(sv, 'enabled', { type: 'checkbox', onChange: function () { drawStep(); } })),
+      GMB.field('Signal source', GMB.input(sv, 'source', {
+        type: 'select', options: [{ value: 'pca', label: 'PCA9685' }, { value: 'gpio', label: 'Direct GPIO' }],
+        onChange: function (v) { onSourceChange(sv, v); }
+      }))
+    ];
+    fields = fields.concat(Array.isArray(srcFields) ? srcFields : [srcFields]);
+    fields = fields.concat([
+      GMB.field('Rest (µs)', GMB.input(sv, 'restUs', { type: 'number' })),
+      GMB.field('Active (µs)', GMB.input(sv, 'activeUs', { type: 'number' }))
+    ]);
+    if (GMB.isAdvanced()) {
+      fields = fields.concat([
+        GMB.field('Function', GMB.input(sv, 'function', {
+          type: 'select', options: ['finger', 'pluck', 'strum', 'damper', 'sharedStrum', 'sharedDamper', 'aux'],
+          onChange: function () { drawStep(); }
+        })),
+        GMB.field('Pulse min (µs)', GMB.input(sv, 'pulseMinUs', { type: 'number' })),
+        GMB.field('Pulse max (µs)', GMB.input(sv, 'pulseMaxUs', { type: 'number' })),
+        GMB.field('Inverted', GMB.input(sv, 'inverted', { type: 'checkbox' })),
+        GMB.field('Travel (ms)', GMB.input(sv, 'travelMs', { type: 'number' })),
+        GMB.field('Settle (ms)', GMB.input(sv, 'settleMs', { type: 'number' })),
+        GMB.field('Disable at rest', GMB.input(sv, 'disableAtRest', { type: 'checkbox' }))
+      ]);
+    }
+    return h('div.servo-row', [
+      head,
+      h('div.form-grid', fields),
+      h('div.toolbar', [
+        GMB.button('Test rest', function () { testServo(sv, 'rest'); }, 'ghost'),
+        GMB.button('Test active', function () { testServo(sv, 'active'); }, 'ghost'),
+        h('span.spacer'),
+        GMB.button('Remove', function () { removeServo(sv); }, 'danger-ghost')
+      ])
+    ]);
+  }
+
+  // ---- Step 7: Notes / fret position editor --------------------------------
   function stepNotes(body) {
-    body.appendChild(h('h3', 'Note calibration'));
-    body.appendChild(h('p.muted', 'Fret positions can be computed theoretically or calibrated by hand (the calibrated table wins).'));
+    body.appendChild(h('h3', 'Fret positions per string'));
+    body.appendChild(h('p.muted', 'Auto-fill the theoretical positions, then fine-tune any fret by hand. A calibrated value always overrides theory in the firmware.'));
     GMB.state.profile.strings.forEach(function (s, i) {
+      var mp = motorPos[i] !== undefined ? motorPos[i] : 0;
       body.appendChild(h('div.substring', [
         h('div.substring-head', [h('strong', 'String ' + (i + 1)),
           GMB.field('Open note (MIDI)', GMB.input(s, 'openNote', { type: 'number', min: 0, max: 127, onChange: function () { drawStep(); } })),
-          h('span.pill.mini', GMB.noteName(s.openNote))]),
-        fretTable(s)
+          GMB.field('Max frets', GMB.input(s, 'maxFret', { type: 'number', min: 0, max: 30, onChange: function () { drawStep(); } })),
+          h('span.pill.mini', GMB.noteName(s.openNote)),
+          h('span.motor-pos', 'Motor: ' + mp.toFixed(2) + ' mm')]),
+        h('div.toolbar.wrap', [
+          GMB.button('Remplir automatiquement (théorique)', function () { autoFill(s); }, 'primary'),
+          GMB.button('Effacer la calibration', function () { s.calibratedFretMm = []; GMB.markDirty(); drawStep(); }, 'ghost')
+        ]),
+        fretEditor(s, i)
       ]));
     });
   }
 
-  function fretTable(s) {
+  function autoFill(s) {
+    s.calibratedFretMm = [];
+    for (var f = 0; f <= s.maxFret; f++) s.calibratedFretMm[f] = +GMB.fretTheoreticalMm(s, f).toFixed(2);
+    GMB.markDirty(); drawStep();
+  }
+
+  function fretEditor(s, i) {
     var rows = [];
-    for (var f = 0; f <= s.maxFret; f++) {
-      var theo = s.scaleLengthMm * (1 - Math.pow(2, -f / 12)); // cahier des charges 14.2
-      var cal = s.calibratedFretMm[f];
-      rows.push(h('tr', [
-        h('td', String(f)),
-        h('td', GMB.noteName(s.openNote + f)),
-        h('td', theo.toFixed(2)),
-        h('td', cal === undefined || cal === null ? h('span.muted', '—') : cal.toFixed(2))
-      ]));
-    }
-    return h('div.table-wrap', h('table.mini-table', [
-      h('thead', h('tr', [h('th', 'Fret'), h('th', 'Note'), h('th', 'Theoretical mm'), h('th', 'Calibrated mm')])),
+    for (var f = 0; f <= s.maxFret; f++) rows.push(fretRow(s, i, f));
+    return h('div.table-wrap', h('table.mini-table.fret-editor', [
+      h('thead', h('tr', [h('th', 'Fret'), h('th', 'Note'), h('th', 'Theory mm'), h('th', 'Calibrated mm'), h('th', 'Move / save')])),
       h('tbody', rows)
     ]));
+  }
+
+  function fretRow(s, i, f) {
+    var theo = GMB.fretTheoreticalMm(s, f);
+    var cal = s.calibratedFretMm[f];
+    var input = h('input', { type: 'number', step: '0.1', placeholder: theo.toFixed(2),
+      value: (cal === undefined || cal === null) ? '' : cal });
+    input.addEventListener('change', function () {
+      s.calibratedFretMm[f] = input.value === '' ? null : Number(input.value);
+      GMB.markDirty(); drawStep();
+    });
+    function setVal(v) { v = +v.toFixed(2); s.calibratedFretMm[f] = v; input.value = v; GMB.markDirty(); drawStep(); }
+    function nudge(d) {
+      var cur = (s.calibratedFretMm[f] === undefined || s.calibratedFretMm[f] === null) ? +theo.toFixed(2) : s.calibratedFretMm[f];
+      setVal(cur + d);
+    }
+    var calCell = (cal === undefined || cal === null) ? h('span.muted', '—') : h('strong', Number(cal).toFixed(2));
+    return h('tr', [
+      h('td', String(f)),
+      h('td', GMB.noteName(s.openNote + f)),
+      h('td', theo.toFixed(2)),
+      h('td.fret-cal', [
+        h('button.btn.ghost.nudge', { type: 'button', onclick: function () { nudge(-0.5); } }, '−'),
+        input,
+        h('button.btn.ghost.nudge', { type: 'button', onclick: function () { nudge(0.5); } }, '+'),
+        h('span.cal-shown', calCell)
+      ]),
+      h('td', h('div.fret-actions', [
+        GMB.button('Aller à cette frette', function () { jogToFret(s, i, f, theo); }, 'ghost'),
+        GMB.button('Enregistrer la position', function () { saveFret(s, i, f); }, 'primary')
+      ]))
+    ]);
+  }
+
+  // Jog/test: move the (mock) motor to the fret's calibrated-or-theoretical mm.
+  function jogToFret(s, i, f, theo) {
+    var target = (s.calibratedFretMm[f] === undefined || s.calibratedFretMm[f] === null) ? +theo.toFixed(2) : s.calibratedFretMm[f];
+    motorPos[i] = target;
+    GMB.toast('String ' + (i + 1) + ': moved to fret ' + f + ' (' + target.toFixed(2) + ' mm).', 'ok');
+    drawStep();
+  }
+  // Record the current (mock) motor position as this fret's calibrated value.
+  function saveFret(s, i, f) {
+    var pos = motorPos[i] !== undefined ? motorPos[i] : GMB.fretTheoreticalMm(s, f);
+    s.calibratedFretMm[f] = +pos.toFixed(2);
+    GMB.markDirty();
+    GMB.toast('Fret ' + f + ' saved at ' + s.calibratedFretMm[f].toFixed(2) + ' mm.', 'ok');
+    drawStep();
   }
 
   // ---- Step 8: Test ---------------------------------------------------------
@@ -374,6 +672,29 @@
     if (sfs.string.ccNumber > 119 || sfs.fret.ccNumber > 119) out.push('CC numbers must be 0–119 (120–127 are channel-mode messages).');
     if (sfs.selectionTimeoutMs < 5 || sfs.selectionTimeoutMs > 2000) out.push('Selection timeout must be 5–2000 ms.');
     if (sfs.queueDepth < 16) out.push('Selection queue depth must be at least 16.');
+    // Servo wiring (matches CALIBRATION.md §4.0): no duplicate PCA board+channel,
+    // no direct GPIO clashing with a motor signal or another servo, and no
+    // per-string servo pointing at a string that does not exist.
+    var pcaSeen = {}, servoGpioSeen = {}, stepperGpios = {};
+    p.pins.forEach(function (a) { if (a.gpio >= 0) stepperGpios[a.gpio] = a.signal; });
+    (p.servos || []).forEach(function (sv) {
+      if (!sv.enabled) return;
+      var lbl = 'Servo "' + (sv.function || '?') + '"' +
+        (sv.stringIndex >= 0 ? ' (string ' + (sv.stringIndex + 1) + ')' : ' (shared)');
+      if (sv.stringIndex >= p.instrument.stringCount) out.push(lbl + ' targets a string that does not exist.');
+      if (sv.source === 'gpio') {
+        if (sv.gpio < 0) { out.push(lbl + ' has no GPIO assigned.'); return; }
+        if (stepperGpios[sv.gpio]) out.push(lbl + ' uses GPIO' + sv.gpio + ' already used by ' + stepperGpios[sv.gpio] + '.');
+        if (servoGpioSeen[sv.gpio]) out.push(lbl + ' uses GPIO' + sv.gpio + ' already used by ' + servoGpioSeen[sv.gpio] + '.');
+        else servoGpioSeen[sv.gpio] = lbl;
+      } else {
+        if (sv.channel < 0 || sv.channel > 15) out.push(lbl + ' has an invalid PCA channel (0–15).');
+        if (sv.pcaBoard < 0 || sv.pcaBoard > 3) out.push(lbl + ' has an invalid PCA board (0–3).');
+        var key = sv.pcaBoard + ':' + sv.channel;
+        if (pcaSeen[key]) out.push(lbl + ' shares PCA board ' + sv.pcaBoard + ' channel ' + sv.channel + ' with ' + pcaSeen[key] + '.');
+        else pcaSeen[key] = lbl;
+      }
+    });
     return out;
   };
 

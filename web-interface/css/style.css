@@ -258,6 +258,36 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 .big-warn { font-size: 20px; font-weight: 800; color: var(--warn); padding: 10px 0; }
 .problem-list { color: var(--error); }
 
+/* ---- servos per string --------------------------------------------------- */
+.servo-list { display: flex; flex-direction: column; gap: 10px; }
+.servo-row { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.servo-head { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.servo-row .toolbar { margin-top: 10px; }
+
+/* PCA9685 channel availability map. */
+.chan-map { display: flex; flex-direction: column; gap: 8px; background: var(--surface-2); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.chan-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.chan-board { font-size: 12px; font-weight: 600; color: var(--muted); min-width: 132px; }
+.chan-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.chan-chip { width: 22px; height: 22px; display: grid; place-items: center; font-size: 11px; font-weight: 600;
+  border-radius: 5px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); }
+.chan-chip.used { background: var(--recommended-bg); color: var(--recommended); border-color: var(--recommended); font-weight: 700; }
+.chan-chip.dup { background: var(--reserved-bg); color: var(--reserved); border-color: var(--reserved); font-weight: 700; }
+
+/* ---- endstop live readout ------------------------------------------------ */
+.endstop-readout { margin-top: 10px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+.endstop-line { display: flex; gap: 8px; align-items: center; }
+.endstop-name { font-size: 12px; font-weight: 600; }
+
+/* ---- fret position editor ------------------------------------------------ */
+.motor-pos { font-size: 12px; font-weight: 700; color: var(--accent); background: var(--surface); border: 1px solid var(--border); padding: 3px 9px; border-radius: 6px; }
+.fret-editor td { vertical-align: middle; }
+.fret-editor .fret-cal { display: flex; gap: 6px; align-items: center; }
+.fret-editor .fret-cal input { width: 92px; }
+.fret-editor .cal-shown { min-width: 56px; }
+.btn.nudge { padding: 4px 11px; font-size: 16px; line-height: 1; }
+.fret-actions { display: flex; gap: 6px; white-space: nowrap; }
+
 /* ---- monitor / test log -------------------------------------------------- */
 .monitor-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
 .monitor-scroll { max-height: 320px; overflow-y: auto; }
