@@ -121,7 +121,9 @@ void StringFretSelector::noteMaybePrepare(const PendingStringSelection& s) {
     // string/fret is resolved (rejected / fallback) at Note On time, not moved.
     if (s.stringValue >= instrument_.stringCount) return;
     if (s.fretValue > instrument_.maxFret(s.stringValue)) return;
-    justCompleted_.push_back({s.midiChannel, s.stringValue, s.fretValue});
+    // Carry the selection's own expiry so the preparation is released in step with
+    // the selection, not after a fixed unrelated window (audit P1-6).
+    justCompleted_.push_back({s.midiChannel, s.stringValue, s.fretValue, s.expiresAtUs});
 }
 
 bool StringFretSelector::coherent(uint8_t note, uint8_t stringIndex, uint8_t fret,

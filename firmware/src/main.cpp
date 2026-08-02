@@ -91,6 +91,7 @@ struct StringSched {
     uint32_t commandId = 0;
     int fingerIndex = -1;
     uint32_t readySinceMs = 0;  // when this string reached Ready (shared-strum sync)
+    uint32_t dampUntilMs = 0;   // don't move until the damper has acted (replace)
 };
 std::vector<StringSched> g_sched;
 
@@ -633,11 +634,16 @@ void tickString(size_t i, uint32_t nowMs) {
 
     if (sch.commandId != tgt.commandId) {
         // New note replacing a previous one on this string (e.g. the allocator's
-        // ReplaceOldest): explicitly damp the still-vibrating string before moving
-        // it, so it is not dragged to a new fret and re-plucked while ringing.
+        // ReplaceOldest): explicitly damp the still-vibrating string AND wait for
+        // the damper's travel/settle before the carriage moves, so a ringing
+        // string is not dragged to a new fret and re-plucked (audit P1-7).
+        sch.dampUntilMs = nowMs;
         if (sch.phase != StringSched::Idle && sch.phase != StringSched::WaitStopped) {
             int di = g_servos.damperIndex(static_cast<int>(i));
-            if (di >= 0) g_servos.strike(di);
+            if (di >= 0) {
+                g_servos.strike(di);
+                sch.dampUntilMs = nowMs + g_servos.travelMs(di) + g_servos.settleMs(di);
+            }
         }
         // Lift the finger and WAIT for it to travel up before moving the carriage,
         // so the finger never drags along the string (§16).
@@ -650,11 +656,12 @@ void tickString(size_t i, uint32_t nowMs) {
 
     switch (sch.phase) {
         case StringSched::ReleasingFinger:
-            // Start moving only once the finger has had time to lift AND the
-            // carriage has fully stopped (a new note arriving during a cancel
-            // deceleration must not issue a moveTo into a moving motor).
+            // Start moving only once the finger has lifted, the damper (if any) has
+            // acted, AND the carriage has fully stopped (a new note arriving during
+            // a cancel deceleration must not issue a moveTo into a moving motor).
             if ((sch.fingerIndex < 0 ||
                  nowMs - sch.phaseStartMs >= g_servos.travelMs(sch.fingerIndex)) &&
+                static_cast<int32_t>(nowMs - sch.dampUntilMs) >= 0 &&
                 g_steppers.atTarget(i)) {
                 g_steppers.moveToMm(i, tgt.positionMm);
                 sch.phase = StringSched::MovingToFret;
