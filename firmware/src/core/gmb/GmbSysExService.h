@@ -28,6 +28,15 @@ public:
     void setUseV2(bool v) { useV2_ = v; }
     bool useV2() const { return useV2_; }
 
+    // Set a stable per-device identity (e.g. derived from the ESP32 MAC) so two
+    // instruments on the same network are distinguishable. Applied on every
+    // rebuild(). A non-zero id overrides the profile-derived default.
+    void setDeviceId(const uint8_t id[5]) {
+        for (int i = 0; i < 5; ++i) deviceId_[i] = id[i];
+        hasDeviceId_ = true;
+        for (int i = 0; i < 5; ++i) snapshot_.identity.deviceId[i] = id[i];
+    }
+
     // Handle one complete incoming SysEx message. Returns the response bytes, or
     // an empty vector when nothing should be sent (unknown block, malformed,
     // rate-limited, invalid channel).
@@ -44,6 +53,8 @@ public:
 private:
     CapabilitySnapshot snapshot_;
     bool useV2_ = false;
+    bool hasDeviceId_ = false;
+    uint8_t deviceId_[5] = {0, 0, 0, 0, 0};
     uint32_t lastResponseMs_ = 0;
 
     // Token-bucket rate limiter (SysEx spec §20): allows a discovery burst but

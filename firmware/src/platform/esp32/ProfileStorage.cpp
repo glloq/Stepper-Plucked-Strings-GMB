@@ -200,10 +200,10 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
         PinAssignment a;
         a.signal = o["signal"] | "";
         a.gpio = o["gpio"] | -1;
-        // Restore the signal kind so GPIO validation stays strict on import.
-        // Prefer the stored value; otherwise infer it from the signal name.
-        if (o["kind"].is<int>()) a.kind = static_cast<SignalKind>(o["kind"].as<int>());
-        else a.kind = signalKindFromName(a.signal);
+        // The signal kind is ALWAYS derived from the signal name — never trusted
+        // from the JSON. Otherwise a profile could label a "STEP1" pin as Generic
+        // to dodge the strict high-speed-output GPIO validation.
+        a.kind = signalKindFromName(a.signal);
         out.pins.push_back(a);
     }
 
@@ -344,7 +344,12 @@ std::string ProfileStorage::slotPath(int slot) {
 
 #if defined(ARDUINO)
 bool ProfileStorage::begin() {
-    if (!LittleFS.begin(true)) return false;
+    // Try to mount WITHOUT auto-formatting first: a transient mount failure must
+    // not silently wipe every stored profile. Only format if a clean mount is
+    // genuinely impossible (first boot / corrupted FS), which is unavoidable.
+    if (!LittleFS.begin(false)) {
+        if (!LittleFS.begin(true)) return false;  // last resort: format
+    }
     if (!LittleFS.exists("/profiles")) LittleFS.mkdir("/profiles");
     // Recover from an interrupted save: if a slot is missing but its .bak
     // survived, restore it (the crash happened between remove and rename).

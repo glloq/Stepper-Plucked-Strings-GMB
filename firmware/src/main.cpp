@@ -449,11 +449,13 @@ bool doTestNote(uint8_t channel, uint8_t note, uint8_t vel, uint16_t durationMs,
     return true;
 }
 
-// Web servo test: only when armed and only for a real, enabled servo.
+// Web servo test: only when armed and only for a real, enabled servo. Uses
+// press()/release() (not the raw toActive/toRest) so the servo's runtime mode is
+// updated and update() honours disableAtRest correctly.
 bool doTestServo(int index, bool active) {
     if (!g_safety.actuatorsAllowed()) return false;
     if (!g_servos.commandable(index)) return false;
-    if (active) g_servos.toActive(index); else g_servos.toRest(index);
+    if (active) g_servos.press(index); else g_servos.release(index);
     return true;
 }
 
@@ -560,10 +562,26 @@ void tickString(size_t i, uint32_t nowMs) {
         faultRuntimeAxis(i, "LIMIT tripped", nowMs);
         return;
     }
+    // HOME is also a physical extremity. Asserting it while the carriage position
+    // says it is well away from home is a position/reference fault (lost steps,
+    // drift, stuck/inverted sensor) — fault rather than trust a bad coordinate.
+    // Positions legitimately near home (open string / low frets) are not faulted.
+    static constexpr double kHomeMismatchMm = 10.0;
+    if (g_steppers.homeActive(i) && g_steppers.positionMm(i) > kHomeMismatchMm) {
+        faultRuntimeAxis(i, "HOME asserted away from home (position drift)", nowMs);
+        return;
+    }
 
     if (sch.commandId != tgt.commandId) {
-        // New note: lift the finger and WAIT for it to travel up before moving
-        // the carriage, so the finger never drags along the string (§16).
+        // New note replacing a previous one on this string (e.g. the allocator's
+        // ReplaceOldest): explicitly damp the still-vibrating string before moving
+        // it, so it is not dragged to a new fret and re-plucked while ringing.
+        if (sch.phase != StringSched::Idle && sch.phase != StringSched::WaitStopped) {
+            int di = g_servos.damperIndex(static_cast<int>(i));
+            if (di >= 0) g_servos.strike(di);
+        }
+        // Lift the finger and WAIT for it to travel up before moving the carriage,
+        // so the finger never drags along the string (§16).
         sch.commandId = tgt.commandId;
         sch.fingerIndex = g_servos.fingerIndex(static_cast<int>(i));
         if (sch.fingerIndex >= 0) g_servos.release(sch.fingerIndex);
@@ -585,7 +603,9 @@ void tickString(size_t i, uint32_t nowMs) {
             }
             break;
         case StringSched::MovingToFret:
-            if (g_steppers.atTarget(i)) {
+            // Arrived only when the carriage is stopped AND actually at the fret
+            // position (a refused/interrupted move must not be read as "reached").
+            if (g_steppers.reachedTarget(i)) {
                 sc.motionReached();
                 if (sc.openString() || sch.fingerIndex < 0) {
                     sch.phase = StringSched::Ready;  // no finger press for open string
@@ -665,6 +685,14 @@ void setup() {
     if (!g_storage.load(g_storage.startupSlot(), g_profile) ||
         !ProfileValidator::isActivatable(g_profile)) {
         g_profile = Profile::makeDefault("Ukulele", 4, {67, 60, 64, 69}, 12);
+    }
+    // Stable per-device SysEx identity from the ESP32 MAC, so two instruments on
+    // the same network are distinguishable (set before applyProfile's rebuild).
+    {
+        uint64_t mac = ESP.getEfuseMac();
+        uint8_t id[5];
+        for (int i = 0; i < 5; ++i) id[i] = static_cast<uint8_t>((mac >> (8 * i)) & 0x7F);
+        g_sysex.setDeviceId(id);
     }
     applyProfile();  // also resolves the E-stop pin from the profile
     // Answer StringConfig discovery with the richer v2 block (CC bounds, offsets,
@@ -830,7 +858,11 @@ void loop() {
         if (g_phase == AppPhase::Ready) g_instrument.handleEvent(e, nowUs);
     }
     for (auto& sx : g_midi.sysexPackets()) {
-        auto resp = g_sysex.handleMessage(sx.bytes.data(), sx.bytes.size(), nowMs);
+        // Serialise with the Web /api/sysex/request route (shared rate limiter +
+        // snapshot); both take g_stateMutex.
+        std::vector<uint8_t> resp;
+        { StateGuard lock;
+          resp = g_sysex.handleMessage(sx.bytes.data(), sx.bytes.size(), nowMs); }
         if (!resp.empty()) g_midi.reply(sx, resp.data(), resp.size());
     }
     g_midi.clear();

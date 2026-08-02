@@ -272,6 +272,7 @@ void WebApi::registerRoutes() {
         if (ctx_.sysex) {
             const CapabilitySnapshot& s = ctx_.sysex->snapshot();
             doc["revision"] = s.revision;
+            doc["valid"] = s.valid;  // false => no playable string (degraded to nil)
             doc["noteMin"] = s.capabilities.noteMin;
             doc["noteMax"] = s.capabilities.noteMax;
             doc["polyphony"] = s.capabilities.polyphony;
@@ -390,6 +391,10 @@ void WebApi::registerRoutes() {
             JsonDocument doc;
             int slot = body["slot"] | -1;
             Profile p;
+            // Serialise storage access and the live-profile copy under the state
+            // lock so concurrent save/load/delete can't corrupt the temp/.bak files
+            // and the *ctx_.profile read can't race a reload in loop().
+            WebStateLock lk(ctx_);
             bool parsed = body["profile"].is<JsonObject>()
                               ? ProfileStorage::fromJson(body["profile"], p)
                               : (ctx_.profile ? (p = *ctx_.profile, true) : false);
@@ -414,7 +419,10 @@ void WebApi::registerRoutes() {
             JsonDocument doc;
             int slot = body["slot"] | -1;
             Profile p;
-            if (slot < 0 || !ctx_.storage || !ctx_.storage->load(slot, p)) {
+            bool loaded;
+            { WebStateLock lk(ctx_);  // serialise with other storage operations
+              loaded = slot >= 0 && ctx_.storage && ctx_.storage->load(slot, p); }
+            if (!loaded) {
                 doc["ok"] = false;
                 doc["error"] = "slot not found";
                 sendJson(req, doc, 404);
@@ -436,7 +444,10 @@ void WebApi::registerRoutes() {
         "/api/profiles/read", [this](AsyncWebServerRequest* req, JsonVariant& body) {
             int slot = body["slot"] | -1;
             Profile p;
-            if (slot < 0 || !ctx_.storage || !ctx_.storage->load(slot, p)) {
+            bool loaded;
+            { WebStateLock lk(ctx_);  // serialise with other storage operations
+              loaded = slot >= 0 && ctx_.storage && ctx_.storage->load(slot, p); }
+            if (!loaded) {
                 JsonDocument err;
                 err["ok"] = false;
                 err["error"] = "slot not found";
@@ -456,6 +467,7 @@ void WebApi::registerRoutes() {
             if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
             JsonDocument doc;
             int slot = body["slot"] | -1;
+            WebStateLock lk(ctx_);  // serialise with other storage operations
             bool ok = slot >= 0 && ctx_.storage && ctx_.storage->remove(slot);
             doc["ok"] = ok;
             sendJson(req, doc, ok ? 200 : 400);
@@ -584,7 +596,11 @@ void WebApi::registerRoutes() {
             std::vector<uint8_t> in;
             for (JsonVariant v : body["bytes"].as<JsonArray>())
                 in.push_back(static_cast<uint8_t>(v.as<int>() & 0xFF));
-            auto out = ctx_.sysex->handleMessage(in.data(), in.size(), millis());
+            // Serialise with loop()'s UDP SysEx handling: the service shares a rate
+            // limiter and snapshot that are not internally synchronised.
+            std::vector<uint8_t> out;
+            { WebStateLock lk(ctx_);
+              out = ctx_.sysex->handleMessage(in.data(), in.size(), millis()); }
             doc["ok"] = true;
             JsonArray resp = doc["response"].to<JsonArray>();
             for (uint8_t b : out) resp.add(b);

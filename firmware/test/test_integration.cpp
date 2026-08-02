@@ -217,6 +217,23 @@ TEST(controller_cc7_cc11_scale_attack) {
     CHECK(half < full);
 }
 
+// An explicit CC selection that resolves to a FAULTED string must fall back to
+// automatic allocation, not drop the note.
+TEST(controller_explicit_fallback_on_faulted_string) {
+    Profile p = ukulele();
+    p.selector.mode = SelectionMode::Explicit;
+    p.selector.prepareOnCompleteSelection = false;
+    InstrumentController ic;
+    ic.load(p);
+    ic.faultString(2);                       // string index 2 out of service
+    ic.handleEvent(cc(0, 20, 3), 0);         // explicitly select string 3 -> index 2
+    ic.handleEvent(cc(0, 21, 5), 0);         // fret 5 -> note 69
+    ic.handleEvent(noteOn(0, 69, 100), 0);
+    ic.tick(5000);                           // flush the automatic fallback
+    CHECK_EQ(ic.soundingCount(), 1);         // played on a working string, not dropped
+    CHECK(!ic.target(2).active);             // never on the faulted string
+}
+
 // A 4-note chord uses four distinct strings (criterion 14 at ukulele scale).
 TEST(controller_chord) {
     InstrumentController ic;

@@ -210,7 +210,15 @@ void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
     if (e.isNoteOn()) {
         NoteResolution r = selector_.onNoteOn(e, nowUs);
         if (!r.play) return;
-        if (r.source == ResolveSource::Explicit) {
+        // An explicit selection may resolve to a string that has since faulted or
+        // is disabled: rather than dropping the note, fall back to automatic
+        // allocation so a working string can still play it (runtime availability).
+        bool explicitPlayable =
+            r.source == ResolveSource::Explicit &&
+            r.stringIndex < strings_.size() &&
+            strings_[r.stringIndex].state() != StringState::Fault &&
+            strings_[r.stringIndex].state() != StringState::Disabled;
+        if (r.source == ResolveSource::Explicit && explicitPlayable) {
             // Reuse the anticipated move if this string was prepared for this fret;
             // otherwise start a fresh note.
             if (!triggerPreparedNote(r.stringIndex, r.fret, e.channel, e.data1,

@@ -6,6 +6,10 @@ namespace gmb {
 
 void GmbSysExService::rebuild(const Profile& p, int polyphonyOverride) {
     snapshot_ = buildSnapshot(p, polyphonyOverride);
+    // Preserve the stable device identity across rebuilds (buildSnapshot resets
+    // it to the profile default).
+    if (hasDeviceId_)
+        for (int i = 0; i < 5; ++i) snapshot_.identity.deviceId[i] = deviceId_[i];
 }
 
 bool GmbSysExService::allow(uint32_t nowMs) {

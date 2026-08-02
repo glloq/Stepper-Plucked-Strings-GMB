@@ -60,7 +60,10 @@ public:
     void setPositionReference(size_t axis, double mm);
 
     double positionMm(size_t axis) const;
-    bool atTarget(size_t axis) const;
+    bool atTarget(size_t axis) const;   // motor stopped (used for "is it still?")
+    // Stopped AND actually within tolerance of the last commanded position move —
+    // a refused/interrupted move does not count as "arrived at the fret".
+    bool reachedTarget(size_t axis) const;
     bool isRunning(size_t axis) const;  // true while the step engine is moving
     bool homeActive(size_t axis) const;   // normalised active-low reading
     bool homeRawHigh(size_t axis) const;  // raw level (polarity-aware homing)
@@ -84,6 +87,8 @@ private:
         AxisPins pins;
         double stepsPerMm = 80.0;
         long position = 0;  // used by the non-Arduino stub only
+        double cmdTargetMm = 0.0;  // last commanded position-move target
+        bool hasTarget = false;
         bool homeActiveHigh = false;
         bool limitActiveHigh = false;
         bool attachFault = false;  // this enabled axis could not attach a generator
