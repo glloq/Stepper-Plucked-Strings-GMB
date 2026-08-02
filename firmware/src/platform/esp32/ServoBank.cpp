@@ -9,8 +9,8 @@ namespace gmb {
 namespace {
 #if defined(ARDUINO)
 constexpr uint32_t kServoFreqHz = 50;
-constexpr uint8_t kLedcResBits = 16;
-// Convert a servo pulse width (µs) to an LEDC duty at 50 Hz (20 ms period).
+// The ESP32-S3 LEDC supports 1..14 bits; 14 bits @ 50 Hz keeps ~1 µs steps.
+constexpr uint8_t kLedcResBits = 14;
 uint32_t usToDuty(uint16_t us) {
     const uint32_t maxDuty = (1u << kLedcResBits) - 1;
     return static_cast<uint32_t>((static_cast<uint64_t>(us) * maxDuty) / 20000u);
@@ -27,11 +27,12 @@ void ServoBank::begin(const std::vector<ServoConfig>& servos, int8_t sda, int8_t
                       int8_t oePin) {
     servos_ = servos;
     rt_.assign(servos.size(), Rt{});
+    ledcCh_.assign(servos.size(), -1);
     oePin_ = oePin;
     pcaUsed_ = false;
+    directAttachFault_ = false;
     for (int i = 0; i < kMaxPca; ++i) pcaPresent_[i] = false;
 
-    // Discover which PCA boards are referenced.
     for (const auto& s : servos_) {
         if (s.enabled && s.source == ServoSource::Pca && s.pcaBoard < kMaxPca) {
             pcaPresent_[s.pcaBoard] = true;
@@ -52,11 +53,26 @@ void ServoBank::begin(const std::vector<ServoConfig>& servos, int8_t sda, int8_t
             pca_[i].setPWMFreq(kServoFreqHz);
         }
     }
-    // Attach direct-GPIO servos to LEDC PWM channels.
-    for (const auto& s : servos_) {
-        if (s.enabled && s.source == ServoSource::DirectGpio && s.gpio >= 0) {
-            ledcAttach(s.gpio, kServoFreqHz, kLedcResBits);
+    // Attach direct-GPIO servos to LEDC channels (max 8 on the ESP32-S3).
+    int direct = 0;
+    for (size_t i = 0; i < servos_.size(); ++i) {
+        const ServoConfig& s = servos_[i];
+        if (!(s.enabled && s.source == ServoSource::DirectGpio && s.gpio >= 0)) continue;
+        if (direct >= kMaxDirectServos) {
+            directAttachFault_ = true;  // out of LEDC channels
+            continue;
         }
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+        if (!ledcAttach(s.gpio, kServoFreqHz, kLedcResBits)) {
+            directAttachFault_ = true;
+            continue;
+        }
+#else
+        ledcSetup(direct, kServoFreqHz, kLedcResBits);
+        ledcAttachPin(s.gpio, direct);
+#endif
+        ledcCh_[i] = static_cast<int8_t>(direct);
+        ++direct;
     }
 #else
     (void)sda;
@@ -65,68 +81,86 @@ void ServoBank::begin(const std::vector<ServoConfig>& servos, int8_t sda, int8_t
     neutraliseAll();
 }
 
-void ServoBank::writeMicros(const ServoConfig& s, uint16_t us) {
+void ServoBank::writeMicros(int index, uint16_t us) {
+    if (index < 0 || index >= (int)servos_.size()) return;
+    const ServoConfig& s = servos_[index];
     us = clampPulse(s, us);
+    // Apply inversion by mirroring within the calibrated pulse window.
+    if (s.inverted) us = static_cast<uint16_t>(s.pulseMinUs + s.pulseMaxUs - us);
 #if defined(ARDUINO)
     if (s.source == ServoSource::Pca) {
         if (s.pcaBoard < kMaxPca && pcaPresent_[s.pcaBoard])
             pca_[s.pcaBoard].writeMicroseconds(s.channel, us);
     } else if (s.gpio >= 0) {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
         ledcWrite(s.gpio, usToDuty(us));
+#else
+        if (ledcCh_[index] >= 0) ledcWrite(ledcCh_[index], usToDuty(us));
+#endif
     }
+    rt_[index].pwmOff = false;
 #else
     (void)us;
 #endif
 }
 
-void ServoBank::writeOff(const ServoConfig& s) {
+void ServoBank::writeOff(int index) {
+    if (index < 0 || index >= (int)servos_.size()) return;
+    const ServoConfig& s = servos_[index];
 #if defined(ARDUINO)
     if (s.source == ServoSource::Pca) {
         if (s.pcaBoard < kMaxPca && pcaPresent_[s.pcaBoard])
             pca_[s.pcaBoard].setPWM(s.channel, 0, 0);  // full off, no pulse
     } else if (s.gpio >= 0) {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
         ledcWrite(s.gpio, 0);
+        ledcDetach(s.gpio);  // truly release the pin (no residual signal)
+#else
+        if (ledcCh_[index] >= 0) ledcWrite(ledcCh_[index], 0);
+        ledcDetachPin(s.gpio);
+#endif
     }
+    rt_[index].pwmOff = true;
 #else
     (void)s;
 #endif
 }
 
 void ServoBank::toRest(int index) {
-    if (index >= 0 && index < (int)servos_.size())
-        writeMicros(servos_[index], servos_[index].restUs);
+    if (index >= 0 && index < (int)servos_.size()) writeMicros(index, servos_[index].restUs);
 }
 
 void ServoBank::toActive(int index) {
     if (index >= 0 && index < (int)servos_.size())
-        writeMicros(servos_[index], servos_[index].activeUs);
+        writeMicros(index, servos_[index].activeUs);
 }
 
-void ServoBank::toMicros(int index, uint16_t us) {
-    if (index >= 0 && index < (int)servos_.size()) writeMicros(servos_[index], us);
-}
+void ServoBank::toMicros(int index, uint16_t us) { writeMicros(index, us); }
 
 void ServoBank::press(int index) {
     if (index < 0 || index >= (int)servos_.size()) return;
     toActive(index);
     rt_[index].mode = Mode::Active;
-    rt_[index].pwmOff = false;
 }
 
 void ServoBank::release(int index) {
     if (index < 0 || index >= (int)servos_.size()) return;
     toRest(index);
     rt_[index].mode = Mode::Rest;
-    rt_[index].restAtMs = 0;  // set on next update() using nowMs
-    rt_[index].pwmOff = false;
+    rt_[index].restAtMs = 0;
 }
 
-void ServoBank::strike(int index) {
+void ServoBank::strike(int index, double intensity) {
     if (index < 0 || index >= (int)servos_.size()) return;
-    toActive(index);
+    const ServoConfig& s = servos_[index];
+    if (intensity < 0.0) intensity = 0.0;
+    if (intensity > 1.0) intensity = 1.0;
+    // Velocity shapes the strike depth between rest and active.
+    int span = static_cast<int>(s.activeUs) - static_cast<int>(s.restUs);
+    uint16_t us = static_cast<uint16_t>(s.restUs + intensity * span);
+    writeMicros(index, us);
     rt_[index].mode = Mode::Striking;
-    rt_[index].returnAtMs = 0;  // scheduled on next update() using nowMs
-    rt_[index].pwmOff = false;
+    rt_[index].returnAtMs = 0;
 }
 
 void ServoBank::update(uint32_t nowMs) {
@@ -144,14 +178,11 @@ void ServoBank::update(uint32_t nowMs) {
                 break;
             case Mode::Rest:
                 if (r.restAtMs == 0) r.restAtMs = nowMs + s.settleMs;
-                if (s.disableAtRest && !r.pwmOff &&
-                    (int32_t)(nowMs - r.restAtMs) >= 0) {
-                    writeOff(s);  // stop holding torque once settled at rest
-                    r.pwmOff = true;
-                }
+                if (s.disableAtRest && !r.pwmOff && (int32_t)(nowMs - r.restAtMs) >= 0)
+                    writeOff(static_cast<int>(i));
                 break;
             case Mode::Active:
-                break;  // held; nothing to schedule
+                break;
         }
     }
 }
@@ -165,19 +196,22 @@ void ServoBank::outputEnable(bool on) {
 }
 
 void ServoBank::neutraliseAll() {
+    // Immediate hard cut: PCA via /OE, direct servos by cutting their PWM now
+    // (do not wait for settleMs), regardless of disableAtRest.
+    outputEnable(false);
     for (int i = 0; i < (int)servos_.size(); ++i) {
-        toRest(i);
+        if (servos_[i].source == ServoSource::DirectGpio)
+            writeOff(i);
+        else
+            toRest(i);
         if (i < (int)rt_.size()) rt_[i] = Rt{};
     }
-    outputEnable(false);  // hard-cut PCA outputs
 }
 
 int ServoBank::servoIndex(const std::string& function, int stringIndex) const {
     for (size_t i = 0; i < servos_.size(); ++i) {
-        if (servos_[i].function == function &&
-            servos_[i].stringIndex == stringIndex) {
+        if (servos_[i].function == function && servos_[i].stringIndex == stringIndex)
             return static_cast<int>(i);
-        }
     }
     return -1;
 }

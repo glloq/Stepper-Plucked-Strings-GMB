@@ -32,6 +32,8 @@ struct WebContext {
     ProfileStorage* storage = nullptr;
     std::function<void()> onPanic;
     std::function<bool(const Profile&)> onActivateProfile;  // validate + apply
+    std::function<bool(uint8_t, uint8_t, uint8_t, uint16_t)> onTestNote;  // ch,note,vel,ms
+    std::function<void(const std::string&, const std::string&)> onSetWifi;  // sta,ap
 };
 
 class WebApi {

@@ -37,7 +37,8 @@ public:
     //   strike : pulse active then auto-return to rest (pluck / strum / damper)
     void press(int index);
     void release(int index);
-    void strike(int index);
+    // intensity 0..1 scales the strike depth between rest and active (velocity).
+    void strike(int index, double intensity = 1.0);
     // Advance scheduled returns and rest-time PWM cut-off. Call from loop().
     void update(uint32_t nowMs);
 
@@ -51,6 +52,10 @@ public:
     int pluckIndex(int stringIndex) const { return servoIndex("pluck", stringIndex); }
     int strumIndex(int stringIndex) const { return servoIndex("strum", stringIndex); }
     int damperIndex(int stringIndex) const { return servoIndex("damper", stringIndex); }
+    int sharedStrumIndex() const { return servoIndex("sharedStrum", -1); }
+
+    // True if any configured direct-GPIO servo failed to attach an LEDC channel.
+    bool directAttachFault() const { return directAttachFault_; }
 
     size_t count() const { return servos_.size(); }
     bool usesPca() const { return pcaUsed_; }
@@ -72,16 +77,19 @@ private:
     std::vector<Rt> rt_;
 
     std::vector<ServoConfig> servos_;
+    std::vector<int8_t> ledcCh_;  // LEDC channel per direct servo (Arduino 2.x)
     int8_t oePin_ = -1;
     bool pcaUsed_ = false;
     bool pcaPresent_[kMaxPca] = {false, false, false, false};
+    bool directAttachFault_ = false;
+    static constexpr int kMaxDirectServos = 8;  // ESP32-S3 has 8 LEDC channels
 #if defined(ARDUINO)
     Adafruit_PWMServoDriver pca_[kMaxPca] = {
         Adafruit_PWMServoDriver(0x40), Adafruit_PWMServoDriver(0x41),
         Adafruit_PWMServoDriver(0x42), Adafruit_PWMServoDriver(0x43)};
 #endif
-    void writeMicros(const ServoConfig& s, uint16_t us);
-    void writeOff(const ServoConfig& s);
+    void writeMicros(int index, uint16_t us);
+    void writeOff(int index);
 };
 
 }  // namespace gmb

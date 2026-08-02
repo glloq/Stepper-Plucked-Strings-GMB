@@ -79,6 +79,9 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
     mi["transpose"] = p.midi.transpose;
     mi["chordWindowMs"] = p.midi.chordWindowMs;
     mi["sustainPedal"] = p.midi.sustainPedal;
+    mi["sustainCc"] = p.midi.sustainCc;
+    mi["velocityCurve"] = static_cast<int>(p.midi.velocityCurve);
+    mi["saturationStrategy"] = static_cast<int>(p.midi.saturationStrategy);
 
     JsonObject sf = doc["stringFretSelection"].to<JsonObject>();
     sf["enabled"] = p.selector.enabled;
@@ -87,6 +90,9 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
     sf["selectionTimeoutMs"] = p.selector.selectionTimeoutMs;
     sf["prepareOnCompleteSelection"] = p.selector.prepareOnCompleteSelection;
     sf["queueDepth"] = p.selector.queueDepth;
+    sf["notePositionPolicy"] = static_cast<int>(p.selector.notePositionPolicy);
+    sf["missingSelectionPolicy"] = static_cast<int>(p.selector.missingSelectionPolicy);
+    sf["expiredSelectionPolicy"] = static_cast<int>(p.selector.expiredSelectionPolicy);
     JsonObject ss = sf["string"].to<JsonObject>();
     ss["ccNumber"] = p.selector.string.ccNumber;
     ss["minimum"] = p.selector.string.minimum;
@@ -102,11 +108,13 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
     fr["minimum"] = p.selector.fret.minimum;
     fr["maximum"] = p.selector.fret.maximum;
     fr["offset"] = p.selector.fret.offset;
+    fr["invalidValuePolicy"] = static_cast<int>(p.selector.fret.invalidValuePolicy);
 
     JsonArray strings = doc["strings"].to<JsonArray>();
     for (size_t i = 0; i < p.strings.size(); ++i) {
         const AxisConfig& a = p.strings[i];
         JsonObject o = strings.add<JsonObject>();
+        o["enabled"] = a.enabled;
         o["openNote"] = a.openNote;
         o["maxFret"] = a.maxFret;
         o["scaleLengthMm"] = a.scaleLengthMm;
@@ -210,6 +218,10 @@ bool ProfileStorage::fromJson(const JsonDocument& doc, Profile& out) {
     out.midi.transpose = mi["transpose"] | 0;
     out.midi.chordWindowMs = mi["chordWindowMs"] | 3;
     out.midi.sustainPedal = mi["sustainPedal"] | true;
+    out.midi.sustainCc = mi["sustainCc"] | 64;
+    out.midi.velocityCurve = static_cast<VelocityCurve>(mi["velocityCurve"] | 0);
+    out.midi.saturationStrategy =
+        static_cast<SaturationStrategy>(mi["saturationStrategy"] | 1);  // PriorityLow
 
     JsonObjectConst sf = doc["stringFretSelection"];
     out.selector.enabled = sf["enabled"] | true;
@@ -218,6 +230,12 @@ bool ProfileStorage::fromJson(const JsonDocument& doc, Profile& out) {
     out.selector.selectionTimeoutMs = sf["selectionTimeoutMs"] | 100;
     out.selector.prepareOnCompleteSelection = sf["prepareOnCompleteSelection"] | true;
     out.selector.queueDepth = sf["queueDepth"] | 32;
+    out.selector.notePositionPolicy =
+        static_cast<NotePositionPolicy>(sf["notePositionPolicy"] | 0);
+    out.selector.missingSelectionPolicy =
+        static_cast<InvalidValuePolicy>(sf["missingSelectionPolicy"] | 2);  // AutomaticFallback
+    out.selector.expiredSelectionPolicy =
+        static_cast<InvalidValuePolicy>(sf["expiredSelectionPolicy"] | 2);
     JsonObjectConst ss = sf["string"];
     out.selector.string.ccNumber = ss["ccNumber"] | 20;
     out.selector.string.minimum = ss["minimum"] | 1;
@@ -235,11 +253,14 @@ bool ProfileStorage::fromJson(const JsonDocument& doc, Profile& out) {
     out.selector.fret.minimum = fr["minimum"] | 0;
     out.selector.fret.maximum = fr["maximum"] | 12;
     out.selector.fret.offset = fr["offset"] | 0;
+    out.selector.fret.invalidValuePolicy =
+        static_cast<InvalidValuePolicy>(fr["invalidValuePolicy"] | 2);  // AutomaticFallback
 
     out.strings.clear();
     out.homing.clear();
     for (JsonObjectConst o : doc["strings"].as<JsonArrayConst>()) {
         AxisConfig a;
+        a.enabled = o["enabled"] | true;
         a.openNote = o["openNote"] | 40;
         a.maxFret = o["maxFret"] | 12;
         a.scaleLengthMm = o["scaleLengthMm"] | 330.0;
@@ -352,19 +373,29 @@ bool ProfileStorage::load(int slot, Profile& out) const {
 }
 
 bool ProfileStorage::save(int slot, const Profile& p) {
-    // Atomic write: write to a temp file then rename (cahier des charges §15).
-    std::string tmp = slotPath(slot) + ".tmp";
+    if (slot < 0 || slot >= kMaxProfiles) return false;
+    // Write to a temp file first, and only replace the existing slot once the
+    // temp file is fully written — so a failure never destroys the old profile.
+    std::string finalPath = slotPath(slot);
+    std::string tmp = finalPath + ".tmp";
     File f = LittleFS.open(tmp.c_str(), "w");
     if (!f) return false;
     JsonDocument doc;
     toJson(p, doc);
-    serializeJson(doc, f);
+    size_t written = serializeJson(doc, f);
     f.close();
-    LittleFS.remove(slotPath(slot).c_str());
-    return LittleFS.rename(tmp.c_str(), slotPath(slot).c_str());
+    if (written == 0) {  // write failed: keep the old slot intact
+        LittleFS.remove(tmp.c_str());
+        return false;
+    }
+    LittleFS.remove(finalPath.c_str());
+    if (LittleFS.rename(tmp.c_str(), finalPath.c_str())) return true;
+    LittleFS.remove(tmp.c_str());  // rename failed: don't leave a stray temp
+    return false;
 }
 
 bool ProfileStorage::remove(int slot) {
+    if (slot < 0 || slot >= kMaxProfiles) return false;
     return LittleFS.remove(slotPath(slot).c_str());
 }
 

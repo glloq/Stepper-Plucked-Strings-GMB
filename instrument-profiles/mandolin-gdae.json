@@ -403,7 +403,7 @@
     },
     {
       "enabled": true,
-      "function": "strummer",
+      "function": "sharedStrum",
       "stringIndex": -1,
       "source": "pca",
       "pcaBoard": 0,
