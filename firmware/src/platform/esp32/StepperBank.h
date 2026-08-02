@@ -66,8 +66,12 @@ public:
     bool homeRawHigh(size_t axis) const;  // raw level (polarity-aware homing)
     bool limitActive(size_t axis) const;
 
-    // True if any axis could not attach a hardware step generator.
+    // True if any ENABLED axis could not attach a hardware step generator.
     bool attachFault() const { return attachFault_; }
+    // Per-axis attach fault (a disabled axis is never faulted here).
+    bool axisAttachFault(size_t axis) const {
+        return axis < axes_.size() && axes_[axis].attachFault;
+    }
 
     // No-op on hardware (engine generates steps); kept for interface symmetry.
     void tick(uint32_t nowUs) { (void)nowUs; }
@@ -82,6 +86,7 @@ private:
         long position = 0;  // used by the non-Arduino stub only
         bool homeActiveHigh = false;
         bool limitActiveHigh = false;
+        bool attachFault = false;  // this enabled axis could not attach a generator
         Debouncer homeDeb;   // debounced raw HIGH level of the HOME pin
         Debouncer limitDeb;  // debounced raw HIGH level of the LIMIT pin
         AxisRt(const AxisConfig& c) : geom(c) {}

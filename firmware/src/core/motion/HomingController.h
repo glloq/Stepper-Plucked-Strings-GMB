@@ -31,6 +31,7 @@ enum class HomingFault : uint8_t {
     SensorNeverReached,
     Timeout,
     MaxDistanceExceeded,
+    LimitTriggered,  // opposite LIMIT switch hit during the homing seek
 };
 
 struct HomingConfig {
@@ -64,6 +65,13 @@ public:
     // before commanding a reversal, so a reverse is never issued mid-motion.
     HomingCommand update(uint32_t nowMs, bool rawSensor, double currentPosMm,
                          bool isMoving);
+
+    // Force this axis into a homing fault (e.g. a LIMIT switch tripped during the
+    // seek). The caller is responsible for the emergency stop of the motor.
+    void abort(HomingFault f) {
+        state_ = HomingState::Fault;
+        fault_ = f;
+    }
 
     HomingState state() const { return state_; }
     HomingFault fault() const { return fault_; }

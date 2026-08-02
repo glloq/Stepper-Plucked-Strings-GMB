@@ -89,9 +89,10 @@ private:
     // pluck. Empty vectors / 0 command id mean "no prepared note on this string".
     std::vector<int> preparedFret_;      // per string, -1 = none
     std::vector<uint32_t> preparedId_;   // per string, 0 = none
+    std::vector<uint32_t> preparedAtUs_; // per string, when the prepare was armed
 
     bool accepts(uint8_t channel) const { return omni_ || channel == channel_; }
-    void prepareString(int stringIndex, int fret);
+    void prepareString(int stringIndex, int fret, uint32_t nowUs);
     // Trigger a previously prepared string for this Note On. Returns false if the
     // string was not prepared for this fret (the caller then starts a fresh note).
     bool triggerPreparedNote(int stringIndex, int fret, uint8_t channel,

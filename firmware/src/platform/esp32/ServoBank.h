@@ -60,6 +60,13 @@ public:
     bool pcaAttachFault() const { return pcaAttachFault_; }
 
     size_t count() const { return servos_.size(); }
+    // True if `index` refers to a real, enabled servo that can actually be driven
+    // (so a web servo-test can reject an invalid/disabled index instead of
+    // silently succeeding).
+    bool commandable(int index) const {
+        return index >= 0 && index < static_cast<int>(servos_.size()) &&
+               servos_[index].enabled;
+    }
     bool usesPca() const { return pcaUsed_; }
     uint16_t travelMs(int index) const {
         return (index >= 0 && index < (int)servos_.size()) ? servos_[index].travelMs : 0;

@@ -30,6 +30,15 @@ void sendJson(AsyncWebServerRequest* req, JsonDocument& doc, int code = 200) {
     req->send(code, "application/json", out);
 }
 
+// RAII guard for the shared-state lock supplied by the main loop. Held only while
+// a read-only handler samples g_profile / instrument / steppers / sysex so a
+// reload in loop() is never observed half-applied.
+struct WebStateLock {
+    const WebContext& ctx;
+    explicit WebStateLock(const WebContext& c) : ctx(c) { if (ctx.lockState) ctx.lockState(); }
+    ~WebStateLock() { if (ctx.unlockState) ctx.unlockState(); }
+};
+
 const char* midiTypeName(uint8_t type) {
     switch (type) {
         case 0x80: return "noteOff";
@@ -121,7 +130,7 @@ void WebApi::registerRoutes() {
     // ---- GET /api/status ----
     server_->on("/api/status", HTTP_GET, [this](AsyncWebServerRequest* req) {
         JsonDocument doc;
-        fillStatus(doc);
+        { WebStateLock lk(ctx_); fillStatus(doc); }
         sendJson(req, doc);
     });
 
@@ -187,6 +196,7 @@ void WebApi::registerRoutes() {
     // ---- GET /api/capabilities ----
     server_->on("/api/capabilities", HTTP_GET, [this](AsyncWebServerRequest* req) {
         JsonDocument doc;
+        WebStateLock lk(ctx_);  // snapshot may be rebuilt by loop() on a fault
         if (ctx_.sysex) {
             const CapabilitySnapshot& s = ctx_.sysex->snapshot();
             doc["revision"] = s.revision;
@@ -206,7 +216,8 @@ void WebApi::registerRoutes() {
     // ---- GET /api/profile ----
     server_->on("/api/profile", HTTP_GET, [this](AsyncWebServerRequest* req) {
         JsonDocument doc;
-        if (ctx_.profile) ProfileStorage::toJson(*ctx_.profile, doc);
+        { WebStateLock lk(ctx_);  // g_profile may be swapped by loop() on activate
+          if (ctx_.profile) ProfileStorage::toJson(*ctx_.profile, doc); }
         sendJson(req, doc);
     });
 
@@ -392,17 +403,20 @@ void WebApi::registerRoutes() {
         "/api/test/servo", [this](AsyncWebServerRequest* req, JsonVariant& body) {
             if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
             JsonDocument doc;
-            if (!ctx_.servos || !ctx_.safety || !ctx_.safety->actuatorsAllowed()) {
+            if (!ctx_.safety || !ctx_.safety->actuatorsAllowed()) {
                 doc["ok"] = false;
                 doc["error"] = "actuators not armed";
                 sendJson(req, doc, 409);
                 return;
             }
+            // Never drive a servo from the async task: enqueue for loop(), which
+            // also rejects an invalid / disabled index.
             int idx = body["index"] | -1;
             bool active = body["active"] | true;
-            if (active) ctx_.servos->toActive(idx); else ctx_.servos->toRest(idx);
-            doc["ok"] = true;
-            sendJson(req, doc);
+            bool queued = ctx_.onTestServo && ctx_.onTestServo(idx, active);
+            doc["ok"] = queued;
+            if (!queued) doc["error"] = "busy or unavailable";
+            sendJson(req, doc, queued ? 200 : 503);
         });
     testServo->setMethod(HTTP_POST);
     server_->addHandler(testServo);
@@ -417,6 +431,7 @@ void WebApi::registerRoutes() {
                 return;
             }
             size_t axis = body["axis"] | 0;
+            WebStateLock lk(ctx_);  // steppers vector may be rebuilt by loop()
             doc["ok"] = true;
             doc["home"] = ctx_.steppers->homeActive(axis);
             doc["limit"] = ctx_.steppers->limitActive(axis);

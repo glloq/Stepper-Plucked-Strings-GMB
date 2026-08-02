@@ -6,6 +6,11 @@
 
 namespace gmb {
 
+// How long an anticipated pre-position may wait for its Note On before it is
+// released. Generous enough to cover mechanical travel + a musical anticipation,
+// short enough that a stray CC pair never strands a string.
+static constexpr uint32_t kPrepareTimeoutUs = 2'000'000;  // 2 s
+
 void InstrumentController::load(const Profile& p) {
     strings_.clear();
     axes_.clear();
@@ -14,6 +19,7 @@ void InstrumentController::load(const Profile& p) {
     chordBuffer_.clear();
     preparedFret_.clear();
     preparedId_.clear();
+    preparedAtUs_.clear();
     pedalDown_ = false;
 
     selector_.configure(p.selector);
@@ -43,6 +49,7 @@ void InstrumentController::load(const Profile& p) {
         targets_.push_back(StringTarget{});
         preparedFret_.push_back(-1);
         preparedId_.push_back(0);
+        preparedAtUs_.push_back(0);
     }
     allocator_.setStrings(specs);
     allocator_.setStrategy(p.midi.saturationStrategy);
@@ -63,7 +70,7 @@ void InstrumentController::removeActiveByString(int stringIndex) {
         if (active_[i].stringIndex == stringIndex) active_.erase(active_.begin() + i);
 }
 
-void InstrumentController::prepareString(int stringIndex, int fret) {
+void InstrumentController::prepareString(int stringIndex, int fret, uint32_t nowUs) {
     if (stringIndex < 0 || stringIndex >= static_cast<int>(strings_.size())) return;
     uint32_t id = strings_[stringIndex].prepareNote(fret);
     if (id == 0) return;  // disabled / faulted axis: nothing to anticipate
@@ -82,6 +89,7 @@ void InstrumentController::prepareString(int stringIndex, int fret) {
     t.intensity = 0.0;
     preparedFret_[stringIndex] = fret;
     preparedId_[stringIndex] = id;
+    preparedAtUs_[stringIndex] = nowUs;
 }
 
 bool InstrumentController::triggerPreparedNote(int stringIndex, int fret,
@@ -176,7 +184,7 @@ void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
         // Pre-position any string whose CC selection just became complete, so the
         // matching Note On only needs to arm the pluck (prepareOnCompleteSelection).
         for (const auto& c : selector_.takeJustCompleted())
-            prepareString(c.stringIndex, c.fret);
+            prepareString(c.stringIndex, c.fret, nowUs);
         return;
     }
 
@@ -254,6 +262,17 @@ void InstrumentController::flushChord() {
 }
 
 void InstrumentController::tick(uint32_t nowUs) {
+    // Expire anticipated preparations that never received their Note On, so a
+    // string is never reserved (finger down, carriage held, allocator busy)
+    // indefinitely. The window is independent of the CC-pairing timeout because a
+    // pre-position also has to travel mechanically before its note can arrive.
+    for (size_t i = 0; i < preparedId_.size(); ++i) {
+        if (preparedId_[i] != 0 &&
+            static_cast<int32_t>(nowUs - preparedAtUs_[i]) >=
+                static_cast<int32_t>(kPrepareTimeoutUs)) {
+            stopString(static_cast<int>(i));  // lift finger, free allocator, drop target
+        }
+    }
     if (chordBuffer_.empty()) return;
     if (nowUs - chordBuffer_.front().atUs >= chordWindowUs_) flushChord();
 }

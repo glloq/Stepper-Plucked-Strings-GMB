@@ -11,6 +11,9 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/semphr.h>
 
 #include <vector>
 
@@ -62,13 +65,55 @@ std::vector<TestNoteOff> g_testOffs;
 
 // Per-string non-blocking playback scheduler.
 struct StringSched {
-    enum Phase { Idle, ReleasingFinger, MovingToFret, PressingFinger, Settling, Ready }
+    enum Phase { Idle, WaitStopped, ReleasingFinger, MovingToFret, PressingFinger,
+                 Settling, Ready }
         phase = Idle;
     uint32_t phaseStartMs = 0;
     uint32_t commandId = 0;
     int fingerIndex = -1;
 };
 std::vector<StringSched> g_sched;
+
+// ---- Web -> loop() command queue (P0: no mechanical state off the main loop) --
+//
+// ESPAsyncWebServer runs its callbacks in the AsyncTCP task, which can execute
+// in parallel with loop(). If those callbacks touched g_profile / g_instrument /
+// g_steppers / g_servos directly they could reallocate a std::vector while
+// loop() is iterating it. Instead every mutating request only ENQUEUES a command
+// here; loop() is the SOLE owner of the mechanical state and drains the queue
+// sequentially. Read-only handlers take g_stateMutex so a reallocation in loop()
+// (profile reload, capability rebuild) can never be seen half-done.
+enum class CmdType : uint8_t { Panic, Reset, ActivateProfile, TestNote, TestServo };
+struct AppCommand {
+    CmdType type;
+    Profile* profile = nullptr;  // owned by the command (ActivateProfile)
+    uint8_t channel = 0, note = 0, velocity = 0;
+    uint16_t durationMs = 0;
+    int16_t servoIndex = -1;
+    bool servoActive = false;
+};
+QueueHandle_t g_cmdQueue = nullptr;      // holds AppCommand* pointers
+SemaphoreHandle_t g_stateMutex = nullptr;  // guards shared-state reads vs reloads
+
+// Enqueue a command (called from the AsyncTCP task). Returns false if the queue
+// is full so the caller can report back-pressure instead of silently dropping.
+bool enqueueCommand(const AppCommand& c) {
+    if (!g_cmdQueue) return false;
+    AppCommand* h = new AppCommand(c);
+    if (xQueueSend(g_cmdQueue, &h, 0) != pdTRUE) {
+        delete h->profile;  // transfer failed: don't leak the owned profile
+        delete h;
+        return false;
+    }
+    return true;
+}
+
+// RAII guard for the shared-state mutex (used by loop() around reloads and by the
+// read-only web handlers around their reads).
+struct StateGuard {
+    StateGuard() { if (g_stateMutex) xSemaphoreTake(g_stateMutex, portMAX_DELAY); }
+    ~StateGuard() { if (g_stateMutex) xSemaphoreGive(g_stateMutex); }
+};
 
 int8_t pinOf(const char* signal) {
     for (const auto& a : g_profile.pins)
@@ -92,6 +137,10 @@ void buildStepperPins(std::vector<AxisPins>& out, int8_t& enablePin) {
 }
 
 void applyProfile() {
+    // Reallocates the per-string vectors: hold the state mutex so a concurrent
+    // read-only web handler never observes them half-rebuilt (no-op at boot when
+    // the mutex is not yet created).
+    StateGuard lock;
     g_instrument.load(g_profile);
     g_sysex.rebuild(g_profile);
     g_sched.assign(g_profile.strings.size(), StringSched{});
@@ -128,6 +177,7 @@ void applyProfile() {
 // excludes every disabled or runtime-faulted axis, and update g_degraded.
 // Returns the number of playable axes.
 int rebuildRuntimeCapabilities() {
+    StateGuard lock;  // g_sysex.rebuild reallocates the snapshot read by web GETs
     Profile rp = g_profile;
     int originallyEnabled = 0, ready = 0;
     for (size_t i = 0; i < rp.strings.size(); ++i) {
@@ -144,6 +194,8 @@ int rebuildRuntimeCapabilities() {
     return ready;
 }
 
+void neutraliseAll();  // defined below; needed by faultRuntimeAxis
+
 // Central runtime axis-fault path (LIMIT, motor/servo error, homing failure).
 void faultRuntimeAxis(size_t i, const char* reason, uint32_t nowMs) {
     if (i >= g_instrument.stringCount()) return;
@@ -154,7 +206,14 @@ void faultRuntimeAxis(size_t i, const char* reason, uint32_t nowMs) {
     if (i < g_axisFaulted.size()) g_axisFaulted[i] = true;
     g_safety.recordFault("axis", std::string(reason) + " on axis " + std::to_string(i),
                          nowMs);
-    rebuildRuntimeCapabilities();
+    int working = rebuildRuntimeCapabilities();
+    // If the last operational axis just failed, the instrument can no longer play
+    // anything: neutralise and latch a panic rather than sitting "armed" with zero
+    // strings (which would also emit a bogus 0..0 capability range).
+    if (working <= 0) {
+        neutraliseAll();
+        g_safety.panic("no operational axes remain", nowMs);
+    }
 }
 
 bool safetyLocked() {
@@ -180,6 +239,11 @@ bool beginHoming(uint32_t nowMs) {
                              "a motor/servo/PCA9685 could not attach or respond", nowMs);
         return false;
     }
+    // Reconfiguration/homing must start from PowerOnSafe, never from Armed: a
+    // stale Armed state would let /api/test/servo drive a servo mid-homing and
+    // would make the final arm() a silent no-op. safetyLocked() (Panic/E-stop)
+    // is already refused above, so this only demotes a lingering Armed state.
+    g_safety.reset();  // -> PowerOnSafe; doHoming re-arms once axes are homed
     g_degraded = false;
     g_steppers.enableDrivers(true);
     g_servos.outputEnable(true);   // servos hold their rest position (fingers up)
@@ -223,6 +287,14 @@ void doHoming(uint32_t nowMs) {
     for (size_t i = 0; i < g_homing.size(); ++i) {
         if (!g_profile.strings[i].enabled) continue;  // disabled axes are skipped
         ++active;
+        // Watch the LIMIT switch during EVERY homing phase: hitting the opposite
+        // endstop means the HOME sensor was missed — hard-stop and fault the axis
+        // instead of grinding on until the timeout / max distance.
+        if (!g_homing[i].ready() && !g_homing[i].failed() &&
+            g_steppers.limitActive(i)) {
+            g_steppers.emergencyStop(i);
+            g_homing[i].abort(HomingFault::LimitTriggered);
+        }
         if (g_homing[i].failed()) {
             g_instrument.faultString(i);  // remove from allocator + selection too
             g_axisFaulted[i] = true;
@@ -293,6 +365,79 @@ void doEmergencyStop() {
     g_safety.emergencyStop(millis());
 }
 
+// ---- loop-side command handlers (only ever called from drainCommands) --------
+
+// Validate + activate a profile: full stop, tear down, reconfigure, re-home.
+bool doActivateProfile(const Profile& p, uint32_t nowMs) {
+    if (!ProfileValidator::isActivatable(p)) return false;
+    // Refuse to (re)start motion while a panic / E-stop is latched; the user must
+    // explicitly reset first (POST /api/reset).
+    if (safetyLocked()) return false;
+    // Bring the machine to a full stop BEFORE tearing down the old profile so the
+    // old hardware engine holds no pending motion while structures are rebuilt.
+    g_instrument.panic();
+    g_steppers.stopAll();
+    g_steppers.enableDrivers(false);
+    g_servos.neutraliseAll();
+    for (auto& s : g_sched) s = StringSched{};
+    g_phase = AppPhase::Boot;
+
+    g_profile = p;
+    g_profile.capabilitiesRevision++;
+    applyProfile();  // re-resolves pins incl. ESTOP, reinitialises hardware
+    return beginHoming(nowMs);  // re-home after a mechanical change (§16)
+}
+
+// Web test note: only when Ready, and only if we can guarantee its Note Off.
+bool doTestNote(uint8_t channel, uint8_t note, uint8_t vel, uint16_t durationMs,
+                uint32_t nowMs) {
+    if (g_phase != AppPhase::Ready) return false;
+    // Never emit a Note On we cannot later release: refuse if the deferred
+    // Note-Off queue is full (would otherwise leave the note stuck on).
+    if (g_testOffs.size() >= 16) return false;
+    MidiEvent on;
+    on.type = static_cast<uint8_t>(MidiType::NoteOn);
+    on.channel = channel; on.data1 = note; on.data2 = vel;
+    on.timestampUs = micros();
+    on.source = static_cast<uint8_t>(MidiSource::WebUiTest);
+    g_instrument.handleEvent(on, on.timestampUs);
+    uint32_t offAt = nowMs + (durationMs ? durationMs : 500u);
+    g_testOffs.push_back({channel, note, offAt});
+    return true;
+}
+
+// Web servo test: only when armed and only for a real, enabled servo.
+bool doTestServo(int index, bool active) {
+    if (!g_safety.actuatorsAllowed()) return false;
+    if (!g_servos.commandable(index)) return false;
+    if (active) g_servos.toActive(index); else g_servos.toRest(index);
+    return true;
+}
+
+// Drain every queued web command. Runs at the top of loop(): loop() is the sole
+// owner of the mechanical state, so these run without racing the AsyncTCP task.
+void drainCommands(uint32_t nowMs) {
+    if (!g_cmdQueue) return;
+    AppCommand* c = nullptr;
+    while (xQueueReceive(g_cmdQueue, &c, 0) == pdTRUE) {
+        switch (c->type) {
+            case CmdType::Panic: doPanic(); break;
+            case CmdType::Reset: doReset(nowMs); break;
+            case CmdType::ActivateProfile:
+                if (c->profile) doActivateProfile(*c->profile, nowMs);
+                break;
+            case CmdType::TestNote:
+                doTestNote(c->channel, c->note, c->velocity, c->durationMs, nowMs);
+                break;
+            case CmdType::TestServo:
+                doTestServo(c->servoIndex, c->servoActive);
+                break;
+        }
+        delete c->profile;  // owned copy (null for non-profile commands)
+        delete c;
+    }
+}
+
 // Drive one string's mechanical sequence toward a plucked note.
 void tickString(size_t i, uint32_t nowMs) {
     StringController& sc = g_instrument.string(i);
@@ -300,7 +445,8 @@ void tickString(size_t i, uint32_t nowMs) {
     StringSched& sch = g_sched[i];
 
     if (!tgt.active) {
-        if (sch.phase != StringSched::Idle) {
+        if (sch.phase == StringSched::Idle) return;
+        if (sch.phase != StringSched::WaitStopped) {
             // Note released / cancelled: STOP the carriage (a Note Off during a
             // move must not let it finish travelling), lift the finger, damp.
             g_steppers.stop(i);
@@ -308,6 +454,12 @@ void tickString(size_t i, uint32_t nowMs) {
             if (fi >= 0) g_servos.release(fi);
             int di = g_servos.damperIndex(static_cast<int>(i));
             if (di >= 0) g_servos.strike(di);
+            sch.phase = StringSched::WaitStopped;
+        }
+        // Only declare the axis idle once the carriage has REALLY stopped, so a
+        // note accepted right after can't issue a moveTo into a still-decelerating
+        // motor (the musical analogue of the homing brake states).
+        if (!g_steppers.isRunning(i)) {
             sc.dampingDone();
             sch.phase = StringSched::Idle;
             sch.commandId = 0;
@@ -334,9 +486,12 @@ void tickString(size_t i, uint32_t nowMs) {
 
     switch (sch.phase) {
         case StringSched::ReleasingFinger:
-            // Only start moving once the finger has had time to lift.
-            if (sch.fingerIndex < 0 ||
-                nowMs - sch.phaseStartMs >= g_servos.travelMs(sch.fingerIndex)) {
+            // Start moving only once the finger has had time to lift AND the
+            // carriage has fully stopped (a new note arriving during a cancel
+            // deceleration must not issue a moveTo into a moving motor).
+            if ((sch.fingerIndex < 0 ||
+                 nowMs - sch.phaseStartMs >= g_servos.travelMs(sch.fingerIndex)) &&
+                g_steppers.atTarget(i)) {
                 g_steppers.moveToMm(i, tgt.positionMm);
                 sch.phase = StringSched::MovingToFret;
                 sch.phaseStartMs = nowMs;
@@ -389,6 +544,7 @@ void tickString(size_t i, uint32_t nowMs) {
                 }
             }
             break;
+        case StringSched::WaitStopped:
         case StringSched::Idle:
             break;
     }
@@ -400,12 +556,19 @@ void setup() {
     Serial.begin(115200);
     g_safety.boot();  // drivers off, servos neutralised (cahier des charges §21.1)
 
+    // Web -> loop() command channel + shared-state mutex, created before the web
+    // server so the first request is already safe.
+    g_cmdQueue = xQueueCreate(16, sizeof(AppCommand*));
+    g_stateMutex = xSemaphoreCreateMutex();
+
     g_storage.begin();
-    if (!g_storage.load(g_storage.startupSlot(), g_profile)) {
+    // Never configure GPIO (STEP/DIR/HOME/LIMIT/ENABLE/I²C/PCA/LEDC) from a
+    // profile that fails semantic validation: fall back to the safe default so a
+    // corrupt or malicious stored profile can't drive the pins at boot (§21.1).
+    if (!g_storage.load(g_storage.startupSlot(), g_profile) ||
+        !ProfileValidator::isActivatable(g_profile)) {
         g_profile = Profile::makeDefault("Ukulele", 4, {67, 60, 64, 69}, 12);
     }
-
-    bool valid = ProfileValidator::isActivatable(g_profile);
     applyProfile();  // also resolves the E-stop pin from the profile
 
     // Wi-Fi secrets live in NVS, never in the exportable profile (§20).
@@ -426,21 +589,26 @@ void setup() {
     ctx.net = &g_net;
     ctx.safety = &g_safety;
     ctx.storage = &g_storage;
-    ctx.onPanic = doPanic;
-    // Test note: only accepted when Ready; schedules the matching Note Off.
+    // Every mutating callback below only ENQUEUES a command; loop() executes it.
+    // The returned bool means "accepted into the queue", not "already done".
+    ctx.onPanic = []() { enqueueCommand(AppCommand{CmdType::Panic}); };
     ctx.onTestNote = [](uint8_t channel, uint8_t note, uint8_t vel,
                         uint16_t durationMs) -> bool {
-        if (g_phase != AppPhase::Ready) return false;
-        MidiEvent on;
-        on.type = static_cast<uint8_t>(MidiType::NoteOn);
-        on.channel = channel; on.data1 = note; on.data2 = vel;
-        on.timestampUs = micros();
-        on.source = static_cast<uint8_t>(MidiSource::WebUiTest);
-        g_instrument.handleEvent(on, on.timestampUs);
-        uint32_t offAt = millis() + (durationMs ? durationMs : 500u);
-        if (g_testOffs.size() < 16) g_testOffs.push_back({channel, note, offAt});
-        return true;
+        AppCommand c{CmdType::TestNote};
+        c.channel = channel; c.note = note; c.velocity = vel;
+        c.durationMs = durationMs;
+        return enqueueCommand(c);
     };
+    ctx.onTestServo = [](int index, bool active) -> bool {
+        AppCommand c{CmdType::TestServo};
+        c.servoIndex = static_cast<int16_t>(index);
+        c.servoActive = active;
+        return enqueueCommand(c);
+    };
+    // Read-only web handlers hold this around their reads so a reload in loop()
+    // is never observed half-applied.
+    ctx.lockState = []() { if (g_stateMutex) xSemaphoreTake(g_stateMutex, portMAX_DELAY); };
+    ctx.unlockState = []() { if (g_stateMutex) xSemaphoreGive(g_stateMutex); };
     ctx.onSetWifi = [](bool hasSta, const std::string& sta, bool hasAp,
                        const std::string& ap) {
         Preferences p;
@@ -478,35 +646,21 @@ void setup() {
             if (g_anchored[i] && !g_homing[i].failed()) ++n;
         return n;
     };
-    ctx.onActivateProfile = [](const Profile& p) {
+    ctx.onActivateProfile = [](const Profile& p) -> bool {
+        // Validate synchronously (pure, safe off the main loop) so an invalid
+        // profile is rejected immediately; enqueue the actual apply for loop().
         if (!ProfileValidator::isActivatable(p)) return false;
-        // Refuse to (re)start motion while a panic / E-stop is latched; the user
-        // must explicitly reset first (POST /api/reset).
-        if (safetyLocked()) return false;
-        // Bring the machine to a full stop BEFORE tearing down the old profile:
-        // stop every stepper, disable the drivers and cut the servos so the old
-        // hardware engine holds no pending motion while structures are rebuilt.
-        g_instrument.panic();
-        g_steppers.stopAll();
-        g_steppers.enableDrivers(false);
-        g_servos.neutraliseAll();
-        for (auto& s : g_sched) s = StringSched{};
-        g_phase = AppPhase::Boot;
-
-        g_profile = p;
-        g_profile.capabilitiesRevision++;
-        applyProfile();  // re-resolves pins incl. ESTOP, reinitialises hardware
-        g_sysex.rebuild(g_profile);
-        return beginHoming(millis());  // re-home after a mechanical change (§16)
+        AppCommand c{CmdType::ActivateProfile};
+        c.profile = new Profile(p);  // ownership transfers to the queued command
+        return enqueueCommand(c);
     };
-    ctx.onReset = []() { return doReset(millis()); };
+    ctx.onReset = []() -> bool { return enqueueCommand(AppCommand{CmdType::Reset}); };
     g_web.begin(ctx, 80);
 
     // Home every axis before allowing play; unhomed axes never move for notes.
     // beginHoming() itself refuses if the profile is invalid or a channel failed
     // to attach, leaving the system safely in Boot.
     beginHoming(millis());
-    (void)valid;
 }
 
 void loop() {
@@ -515,6 +669,7 @@ void loop() {
 
     g_net.tick(nowMs);
     g_steppers.updateSensors(nowMs);  // debounce HOME/LIMIT before any read
+    drainCommands(nowMs);             // apply queued web commands (sole owner)
 
     // Wi-Fi loss policy (cahier des charges §21.4, default): cancel pending
     // commands and release notes in a controlled way, but stay armed/READY.
