@@ -59,10 +59,8 @@ bool StringFretSelector::onControlChange(const MidiEvent& e) {
     if (e.data1 == cfg_.string.ccNumber) {
         int axis = mapStringValue(e.data2);
         if (axis < 0) {
-            lastValidString_ = -1;
             return true;  // consumed, but invalid — handled at Note On time
         }
-        lastValidString_ = axis;
         // If a fret arrived first, complete that oldest fret-only entry instead
         // of opening a new one (symmetric with the fret branch below).
         for (auto& s : pending_) {
@@ -89,10 +87,8 @@ bool StringFretSelector::onControlChange(const MidiEvent& e) {
     if (e.data1 == cfg_.fret.ccNumber) {
         int fret = mapFretValue(e.data2);
         if (fret < 0) {
-            lastValidFret_ = -1;
             return true;
         }
-        lastValidFret_ = fret;
         // Attach to the oldest string-selection on this channel still missing a
         // fret (spec section 9).
         for (auto& s : pending_) {
@@ -172,12 +168,12 @@ NoteResolution StringFretSelector::onNoteOn(const MidiEvent& e, uint32_t nowUs) 
             case InvalidValuePolicy::AutomaticFallback:
                 return automaticResolution();
             case InvalidValuePolicy::LastValid:
-                if (lastValidString_ >= 0 && lastValidFret_ >= 0) {
+                if (lastValid_[key].valid) {
                     NoteResolution r;
                     r.play = true;
                     r.source = ResolveSource::Explicit;
-                    r.stringIndex = static_cast<uint8_t>(lastValidString_);
-                    r.fret = static_cast<uint8_t>(lastValidFret_);
+                    r.stringIndex = lastValid_[key].stringIndex;
+                    r.fret = lastValid_[key].fret;
                     r.noteInstanceId = nextInstanceId_++;
                     active_.push_back({e.channel, e.data1, r.stringIndex, r.fret,
                                        r.noteInstanceId});
@@ -264,9 +260,9 @@ NoteResolution StringFretSelector::onNoteOn(const MidiEvent& e, uint32_t nowUs) 
                 break;
             }
             case InvalidValuePolicy::LastValid:
-                if (lastValidString_ >= 0 && lastValidFret_ >= 0) {
-                    stringIndex = static_cast<uint8_t>(lastValidString_);
-                    fret = static_cast<uint8_t>(lastValidFret_);
+                if (lastValid_[key].valid) {
+                    stringIndex = lastValid_[key].stringIndex;
+                    fret = lastValid_[key].fret;
                 } else {
                     return automaticResolution();
                 }
@@ -288,6 +284,10 @@ NoteResolution StringFretSelector::onNoteOn(const MidiEvent& e, uint32_t nowUs) 
     r.fret = fret;
     r.warning = warn;
     r.noteInstanceId = nextInstanceId_++;
+
+    // Remember this fully-validated string+fret PAIR for the LastValid policy on
+    // THIS channel (never mixed across channels or across two selections).
+    lastValid_[key] = {true, stringIndex, fret};
 
     // Remember for Note Off (spec section 12). Repeated identical pitches stack.
     active_.push_back({e.channel, e.data1, stringIndex, fret, r.noteInstanceId});

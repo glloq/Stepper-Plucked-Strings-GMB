@@ -16,6 +16,7 @@
 #include <freertos/semphr.h>
 
 #include <atomic>
+#include <cmath>
 #include <vector>
 
 #include "core/configuration/Profile.h"
@@ -57,6 +58,17 @@ uint32_t g_lastSharedStrumMs = 0;  // dedupe the shared strummer within a chord
 // until this deadline before the seek starts.
 bool g_homingStarted = false;
 uint32_t g_homeReleaseUntilMs = 0;
+
+// Musical move watchdog: if a carriage does not reach its fret within this window
+// the axis is faulted (covers a refused/stalled step-engine command).
+constexpr uint32_t kMoveTimeoutMs = 4000;
+
+// Two-phase profile activation: the OLD profile's fingers are driven to rest and
+// allowed to lift BEFORE the old servo config is destroyed, so a profile that
+// removes/reassigns a finger servo can't leave a finger pressed while the new
+// profile homes. Non-null while an activation is waiting for the old fingers.
+Profile* g_pendingProfile = nullptr;
+uint32_t g_pendingActivateAtMs = 0;
 
 std::vector<HomingController> g_homing;
 std::vector<bool> g_anchored;
@@ -101,7 +113,14 @@ struct AppCommand {
     bool servoActive = false;
 };
 QueueHandle_t g_cmdQueue = nullptr;      // holds AppCommand* pointers
-SemaphoreHandle_t g_stateMutex = nullptr;  // guards shared-state reads vs reloads
+// In-memory runtime state (profile / sysex snapshot / status). loop() takes this
+// only for short in-memory work — NEVER across a LittleFS write — so the safety
+// loop can never stall on flash.
+SemaphoreHandle_t g_stateMutex = nullptr;
+// LittleFS access (save/load/delete/read/list). Held only by the AsyncTCP web
+// task; loop() NEVER takes it, so a long flash write can never block the safety
+// loop (audit P0-1).
+SemaphoreHandle_t g_storageMutex = nullptr;
 
 // A STOP must never be lost or delayed behind other queued commands: /api/panic
 // sets this flag (lock-free, no allocation) and loop() honours it FIRST, before
@@ -149,11 +168,12 @@ void buildStepperPins(std::vector<AxisPins>& out, int8_t& enablePin) {
     }
 }
 
+// Reallocates the per-string vectors. The CALLER must hold g_stateMutex around
+// this (and around the g_profile assignment that precedes an activation) so a web
+// read never observes the runtime half-rebuilt. g_stateMutex is only ever held
+// for in-memory work — never across a LittleFS write — so loop() cannot stall on
+// flash (see g_storageMutex).
 void applyProfile() {
-    // Reallocates the per-string vectors: hold the state mutex so a concurrent
-    // read-only web handler never observes them half-rebuilt (no-op at boot when
-    // the mutex is not yet created).
-    StateGuard lock;
     g_instrument.load(g_profile);
     g_sysex.rebuild(g_profile);
     g_sched.assign(g_profile.strings.size(), StringSched{});
@@ -394,12 +414,18 @@ void neutraliseAll() {
     g_steppers.enableDrivers(false);
     g_servos.neutraliseAll();
     for (auto& s : g_sched) s = StringSched{};
+    // A panic / E-stop supersedes any deferred profile activation.
+    delete g_pendingProfile;
+    g_pendingProfile = nullptr;
     g_phase = AppPhase::Boot;
 }
 
 void doPanic() {
     neutraliseAll();
-    g_safety.panic("web/CC panic", millis());
+    // A hardware E-stop outranks a software panic: never downgrade a latched
+    // EmergencyStop to Panic (audit P1-17). The machine is already neutralised.
+    if (g_safety.state() != SafetyState::EmergencyStop)
+        g_safety.panic("web/CC panic", millis());
 }
 
 // Hardware E-stop: latches the distinct EmergencyStop state (not Panic).
@@ -410,25 +436,53 @@ void doEmergencyStop() {
 
 // ---- loop-side command handlers (only ever called from drainCommands) --------
 
-// Validate + activate a profile: full stop, tear down, reconfigure, re-home.
+// Phase 1 of activation: validate, stop the motors, and drive the OLD profile's
+// fingers to rest. The teardown + reconfigure + re-home is deferred until the old
+// fingers have physically lifted (servicePendingActivation).
 bool doActivateProfile(const Profile& p, uint32_t nowMs) {
     if (!ProfileValidator::isActivatable(p)) return false;
     // Refuse to (re)start motion while a panic / E-stop is latched; the user must
     // explicitly reset first (POST /api/reset).
     if (safetyLocked()) return false;
-    // Bring the machine to a full stop BEFORE tearing down the old profile so the
-    // old hardware engine holds no pending motion while structures are rebuilt.
+    // Full stop of the carriages and release of the current notes, but KEEP the
+    // servo outputs powered so the old fingers can be driven up.
     g_instrument.panic();
     g_steppers.stopAll();
     g_steppers.enableDrivers(false);
-    g_servos.neutraliseAll();
     for (auto& s : g_sched) s = StringSched{};
     g_phase = AppPhase::Boot;
 
-    g_profile = p;
-    g_profile.capabilitiesRevision++;
-    applyProfile();  // re-resolves pins incl. ESTOP, reinitialises hardware
-    return beginHoming(nowMs);  // re-home after a mechanical change (§16)
+    // Drive every current servo to rest (fingers up) before the old config is
+    // destroyed, and wait for the slowest to travel + settle.
+    g_servos.outputEnable(true);
+    uint32_t wait = 0;
+    for (size_t i = 0; i < g_servos.count(); ++i) {
+        g_servos.release(static_cast<int>(i));
+        uint32_t w = static_cast<uint32_t>(g_servos.travelMs(static_cast<int>(i))) +
+                     g_servos.settleMs(static_cast<int>(i));
+        if (w > wait) wait = w;
+    }
+    delete g_pendingProfile;
+    g_pendingProfile = new Profile(p);
+    g_pendingActivateAtMs = nowMs + wait;
+    return true;
+}
+
+// Phase 2: once the old fingers have lifted, tear down the old profile, swap in
+// the new one and re-home. Runs from loop().
+void servicePendingActivation(uint32_t nowMs) {
+    if (!g_pendingProfile) return;
+    if (static_cast<int32_t>(nowMs - g_pendingActivateAtMs) < 0) return;  // still lifting
+    g_servos.neutraliseAll();  // now safe to cut the old servo outputs
+    {
+        StateGuard lock;  // atomic profile swap + runtime rebuild (P0-2)
+        g_profile = *g_pendingProfile;
+        g_profile.capabilitiesRevision++;
+        applyProfile();  // re-resolves pins incl. ESTOP, reinitialises hardware
+    }
+    delete g_pendingProfile;
+    g_pendingProfile = nullptr;
+    beginHoming(nowMs);  // re-home after a mechanical change (§16)
 }
 
 // Web test note: only when Ready, and only if we can guarantee its Note Off.
@@ -515,12 +569,15 @@ bool usesSharedStrum(size_t i) {
     return (mode == PluckMode::SharedStrum || mode == PluckMode::Both) || pi < 0;
 }
 
-// Shared-strum barrier: every active string that will be swept by the shared
-// strummer must have reached its fret position (scheduler phase Ready) before the
-// sweep fires, so one sweep hits the whole chord instead of the fastest string.
-bool sharedGroupPositioned() {
+// Shared-strum barrier: every OTHER active string in the SAME chord (strum group)
+// that the shared strummer will sweep must have reached its fret position before
+// the sweep fires — one sweep per chord, and a prepared or unrelated note (a
+// different group) never blocks it.
+bool sharedGroupPositioned(uint32_t group) {
+    if (group == 0) return true;
     for (size_t j = 0; j < g_instrument.stringCount(); ++j) {
-        if (!g_instrument.target(j).active) continue;
+        const StringTarget& t = g_instrument.target(j);
+        if (!t.active || t.strumGroup != group) continue;
         if (!usesSharedStrum(j)) continue;
         if (g_sched[j].phase != StringSched::Ready) return false;  // still travelling
     }
@@ -566,8 +623,10 @@ void tickString(size_t i, uint32_t nowMs) {
     // says it is well away from home is a position/reference fault (lost steps,
     // drift, stuck/inverted sensor) — fault rather than trust a bad coordinate.
     // Positions legitimately near home (open string / low frets) are not faulted.
+    // Home is anchored to 0 mm, so the ABSOLUTE distance from 0 is the mismatch
+    // (the axis coordinate can run negative depending on the homing direction).
     static constexpr double kHomeMismatchMm = 10.0;
-    if (g_steppers.homeActive(i) && g_steppers.positionMm(i) > kHomeMismatchMm) {
+    if (g_steppers.homeActive(i) && std::fabs(g_steppers.positionMm(i)) > kHomeMismatchMm) {
         faultRuntimeAxis(i, "HOME asserted away from home (position drift)", nowMs);
         return;
     }
@@ -615,6 +674,11 @@ void tickString(size_t i, uint32_t nowMs) {
                     sch.phase = StringSched::PressingFinger;
                     sch.phaseStartMs = nowMs;
                 }
+            } else if (nowMs - sch.phaseStartMs >= kMoveTimeoutMs) {
+                // The move never completed (command refused by the step engine, a
+                // stall, or a stop far from target): fault the axis instead of
+                // waiting forever in MovingToFret.
+                faultRuntimeAxis(i, "move did not reach target (timeout)", nowMs);
             }
             break;
         case StringSched::PressingFinger:
@@ -643,9 +707,9 @@ void tickString(size_t i, uint32_t nowMs) {
             // chord) before firing — one synchronised sweep per chord.
             if (doShared) {
                 static constexpr uint32_t kMaxStrumWaitMs = 250;
-                if (!sharedGroupPositioned() &&
+                if (!sharedGroupPositioned(tgt.strumGroup) &&
                     nowMs - sch.readySinceMs < kMaxStrumWaitMs) {
-                    break;  // stay armed in Ready, keep waiting for the group
+                    break;  // stay armed in Ready, keep waiting for the chord group
                 }
             }
             if (!sc.executePluck(tgt.commandId)) break;
@@ -677,6 +741,7 @@ void setup() {
     // server so the first request is already safe.
     g_cmdQueue = xQueueCreate(16, sizeof(AppCommand*));
     g_stateMutex = xSemaphoreCreateMutex();
+    g_storageMutex = xSemaphoreCreateMutex();
 
     g_storage.begin();
     // Never configure GPIO (STEP/DIR/HOME/LIMIT/ENABLE/I²C/PCA/LEDC) from a
@@ -694,7 +759,7 @@ void setup() {
         for (int i = 0; i < 5; ++i) id[i] = static_cast<uint8_t>((mac >> (8 * i)) & 0x7F);
         g_sysex.setDeviceId(id);
     }
-    applyProfile();  // also resolves the E-stop pin from the profile
+    { StateGuard lock; applyProfile(); }  // resolves the E-stop pin from the profile
     // Answer StringConfig discovery with the richer v2 block (CC bounds, offsets,
     // per-string frets, string mapping/order). The block carries its own version
     // byte so a v1-only client can still detect and skip it.
@@ -741,6 +806,10 @@ void setup() {
     // is never observed half-applied.
     ctx.lockState = []() { if (g_stateMutex) xSemaphoreTake(g_stateMutex, portMAX_DELAY); };
     ctx.unlockState = []() { if (g_stateMutex) xSemaphoreGive(g_stateMutex); };
+    // Storage lock is DISTINCT from the state lock: loop() never takes it, so a
+    // long LittleFS write from the web task can't block the safety loop (P0-1).
+    ctx.lockStorage = []() { if (g_storageMutex) xSemaphoreTake(g_storageMutex, portMAX_DELAY); };
+    ctx.unlockStorage = []() { if (g_storageMutex) xSemaphoreGive(g_storageMutex); };
     ctx.onSetWifi = [](bool hasSta, const std::string& sta, bool hasAp,
                        const std::string& ap) {
         Preferences p;
@@ -823,6 +892,7 @@ void loop() {
     // Apply a BOUNDED number of queued web commands (skip if we just stopped, so
     // no stale activation/test runs after a STOP).
     if (!panicked) drainCommands(nowMs);
+    servicePendingActivation(nowMs);  // phase 2 of a deferred profile activation
 
     // Wi-Fi loss policy (cahier des charges §21.4, default): cancel pending
     // commands and release notes in a controlled way, but stay armed/READY.

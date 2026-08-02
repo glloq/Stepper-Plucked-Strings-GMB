@@ -69,6 +69,20 @@ TEST(controller_auto_transpose) {
     CHECK_EQ(ic.target(played).fret, 2);
 }
 
+// A transposed open note that falls BELOW 0 must stay signed: clamping it to 0
+// would place a note at the wrong fret. Open note 1, transpose -3 => effective
+// open -2, so MIDI 0 plays at fret 2 (not fret 0).
+TEST(controller_negative_effective_open_note) {
+    Profile p = Profile::makeDefault("Low", 1, {1}, 12);
+    p.instrument.transpose = -3;
+    InstrumentController ic;
+    ic.load(p);
+    ic.handleEvent(noteOn(0, 0, 100), 0);
+    ic.tick(5000);
+    CHECK_EQ(ic.soundingCount(), 1);
+    CHECK_EQ(ic.target(0).fret, 2);
+}
+
 // Automatic mode: a bare Note On is grouped, then allocated on flush.
 TEST(controller_automatic_note) {
     InstrumentController ic;

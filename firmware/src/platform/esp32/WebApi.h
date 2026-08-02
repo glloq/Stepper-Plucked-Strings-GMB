@@ -42,6 +42,10 @@ struct WebContext {
     // observed half-applied. Both may be null (host build / no locking).
     std::function<void()> lockState;
     std::function<void()> unlockState;
+    // Distinct lock for LittleFS operations. loop() never takes it, so a long
+    // flash write from the web task cannot stall the safety loop.
+    std::function<void()> lockStorage;
+    std::function<void()> unlockStorage;
     // Only the flagged passwords are written (empty fields are left unchanged).
     std::function<void(bool, const std::string&, bool, const std::string&)> onSetWifi;
     // Returns true if the supplied token authorises a write (or if no admin
