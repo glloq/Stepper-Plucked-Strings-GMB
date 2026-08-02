@@ -44,8 +44,17 @@ public:
     void fault() { state_ = StringState::Fault; invalidate(); }
 
     // Begin a new note. Returns the fresh command id. Cancels any prior pending
-    // action by advancing the command id.
+    // action by advancing the command id. The pluck is armed automatically once
+    // the string is ready.
     uint32_t noteOn(int fret);
+
+    // Anticipated preparation (prepareOnCompleteSelection): move + press exactly
+    // like noteOn, but DO NOT arm the pluck when ready — it waits for trigger().
+    uint32_t prepareNote(int fret);
+
+    // Arm the (previously prepared) pluck. Runs only for the matching command;
+    // if the string is not yet ready it arms as soon as it settles.
+    bool trigger(uint32_t id);
 
     // Progress hooks driven by motion/servo/timers (non-blocking).
     void motionReached();
@@ -76,10 +85,12 @@ private:
     int targetFret_ = 0;
     bool openString_ = true;
     bool pluckArmed_ = false;
+    bool armOnSettle_ = true;  // false while a note is only prepared (not triggered)
 
     void invalidate() {
         commandId_ = nextId_++;  // any deferred action tagged with the old id dies
         pluckArmed_ = false;
+        armOnSettle_ = true;     // a fresh command arms normally by default
     }
 };
 

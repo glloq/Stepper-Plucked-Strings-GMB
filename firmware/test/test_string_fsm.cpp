@@ -67,6 +67,48 @@ TEST(fsm_replaced_command_ignores_old_pluck) {
     CHECK(c.state() == StringState::ReleasingFinger);
 }
 
+// prepareNote reaches ReadyToPluck without arming; trigger() then arms the pluck
+// so the deferred attack fires — anticipated pre-positioning.
+TEST(fsm_prepare_holds_pluck_until_trigger) {
+    StringController c = armed();
+    uint32_t id = c.prepareNote(5);
+    CHECK(id != 0);
+    c.motionReached();
+    c.fingerPressed();
+    c.settled();
+    CHECK(c.state() == StringState::ReadyToPluck);
+    CHECK(!c.pluckArmed());          // prepared, but held disarmed
+    CHECK(!c.executePluck(id));      // must not fire before the Note On
+    CHECK(c.trigger(id));            // Note On arrives -> arm now (already settled)
+    CHECK(c.pluckArmed());
+    CHECK(c.executePluck(id));
+    CHECK(c.state() == StringState::Sustaining);
+}
+
+// trigger() before the string settles arms on-settle: the pluck fires the moment
+// the mechanical sequence completes.
+TEST(fsm_trigger_before_settle_arms_on_settle) {
+    StringController c = armed();
+    uint32_t id = c.prepareNote(5);
+    c.motionReached();               // still PressingFinger
+    CHECK(c.trigger(id));            // triggered mid-preparation
+    CHECK(!c.pluckArmed());          // not ready yet
+    c.fingerPressed();
+    c.settled();
+    CHECK(c.pluckArmed());           // armed as soon as it settled
+    CHECK(c.executePluck(id));
+}
+
+// A stale trigger id (superseded prepare) is ignored.
+TEST(fsm_trigger_rejects_stale_id) {
+    StringController c = armed();
+    uint32_t oldId = c.prepareNote(5);
+    uint32_t newId = c.prepareNote(7);  // supersedes the first prepare
+    CHECK(newId != oldId);
+    CHECK(!c.trigger(oldId));
+    CHECK(c.trigger(newId));
+}
+
 // Panic drops any armed attack (cahier des charges 21.3).
 TEST(fsm_panic_cancels_everything) {
     StringController c = armed();

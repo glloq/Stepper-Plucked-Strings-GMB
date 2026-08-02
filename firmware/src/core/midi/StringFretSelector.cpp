@@ -70,6 +70,7 @@ bool StringFretSelector::onControlChange(const MidiEvent& e) {
                 s.hasString = true;
                 s.stringValue = static_cast<uint8_t>(axis);
                 s.expiresAtUs = e.timestampUs + timeoutUs;
+                noteMaybePrepare(s);  // string completed a waiting fret
                 return true;
             }
         }
@@ -99,6 +100,7 @@ bool StringFretSelector::onControlChange(const MidiEvent& e) {
                 s.hasFret = true;
                 s.fretValue = static_cast<uint8_t>(fret);
                 s.expiresAtUs = e.timestampUs + timeoutUs;
+                noteMaybePrepare(s);  // fret completed a waiting string
                 return true;
             }
         }
@@ -115,6 +117,15 @@ bool StringFretSelector::onControlChange(const MidiEvent& e) {
     }
 
     return false;
+}
+
+void StringFretSelector::noteMaybePrepare(const PendingStringSelection& s) {
+    if (!cfg_.prepareOnCompleteSelection || !s.complete()) return;
+    // Only pre-position selections that are physically valid — an out-of-range
+    // string/fret is resolved (rejected / fallback) at Note On time, not moved.
+    if (s.stringValue >= instrument_.stringCount) return;
+    if (s.fretValue > instrument_.maxFret(s.stringValue)) return;
+    justCompleted_.push_back({s.midiChannel, s.stringValue, s.fretValue});
 }
 
 bool StringFretSelector::coherent(uint8_t note, uint8_t stringIndex, uint8_t fret,
@@ -137,15 +148,16 @@ NoteResolution StringFretSelector::automaticResolution() const {
 }
 
 NoteResolution StringFretSelector::onNoteOn(const MidiEvent& e, uint32_t nowUs) {
-    expire(nowUs);
-
     if (!cfg_.enabled || cfg_.mode == SelectionMode::Automatic) {
+        expire(nowUs);
         return automaticResolution();
     }
 
     const uint8_t key = channelKey(e.channel);
 
-    // Find the oldest complete selection for this channel (spec section 9).
+    // Find the oldest complete selection for this channel (spec section 9) —
+    // WITHOUT expiring first, so an expired-but-present selection is handled by
+    // expiredSelectionPolicy rather than silently treated as "missing".
     int idx = -1;
     for (size_t i = 0; i < pending_.size(); ++i) {
         if (pending_[i].midiChannel == key && pending_[i].complete()) {
@@ -154,17 +166,54 @@ NoteResolution StringFretSelector::onNoteOn(const MidiEvent& e, uint32_t nowUs) 
         }
     }
 
+    auto applyPolicy = [&](InvalidValuePolicy policy,
+                           const char* why) -> NoteResolution {
+        switch (policy) {
+            case InvalidValuePolicy::AutomaticFallback:
+                return automaticResolution();
+            case InvalidValuePolicy::LastValid:
+                if (lastValidString_ >= 0 && lastValidFret_ >= 0) {
+                    NoteResolution r;
+                    r.play = true;
+                    r.source = ResolveSource::Explicit;
+                    r.stringIndex = static_cast<uint8_t>(lastValidString_);
+                    r.fret = static_cast<uint8_t>(lastValidFret_);
+                    r.noteInstanceId = nextInstanceId_++;
+                    active_.push_back({e.channel, e.data1, r.stringIndex, r.fret,
+                                       r.noteInstanceId});
+                    return r;
+                }
+                return automaticResolution();
+            case InvalidValuePolicy::Clamp:
+            case InvalidValuePolicy::Reject:
+            default: {
+                NoteResolution r;
+                r.play = false;
+                r.source = ResolveSource::Rejected;
+                r.warning = why;
+                return r;
+            }
+        }
+    };
+
     if (idx < 0) {
-        // No usable explicit selection.
-        if (cfg_.mode == SelectionMode::Hybrid ||
-            cfg_.missingSelectionPolicy == InvalidValuePolicy::AutomaticFallback) {
+        // No explicit selection at all: apply the missing-selection policy
+        // (hybrid mode always falls back to automatic allocation).
+        expire(nowUs);
+        if (cfg_.mode == SelectionMode::Hybrid) return automaticResolution();
+        return applyPolicy(cfg_.missingSelectionPolicy,
+                           "incomplete string/fret selection");
+    }
+
+    // A complete selection exists — but has it expired?
+    if (static_cast<int32_t>(nowUs - pending_[idx].expiresAtUs) >= 0) {
+        pending_.erase(pending_.begin() + idx);
+        expire(nowUs);
+        if (cfg_.mode == SelectionMode::Hybrid &&
+            cfg_.expiredSelectionPolicy != InvalidValuePolicy::Reject) {
             return automaticResolution();
         }
-        NoteResolution r;
-        r.play = false;
-        r.source = ResolveSource::Rejected;
-        r.warning = "incomplete string/fret selection";
-        return r;
+        return applyPolicy(cfg_.expiredSelectionPolicy, "string/fret selection expired");
     }
 
     PendingStringSelection sel = pending_[idx];
@@ -260,7 +309,9 @@ bool StringFretSelector::onNoteOff(const MidiEvent& e, ActiveNote* out) {
 
 void StringFretSelector::expire(uint32_t nowUs) {
     for (auto it = pending_.begin(); it != pending_.end();) {
-        if (nowUs >= it->expiresAtUs) {
+        // Overflow-safe comparison: micros() wraps ~every 71 min, so compare the
+        // signed difference rather than using >= directly.
+        if (static_cast<int32_t>(nowUs - it->expiresAtUs) >= 0) {
             it = pending_.erase(it);
         } else {
             ++it;

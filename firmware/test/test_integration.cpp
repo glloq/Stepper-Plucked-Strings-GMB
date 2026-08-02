@@ -101,6 +101,41 @@ TEST(controller_explicit_selection) {
     CHECK_EQ(ic.target(2).fret, 5);
 }
 
+// prepareOnCompleteSelection: a complete CC selection pre-positions the string
+// (target active, not yet sounding); the Note On reuses that move and only fires.
+TEST(controller_prepare_on_complete_selection) {
+    Profile p = ukulele();
+    p.selector.mode = SelectionMode::Explicit;
+    p.selector.prepareOnCompleteSelection = true;
+    InstrumentController ic;
+    ic.load(p);
+    ic.handleEvent(cc(0, 20, 3), 0);   // string 3 -> index 2 (open 64)
+    ic.handleEvent(cc(0, 21, 5), 0);   // fret 5 completes the selection
+    CHECK(ic.target(2).active);        // pre-positioned in anticipation
+    CHECK_EQ(ic.target(2).fret, 5);
+    CHECK_EQ(ic.soundingCount(), 0);   // prepared, not sounding yet
+    uint32_t prepId = ic.target(2).commandId;
+    ic.handleEvent(noteOn(0, 69, 110), 100);   // 64+5 = 69
+    CHECK_EQ(ic.soundingCount(), 1);           // now sounding
+    CHECK_EQ(ic.target(2).commandId, prepId);  // same move reused, no re-position
+    CHECK_EQ(ic.target(2).velocity, 110);      // velocity attached at trigger time
+}
+
+// With prepareOnCompleteSelection off, no pre-positioning happens before Note On.
+TEST(controller_prepare_disabled) {
+    Profile p = ukulele();
+    p.selector.mode = SelectionMode::Explicit;
+    p.selector.prepareOnCompleteSelection = false;
+    InstrumentController ic;
+    ic.load(p);
+    ic.handleEvent(cc(0, 20, 3), 0);
+    ic.handleEvent(cc(0, 21, 5), 0);
+    CHECK(!ic.target(2).active);       // nothing moves until the Note On
+    ic.handleEvent(noteOn(0, 69, 100), 100);
+    CHECK(ic.target(2).active);
+    CHECK_EQ(ic.soundingCount(), 1);
+}
+
 // A 4-note chord uses four distinct strings (criterion 14 at ukulele scale).
 TEST(controller_chord) {
     InstrumentController ic;

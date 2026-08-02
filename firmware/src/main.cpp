@@ -53,10 +53,12 @@ std::vector<bool> g_anchored;
 std::vector<bool> g_axisFaulted;  // runtime fault (homing fail, LIMIT, etc.)
 
 int8_t g_estopPin = -1;
+Debouncer g_estopDeb;  // debounced E-stop input (avoids a spurious trip)
 
-// Pending test-note Note Off (scheduled by /api/test/note).
-struct TestNoteOff { bool armed = false; uint8_t channel; uint8_t note; uint32_t atMs; };
-TestNoteOff g_testOff;
+// Pending test-note Note Offs (scheduled by /api/test/note). A small queue so a
+// second test before the first ends does not drop the first note's release.
+struct TestNoteOff { uint8_t channel; uint8_t note; uint32_t atMs; };
+std::vector<TestNoteOff> g_testOffs;
 
 // Per-string non-blocking playback scheduler.
 struct StringSched {
@@ -97,12 +99,15 @@ void applyProfile() {
     std::vector<AxisPins> axisPins;
     int8_t enablePin = -1;
     buildStepperPins(axisPins, enablePin);
-    std::vector<bool> homeActiveHigh;
-    for (size_t i = 0; i < g_profile.strings.size(); ++i)
-        homeActiveHigh.push_back(i < g_profile.homing.size()
-                                     ? g_profile.homing[i].sensorActiveHigh
-                                     : false);
-    g_steppers.begin(g_profile.strings, axisPins, enablePin, homeActiveHigh);
+    std::vector<bool> homeActiveHigh, limitActiveHigh;
+    for (size_t i = 0; i < g_profile.strings.size(); ++i) {
+        bool hah = i < g_profile.homing.size() ? g_profile.homing[i].sensorActiveHigh : false;
+        bool lah = i < g_profile.homing.size() ? g_profile.homing[i].limitActiveHigh : false;
+        homeActiveHigh.push_back(hah);
+        limitActiveHigh.push_back(lah);
+    }
+    g_steppers.begin(g_profile.strings, axisPins, enablePin, homeActiveHigh,
+                     limitActiveHigh);
     g_servos.begin(g_profile.servos, pinOf("SDA"), pinOf("SCL"), pinOf("SERVO_OE"));
 
     g_homing.assign(g_profile.strings.size(), HomingController{});
@@ -116,6 +121,7 @@ void applyProfile() {
     // so a profile change updates which pin is monitored.
     g_estopPin = pinOf("ESTOP");
     if (g_estopPin >= 0) pinMode(g_estopPin, INPUT_PULLUP);
+    g_estopDeb.configure(3, true);  // idle = HIGH (not pressed, active-low input)
 }
 
 // Rebuild the capability snapshot from a runtime copy of the profile that
@@ -432,7 +438,7 @@ void setup() {
         on.source = static_cast<uint8_t>(MidiSource::WebUiTest);
         g_instrument.handleEvent(on, on.timestampUs);
         uint32_t offAt = millis() + (durationMs ? durationMs : 500u);
-        g_testOff = {true, channel, note, offAt};
+        if (g_testOffs.size() < 16) g_testOffs.push_back({channel, note, offAt});
         return true;
     };
     ctx.onSetWifi = [](bool hasSta, const std::string& sta, bool hasAp,
@@ -508,6 +514,7 @@ void loop() {
     uint32_t nowMs = millis();
 
     g_net.tick(nowMs);
+    g_steppers.updateSensors(nowMs);  // debounce HOME/LIMIT before any read
 
     // Wi-Fi loss policy (cahier des charges §21.4, default): cancel pending
     // commands and release notes in a controlled way, but stay armed/READY.
@@ -521,20 +528,26 @@ void loop() {
     }
     wasConnected = nowConnected;
 
-    // Hardware E-stop (active-low) latches the EmergencyStop state immediately.
-    if (g_estopPin >= 0 && digitalRead(g_estopPin) == LOW &&
-        g_safety.state() != SafetyState::EmergencyStop) {
-        doEmergencyStop();
+    // Hardware E-stop (active-low), debounced to avoid a spurious trip.
+    if (g_estopPin >= 0) {
+        bool pressed = !g_estopDeb.update(nowMs, digitalRead(g_estopPin) == HIGH);
+        if (pressed && g_safety.state() != SafetyState::EmergencyStop) {
+            doEmergencyStop();
+        }
     }
 
-    // Deliver a scheduled test-note Note Off.
-    if (g_testOff.armed && (int32_t)(nowMs - g_testOff.atMs) >= 0) {
-        MidiEvent off;
-        off.type = static_cast<uint8_t>(MidiType::NoteOff);
-        off.channel = g_testOff.channel; off.data1 = g_testOff.note;
-        off.timestampUs = nowUs;
-        g_instrument.handleEvent(off, nowUs);
-        g_testOff.armed = false;
+    // Deliver any scheduled test-note Note Offs that are due.
+    for (size_t k = 0; k < g_testOffs.size();) {
+        if ((int32_t)(nowMs - g_testOffs[k].atMs) >= 0) {
+            MidiEvent off;
+            off.type = static_cast<uint8_t>(MidiType::NoteOff);
+            off.channel = g_testOffs[k].channel; off.data1 = g_testOffs[k].note;
+            off.timestampUs = nowUs;
+            g_instrument.handleEvent(off, nowUs);
+            g_testOffs.erase(g_testOffs.begin() + k);
+        } else {
+            ++k;
+        }
     }
 
     // Ingest Wi-Fi MIDI (bounded per tick). SysEx is always answered to its own

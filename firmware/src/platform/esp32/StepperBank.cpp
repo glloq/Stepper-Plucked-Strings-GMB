@@ -8,7 +8,8 @@ namespace gmb {
 
 void StepperBank::begin(const std::vector<AxisConfig>& axes,
                         const std::vector<AxisPins>& pins, int8_t enablePin,
-                        const std::vector<bool>& homeActiveHigh) {
+                        const std::vector<bool>& homeActiveHigh,
+                        const std::vector<bool>& limitActiveHigh) {
     axes_.clear();
     steppers_.clear();
     enablePin_ = enablePin;
@@ -20,6 +21,9 @@ void StepperBank::begin(const std::vector<AxisConfig>& axes,
         rt.pins = i < pins.size() ? pins[i] : AxisPins{};
         rt.stepsPerMm = rt.geom.stepsPerMm();
         rt.homeActiveHigh = i < homeActiveHigh.size() ? homeActiveHigh[i] : false;
+        rt.limitActiveHigh = i < limitActiveHigh.size() ? limitActiveHigh[i] : false;
+        rt.homeDeb.configure(3, false);   // 3 ms contact debounce
+        rt.limitDeb.configure(3, false);
         axes_.push_back(rt);
 
         FastAccelStepper* s = nullptr;
@@ -106,27 +110,35 @@ bool StepperBank::isRunning(size_t axis) const {
     return axis < steppers_.size() && steppers_[axis] && steppers_[axis]->isRunning();
 }
 
+void StepperBank::updateSensors(uint32_t nowMs) {
+    for (auto& a : axes_) {
+        if (a.pins.home >= 0) a.homeDeb.update(nowMs, digitalRead(a.pins.home) == HIGH);
+        if (a.pins.limit >= 0) a.limitDeb.update(nowMs, digitalRead(a.pins.limit) == HIGH);
+    }
+}
+
 bool StepperBank::homeActive(size_t axis) const {
     if (axis >= axes_.size() || axes_[axis].pins.home < 0) return false;
-    int level = digitalRead(axes_[axis].pins.home);
-    return axes_[axis].homeActiveHigh ? (level == HIGH) : (level == LOW);
+    bool high = axes_[axis].homeDeb.state();  // debounced
+    return axes_[axis].homeActiveHigh ? high : !high;
 }
 
 bool StepperBank::homeRawHigh(size_t axis) const {
     if (axis >= axes_.size() || axes_[axis].pins.home < 0) return false;
-    return digitalRead(axes_[axis].pins.home) == HIGH;
+    return axes_[axis].homeDeb.state();  // debounced raw HIGH
 }
 
 bool StepperBank::limitActive(size_t axis) const {
     if (axis >= axes_.size() || axes_[axis].pins.limit < 0) return false;
-    int level = digitalRead(axes_[axis].pins.limit);
-    return axes_[axis].homeActiveHigh ? (level == HIGH) : (level == LOW);
+    bool high = axes_[axis].limitDeb.state();  // debounced, independent polarity
+    return axes_[axis].limitActiveHigh ? high : !high;
 }
 
 #else  // ---- non-Arduino stub (kept analysable off-target) ----
 
 void StepperBank::begin(const std::vector<AxisConfig>& axes,
-                        const std::vector<AxisPins>& pins, int8_t enablePin) {
+                        const std::vector<AxisPins>& pins, int8_t enablePin,
+                        const std::vector<bool>&, const std::vector<bool>&) {
     axes_.clear();
     enablePin_ = enablePin;
     for (size_t i = 0; i < axes.size(); ++i) {
@@ -136,6 +148,7 @@ void StepperBank::begin(const std::vector<AxisConfig>& axes,
         axes_.push_back(rt);
     }
 }
+void StepperBank::updateSensors(uint32_t) {}
 void StepperBank::enableDrivers(bool on) { enabled_ = on; }
 void StepperBank::moveToMm(size_t axis, double mm) {
     if (axis < axes_.size()) axes_[axis].position = axes_[axis].geom.mmToSteps(axes_[axis].geom.clampToLimits(mm));

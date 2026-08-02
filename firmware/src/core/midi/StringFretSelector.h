@@ -105,6 +105,15 @@ struct ActiveNote {
     uint32_t noteInstanceId = 0;
 };
 
+// A CC selection that just became complete (string + fret both received). When
+// prepareOnCompleteSelection is on, the instrument pre-positions this string in
+// anticipation of the Note On (spec: "préparation anticipée").
+struct CompletedSelection {
+    uint8_t midiChannel = 0;
+    uint8_t stringIndex = 0;  // physical axis (already mapped, range-checked)
+    uint8_t fret = 0;
+};
+
 enum class ResolveSource : uint8_t { Explicit, Automatic, Rejected };
 
 struct NoteResolution {
@@ -137,6 +146,15 @@ public:
     // Returns false if the note was never tracked.
     bool onNoteOff(const MidiEvent& e, ActiveNote* out);
 
+    // Selections that became complete since the last call (empty unless
+    // prepareOnCompleteSelection is enabled). The caller pre-positions them and
+    // the list is cleared.
+    std::vector<CompletedSelection> takeJustCompleted() {
+        std::vector<CompletedSelection> out;
+        out.swap(justCompleted_);
+        return out;
+    }
+
     // Drop expired pending selections (spec section 4.4). Call periodically.
     void expire(uint32_t nowUs);
 
@@ -149,6 +167,7 @@ public:
         lastValidString_ = -1;
         lastValidFret_ = -1;
         nextInstanceId_ = 1;
+        justCompleted_.clear();
     }
 
     const std::vector<PendingStringSelection>& pending() const { return pending_; }
@@ -168,8 +187,12 @@ private:
     uint32_t nextInstanceId_ = 1;
     int lastValidString_ = -1;
     int lastValidFret_ = -1;
+    std::vector<CompletedSelection> justCompleted_;
 
     uint8_t channelKey(uint8_t ch) const { return cfg_.perMidiChannel ? ch : 0; }
+    // Record a newly-complete selection for anticipated pre-positioning, if the
+    // feature is on and the selection is in range.
+    void noteMaybePrepare(const PendingStringSelection& s);
     NoteResolution automaticResolution() const;
     bool coherent(uint8_t note, uint8_t stringIndex, uint8_t fret, std::string* warn) const;
 };
