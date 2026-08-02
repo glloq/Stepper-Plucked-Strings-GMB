@@ -10,10 +10,34 @@ uint32_t StringController::noteOn(int fret) {
     targetFret_ = fret;
     openString_ = (fret == 0);
     pluckArmed_ = false;
+    armOnSettle_ = true;  // direct play: arm the pluck as soon as the string is ready
     // The finger always lifts before moving (also the resting state for an open
     // string).
     state_ = StringState::ReleasingFinger;
     return commandId_;
+}
+
+uint32_t StringController::prepareNote(int fret) {
+    if (state_ == StringState::Disabled || state_ == StringState::Fault) {
+        return 0;
+    }
+    commandId_ = nextId_++;
+    targetFret_ = fret;
+    openString_ = (fret == 0);
+    pluckArmed_ = false;
+    armOnSettle_ = false;  // anticipation: move + press, but hold the pluck disarmed
+    state_ = StringState::ReleasingFinger;
+    return commandId_;
+}
+
+bool StringController::trigger(uint32_t id) {
+    // Only the matching (still-current) prepared command may be triggered.
+    if (id != commandId_) return false;
+    if (state_ == StringState::Disabled || state_ == StringState::Fault) return false;
+    armOnSettle_ = true;
+    // Already settled while prepared: arm the deferred pluck right away.
+    if (state_ == StringState::ReadyToPluck) pluckArmed_ = true;
+    return true;
 }
 
 void StringController::motionReached() {
@@ -25,7 +49,7 @@ void StringController::motionReached() {
         if (openString_) {
             // Open string: no finger press, ready immediately (spec 15.3).
             state_ = StringState::ReadyToPluck;
-            pluckArmed_ = true;
+            pluckArmed_ = armOnSettle_;  // stay disarmed if merely prepared
         } else {
             state_ = StringState::PressingFinger;
         }
@@ -41,7 +65,9 @@ void StringController::fingerPressed() {
 void StringController::settled() {
     if (state_ == StringState::Settling) {
         state_ = StringState::ReadyToPluck;
-        pluckArmed_ = true;  // deferred pluck armed, tagged by commandId_
+        // Deferred pluck armed (tagged by commandId_) — unless this is a merely
+        // prepared note, which stays disarmed until trigger().
+        pluckArmed_ = armOnSettle_;
     }
 }
 
@@ -69,7 +95,12 @@ void StringController::dampingDone() {
 }
 
 void StringController::panic() {
-    if (state_ == StringState::Disabled) return;
+    // A disabled or faulted axis stays out of service — a panic (CC120/123,
+    // Wi-Fi loss, software panic) must never resurrect it to Idle.
+    if (state_ == StringState::Disabled || state_ == StringState::Fault) {
+        invalidate();
+        return;
+    }
     invalidate();
     state_ = StringState::Idle;
 }

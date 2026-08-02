@@ -84,7 +84,7 @@ CapabilitySnapshot buildSnapshot(const Profile& p, int polyphonyOverride) {
         caps.supportedCc.push_back(p.selector.string.ccNumber);
         caps.supportedCc.push_back(p.selector.fret.ccNumber);
     }
-    if (p.midi.sustainPedal) caps.supportedCc.push_back(64);
+    if (p.midi.sustainPedal) caps.supportedCc.push_back(p.midi.sustainCc);
     caps.supportedCc.push_back(120);  // all sound off
     caps.supportedCc.push_back(123);  // all notes off
     std::sort(caps.supportedCc.begin(), caps.supportedCc.end());

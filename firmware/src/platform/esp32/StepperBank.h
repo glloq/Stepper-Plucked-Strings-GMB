@@ -11,7 +11,9 @@
 #include <cstdint>
 #include <vector>
 
+#include "../../core/motion/MotionPlanner.h"
 #include "../../core/motion/StepperAxis.h"
+#include "../../core/util/Debounce.h"
 
 #if defined(ARDUINO)
 #include <Arduino.h>
@@ -34,7 +36,12 @@ public:
     // active-low (the common endstop wiring).
     void begin(const std::vector<AxisConfig>& axes,
                const std::vector<AxisPins>& pins, int8_t enablePin,
-               const std::vector<bool>& homeActiveHigh = {});
+               const std::vector<bool>& homeActiveHigh = {},
+               const std::vector<bool>& limitActiveHigh = {});
+
+    // Sample & debounce the HOME/LIMIT inputs. Call once per loop() before
+    // reading homeActive()/limitActive()/homeRawHigh().
+    void updateSensors(uint32_t nowMs);
 
     void enableDrivers(bool on);
     bool enabled() const { return enabled_; }
@@ -74,6 +81,9 @@ private:
         double stepsPerMm = 80.0;
         long position = 0;  // used by the non-Arduino stub only
         bool homeActiveHigh = false;
+        bool limitActiveHigh = false;
+        Debouncer homeDeb;   // debounced raw HIGH level of the HOME pin
+        Debouncer limitDeb;  // debounced raw HIGH level of the LIMIT pin
         AxisRt(const AxisConfig& c) : geom(c) {}
     };
     std::vector<AxisRt> axes_;

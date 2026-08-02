@@ -41,7 +41,8 @@ struct HomingConfig {
     double offsetMm = 0.0;      // final resting offset past the zero
     uint32_t timeoutMs = 8000;
     double maxSearchMm = 500.0;
-    bool sensorActiveHigh = true;
+    bool sensorActiveHigh = true;   // HOME sensor polarity
+    bool limitActiveHigh = false;   // LIMIT switch polarity (independent of HOME)
 };
 
 enum class MoveKind : uint8_t { Stop, MoveVelocity, MoveTo };

@@ -39,7 +39,8 @@ TEST_SRC := \
   test_midiparser.cpp \
   test_servos.cpp \
   test_planner.cpp \
-  test_audit.cpp
+  test_audit.cpp \
+  test_debounce.cpp
 
 BIN := run_tests
 

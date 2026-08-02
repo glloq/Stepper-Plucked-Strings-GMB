@@ -143,6 +143,7 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
             ho["timeoutMs"] = h.timeoutMs;
             ho["maxSearchMm"] = h.maxSearchMm;
             ho["sensorActiveHigh"] = h.sensorActiveHigh;
+            ho["limitActiveHigh"] = h.limitActiveHigh;
         }
     }
 
@@ -291,6 +292,7 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
         h.timeoutMs = ho["timeoutMs"] | 8000;
         h.maxSearchMm = ho["maxSearchMm"] | 500.0;
         h.sensorActiveHigh = ho["sensorActiveHigh"] | true;
+        h.limitActiveHigh = ho["limitActiveHigh"] | false;
         out.homing.push_back(h);
     }
 
@@ -342,6 +344,14 @@ std::string ProfileStorage::slotPath(int slot) {
 bool ProfileStorage::begin() {
     if (!LittleFS.begin(true)) return false;
     if (!LittleFS.exists("/profiles")) LittleFS.mkdir("/profiles");
+    // Recover from an interrupted save: if a slot is missing but its .bak
+    // survived, restore it (the crash happened between remove and rename).
+    for (int i = 0; i < kMaxProfiles; ++i) {
+        std::string path = slotPath(i);
+        std::string bak = path + ".bak";
+        if (!LittleFS.exists(path.c_str()) && LittleFS.exists(bak.c_str()))
+            LittleFS.rename(bak.c_str(), path.c_str());
+    }
     return true;
 }
 
@@ -388,6 +398,18 @@ bool ProfileStorage::save(int slot, const Profile& p) {
     if (written == 0) {  // write failed: keep the old slot intact
         LittleFS.remove(tmp.c_str());
         return false;
+    }
+    // Read the temp file back and confirm it deserialises to a valid profile
+    // BEFORE replacing the existing slot (guards against a truncated write).
+    {
+        File rf = LittleFS.open(tmp.c_str(), "r");
+        if (!rf) { LittleFS.remove(tmp.c_str()); return false; }
+        JsonDocument vd;
+        Profile check;
+        bool ok = deserializeJson(vd, rf) == DeserializationError::Ok &&
+                  fromJson(vd.as<JsonVariantConst>(), check);
+        rf.close();
+        if (!ok) { LittleFS.remove(tmp.c_str()); return false; }
     }
     // Keep a backup of the existing slot so a failed rename never loses data.
     std::string bak = finalPath + ".bak";

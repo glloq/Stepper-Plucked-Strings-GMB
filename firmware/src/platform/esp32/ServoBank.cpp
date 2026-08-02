@@ -106,6 +106,7 @@ bool ServoBank::attachDirect(int index) {
 void ServoBank::writeMicros(int index, uint16_t us) {
     if (index < 0 || index >= (int)servos_.size()) return;
     const ServoConfig& s = servos_[index];
+    if (!s.enabled) return;  // never drive a disabled servo
     us = clampPulse(s, us);
     // Apply inversion by mirroring within the calibrated pulse window.
     if (s.inverted) us = static_cast<uint16_t>(s.pulseMinUs + s.pulseMaxUs - us);
@@ -234,7 +235,8 @@ void ServoBank::neutraliseAll() {
 
 int ServoBank::servoIndex(const std::string& function, int stringIndex) const {
     for (size_t i = 0; i < servos_.size(); ++i) {
-        if (servos_[i].function == function && servos_[i].stringIndex == stringIndex)
+        if (servos_[i].enabled && servos_[i].function == function &&
+            servos_[i].stringIndex == stringIndex)
             return static_cast<int>(i);
     }
     return -1;

@@ -67,8 +67,10 @@ void WebApi::fillStatus(JsonDocument& doc) {
     doc["notesPlaying"] = ctx_.instrument ? ctx_.instrument->soundingCount() : 0;
     doc["safety"] = armed ? "armed" : "safe";
     doc["authConfigured"] = ctx_.authConfigured ? ctx_.authConfigured() : false;
+    // The AP is "open" when it is active and NOT WPA2-secured (real password
+    // check, not merely whether the auth callback exists).
     doc["apOpen"] = ctx_.net && ctx_.net->accessPointActive() &&
-                    ctx_.profile && !ctx_.authConfigured ? true : false;
+                    !ctx_.net->accessPointSecured();
     JsonArray faults = doc["faults"].to<JsonArray>();
     if (ctx_.safety)
         for (const auto& f : ctx_.safety->faults()) {

@@ -229,6 +229,67 @@ TEST(degraded_snapshot_excludes_disabled_string) {
     CHECK_EQ((int)deg.capabilities.noteMin, 45);  // low E gone -> A2 is the floor
 }
 
+// --- P0: a faulted axis survives a panic (not resurrected to Idle) ---
+TEST(panic_preserves_faulted_axis) {
+    InstrumentController ic;
+    ic.load(uke());
+    ic.faultString(1);
+    CHECK(ic.string(1).state() == StringState::Fault);
+    ic.panic();                                   // CC120 / Wi-Fi loss path
+    CHECK(ic.string(1).state() == StringState::Fault);
+    // A disabled axis likewise stays disabled through a panic.
+    Profile p = uke();
+    p.strings[0].enabled = false;
+    InstrumentController ic2;
+    ic2.load(p);
+    CHECK(ic2.string(0).state() == StringState::Disabled);
+    ic2.panic();
+    CHECK(ic2.string(0).state() == StringState::Disabled);
+}
+
+// --- P0: setHoming refuses a disabled/faulted axis ---
+TEST(set_homing_refuses_disabled) {
+    StringController c;          // starts Disabled
+    c.setHoming();
+    CHECK(c.state() == StringState::Disabled);
+    c.enable();
+    c.fault();
+    c.setHoming();
+    CHECK(c.state() == StringState::Fault);
+}
+
+// --- P0/P1: a disabled axis does not require pins or a pluck servo ---
+TEST(disabled_axis_not_required_in_validation) {
+    Profile p = Profile::makeDefault("Guitar", 6, {40, 45, 50, 55, 59, 64}, 12);
+    p.strings[5].enabled = false;
+    // Remove string 6's STEP/DIR/HOME pins and its pluck servo.
+    for (auto it = p.pins.begin(); it != p.pins.end();) {
+        if (it->signal == "STEP6" || it->signal == "DIR6" || it->signal == "HOME6")
+            it = p.pins.erase(it);
+        else ++it;
+    }
+    for (auto it = p.servos.begin(); it != p.servos.end();) {
+        if (it->function == "pluck" && it->stringIndex == 5) it = p.servos.erase(it);
+        else ++it;
+    }
+    CHECK(ProfileValidator::isActivatable(p));  // disabled axis is exempt
+}
+
+// --- P1: the announced sustain CC follows the configured value ---
+TEST(sustain_cc_announced_from_config) {
+    Profile p = uke();
+    p.midi.sustainPedal = true;
+    p.midi.sustainCc = 66;
+    CapabilitySnapshot s = buildSnapshot(p);
+    bool has66 = false, has64 = false;
+    for (uint8_t cc : s.capabilities.supportedCc) {
+        if (cc == 66) has66 = true;
+        if (cc == 64) has64 = true;
+    }
+    CHECK(has66);
+    CHECK(!has64);
+}
+
 // --- selection spec: fret-then-string CC order ---
 
 TEST(fret_before_string_cc_order) {
