@@ -43,6 +43,27 @@ bool arm(bool profileValid, bool pinsValid);  // Armed uniquement si les deux so
 Aucun actionneur n'est activé en mode normal tant que les erreurs critiques ne
 sont pas corrigées (cf. assistant §9, [`WEB_INTERFACE.md`](WEB_INTERFACE.md)).
 
+### Séquence de démarrage complète (§13 / §21.1)
+
+`main.cpp` suit une machine à trois phases ; **le jeu n'est armé qu'après un
+homing réussi**, de sorte qu'aucun axe ne bouge depuis une position physique
+inconnue :
+
+```text
+Boot     : PowerOnSafe — profil chargé et validé, drivers OFF, servos au repos
+   │        (si le profil est invalide, on reste en Boot : aucun mouvement)
+   ▼
+Homing   : drivers ON ; chaque axe exécute son HomingController (non bloquant,
+   │        en parallèle). L'origine est ancrée sur le capteur HOME (0 mm).
+   │        Un axe en défaut est désactivé sans bloquer les autres.
+   ▼
+Ready    : tous les axes homés → arm() → les notes MIDI sont jouées.
+```
+
+Pendant `Boot` et `Homing`, les `Note On` ne sont pas joués (seules les requêtes
+SysEx sont traitées). Un changement de configuration mécanique depuis
+l'interface Web relance un homing avant de rejouer.
+
 ---
 
 ## 2. Arrêt d'urgence matériel — /OE du PCA9685 (§21.2)

@@ -503,8 +503,10 @@
   GMB.mockSysEx = mockSysEx;
 
   // ---------------------------------------------------------------------------
-  // The API client. Every REST method tries fetch() first and, on network
-  // failure, serves the mock. `GMB.api.mock` is set true once a fetch fails.
+  // The API client. Every REST method tries fetch() first. It falls back to the
+  // mock ONLY when the backend is unreachable (network failure / forced demo).
+  // A real HTTP error (4xx/5xx from the firmware) is propagated to the caller so
+  // the UI shows the real failure instead of a faked success.
   // ---------------------------------------------------------------------------
   var api = {
     mock: false,
@@ -515,18 +517,39 @@
 
     _fetch: function (path, opts) {
       var self = this;
-      if (this._forceMock) return Promise.reject(new Error('forced-mock'));
+      if (this._forceMock) {
+        var fm = new Error('forced-mock'); fm.network = true; return Promise.reject(fm);
+      }
       return fetch(path, opts).then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
+        // Backend replied. Whatever the status, we are NOT offline.
         self.mock = false;
         var ct = r.headers.get('content-type') || '';
-        return ct.indexOf('application/json') >= 0 ? r.json() : r.text();
-      }).catch(function (e) { self.mock = true; throw e; });
+        var bodyP = ct.indexOf('application/json') >= 0
+          ? r.json().catch(function () { return {}; })
+          : r.text();
+        if (!r.ok) {
+          return bodyP.then(function (body) {
+            var e = new Error('HTTP ' + r.status);
+            e.httpStatus = r.status;
+            e.body = body;             // e.g. { ok:false, issues:[...] }
+            throw e;                   // real error — do not mask with the mock
+          });
+        }
+        return bodyP;
+      }, function (networkErr) {
+        // fetch() itself rejected -> the backend is unreachable.
+        var e = new Error('network'); e.network = true; e.cause = networkErr;
+        throw e;
+      });
     },
 
-    // Wrap a REST call so a failure falls back to a mock producer.
+    // Wrap a REST call so it falls back to the mock ONLY when offline.
     _call: function (path, opts, mockFn) {
-      return this._fetch(path, opts).catch(function () { return mockFn(); });
+      var self = this;
+      return this._fetch(path, opts).catch(function (e) {
+        if (self._forceMock || (e && e.network)) { self.mock = true; return mockFn(); }
+        throw e;  // propagate real HTTP errors to the caller
+      });
     },
 
     getStatus: function () {

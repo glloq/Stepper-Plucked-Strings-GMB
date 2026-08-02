@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  native-tests:
+    name: Firmware core — native unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y g++ make
+
+      - name: Build & run the native test suite
+        working-directory: firmware/test
+        run: make
+
+  web-lint:
+    name: Web interface — JS syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: node --check every JS file
+        run: |
+          set -e
+          for f in web-interface/js/*.js; do
+            echo "checking $f"
+            node --check "$f"
+          done
+
+  json-validate:
+    name: Profiles — JSON validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate board & instrument profiles
+        run: |
+          set -e
+          for f in board-profiles/*.json instrument-profiles/*.json; do
+            echo "validating $f"
+            python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f"
+          done
