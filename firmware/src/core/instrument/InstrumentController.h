@@ -84,7 +84,7 @@ private:
                    uint8_t velocity);
     void stopString(int stringIndex);
     int findActive(uint8_t channel, uint8_t note) const;
-    void releaseNote(uint8_t channel, uint8_t note);
+    void removeActiveByString(int stringIndex);
     void flushChord();
 };
 

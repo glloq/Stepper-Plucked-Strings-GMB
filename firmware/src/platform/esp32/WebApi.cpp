@@ -256,28 +256,106 @@ void WebApi::registerRoutes() {
     saveProfile->setMethod(HTTP_POST);
     server_->addHandler(saveProfile);
 
-    // ---- POST /api/test/note (inject a Note On/Off pair) ----
+    // ---- POST /api/profiles/load (activate a stored slot) ----
+    auto* loadProfile = new AsyncCallbackJsonWebHandler(
+        "/api/profiles/load", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            JsonDocument doc;
+            int slot = body["slot"] | -1;
+            Profile p;
+            if (slot < 0 || !ctx_.storage || !ctx_.storage->load(slot, p)) {
+                doc["ok"] = false;
+                doc["error"] = "slot not found";
+                sendJson(req, doc, 404);
+                return;
+            }
+            bool applied = ctx_.onActivateProfile && ctx_.onActivateProfile(p);
+            doc["ok"] = applied;
+            sendJson(req, doc, applied ? 200 : 422);
+        });
+    loadProfile->setMethod(HTTP_POST);
+    server_->addHandler(loadProfile);
+
+    // ---- POST /api/profiles/delete ----
+    auto* deleteProfile = new AsyncCallbackJsonWebHandler(
+        "/api/profiles/delete", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            JsonDocument doc;
+            int slot = body["slot"] | -1;
+            bool ok = slot >= 0 && ctx_.storage && ctx_.storage->remove(slot);
+            doc["ok"] = ok;
+            sendJson(req, doc, ok ? 200 : 400);
+        });
+    deleteProfile->setMethod(HTTP_POST);
+    server_->addHandler(deleteProfile);
+
+    // ---- POST /api/test/note (Note On + scheduled Note Off, Ready only) ----
     auto* testNote = new AsyncCallbackJsonWebHandler(
         "/api/test/note", [this](AsyncWebServerRequest* req, JsonVariant& body) {
             JsonDocument doc;
-            if (!ctx_.instrument) {
+            bool ok = ctx_.onTestNote &&
+                      ctx_.onTestNote(body["channel"] | 0, body["note"] | 60,
+                                      body["velocity"] | 100, body["durationMs"] | 500);
+            doc["ok"] = ok;
+            if (!ok) doc["error"] = "instrument not ready (homing) or unavailable";
+            sendJson(req, doc, ok ? 200 : 409);
+        });
+    testNote->setMethod(HTTP_POST);
+    server_->addHandler(testNote);
+
+    // ---- POST /api/test/servo (pulse a servo to rest/active) ----
+    auto* testServo = new AsyncCallbackJsonWebHandler(
+        "/api/test/servo", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            JsonDocument doc;
+            if (!ctx_.servos || !ctx_.safety || !ctx_.safety->actuatorsAllowed()) {
+                doc["ok"] = false;
+                doc["error"] = "actuators not armed";
+                sendJson(req, doc, 409);
+                return;
+            }
+            int idx = body["index"] | -1;
+            bool active = body["active"] | true;
+            if (active) ctx_.servos->toActive(idx); else ctx_.servos->toRest(idx);
+            doc["ok"] = true;
+            sendJson(req, doc);
+        });
+    testServo->setMethod(HTTP_POST);
+    server_->addHandler(testServo);
+
+    // ---- POST /api/test/endstop (read a HOME/LIMIT sensor) ----
+    auto* testEndstop = new AsyncCallbackJsonWebHandler(
+        "/api/test/endstop", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            JsonDocument doc;
+            if (!ctx_.steppers) {
                 doc["ok"] = false;
                 sendJson(req, doc, 409);
                 return;
             }
-            MidiEvent e;
-            e.type = static_cast<uint8_t>(MidiType::NoteOn);
-            e.channel = body["channel"] | 0;
-            e.data1 = body["note"] | 60;
-            e.data2 = body["velocity"] | 100;
-            e.timestampUs = micros();
-            e.source = static_cast<uint8_t>(MidiSource::WebUiTest);
-            ctx_.instrument->handleEvent(e, e.timestampUs);
+            size_t axis = body["axis"] | 0;
             doc["ok"] = true;
+            doc["home"] = ctx_.steppers->homeActive(axis);
+            doc["limit"] = ctx_.steppers->limitActive(axis);
             sendJson(req, doc);
         });
-    testNote->setMethod(HTTP_POST);
-    server_->addHandler(testNote);
+    testEndstop->setMethod(HTTP_POST);
+    server_->addHandler(testEndstop);
+
+    // ---- POST /api/wifi (store credentials in NVS, never exported) ----
+    auto* setWifi = new AsyncCallbackJsonWebHandler(
+        "/api/wifi", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            JsonDocument doc;
+            if (!ctx_.onSetWifi) {
+                doc["ok"] = false;
+                sendJson(req, doc, 409);
+                return;
+            }
+            std::string sta = body["stationPassword"] | "";
+            std::string ap = body["apPassword"] | "";
+            ctx_.onSetWifi(sta, ap);
+            doc["ok"] = true;
+            doc["note"] = "stored; reboot to apply";
+            sendJson(req, doc);
+        });
+    setWifi->setMethod(HTTP_POST);
+    server_->addHandler(setWifi);
 
     // ---- POST /api/sysex/request (run a SysEx buffer through the service) ----
     auto* sysexReq = new AsyncCallbackJsonWebHandler(

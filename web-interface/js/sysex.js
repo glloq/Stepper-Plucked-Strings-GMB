@@ -108,7 +108,7 @@
     GMB.saveProfile().then(function () {
       GMB.api.sysexRequest('notify').then(function () {
         GMB.toast('Capabilities published (block 8 notification sent).', 'ok');
-      });
+      }).catch(function (e) { GMB.toast('Publish failed: ' + sysexErr(e), 'error'); });
     });
   }
 
@@ -118,11 +118,13 @@
       var el = document.getElementById('last-detection');
       if (el) el.textContent = lastDetection;
       GMB.toast('Communication test: ' + (res.valid ? 'success' : 'failed'), res.valid ? 'ok' : 'error');
-    });
+    }).catch(function (e) { GMB.toast('Communication test failed: ' + sysexErr(e), 'error'); });
   }
 
   function runSysEx(kind) {
-    GMB.api.sysexRequest(kind).then(function (res) { showResult(kind, res, true); });
+    GMB.api.sysexRequest(kind)
+      .then(function (res) { showResult(kind, res, true); })
+      .catch(function (e) { GMB.toast('SysEx ' + kind + ' failed: ' + sysexErr(e), 'error'); });
   }
 
   function fullDiscovery() {
@@ -135,8 +137,11 @@
         return GMB.api.sysexRequest(kind).then(function (res) { showResult(kind, res, false); });
       });
     });
-    chain.then(function () { GMB.toast('Full discovery complete.', 'ok'); });
+    chain.then(function () { GMB.toast('Full discovery complete.', 'ok'); })
+      .catch(function (e) { GMB.toast('Discovery failed: ' + sysexErr(e), 'error'); });
   }
+
+  function sysexErr(e) { return (e && e.body && e.body.error) || (e && e.message) || 'error'; }
 
   function showResult(kind, res, replace) {
     var out = document.getElementById('sysex-out');

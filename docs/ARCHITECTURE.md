@@ -27,11 +27,16 @@ Conséquences :
   de cartes, gestion des broches, sélection corde/frette, allocation des notes,
   machine d'état par corde, géométrie moteur, homing, capacités/SysEx GMB,
   sécurité. Aucun accès direct au matériel.
-* **Adaptateurs de plateforme** (à venir, hors `core/`) — implémentations
-  concrètes qui branchent le cœur sur le matériel ESP32-S3 : génération réelle
-  des pas (RMT/LEDC), pilote I²C du PCA9685, lecture des GPIO, Wi-Fi, serveur
-  Web, stockage NVS/flash. Ces couches consomment le cœur sans le modifier.
-* **Tests natifs** (`firmware/test/`) — 48 tests unitaires compilés et exécutés
+* **Adaptateurs de plateforme** (`firmware/src/platform/esp32/`) —
+  implémentations concrètes qui branchent le cœur sur le matériel ESP32-S3 :
+  `StepperBank` génère les pas via le **moteur matériel FastAccelStepper**
+  (RMT/MCPWM + timer), donc **hors de `loop()`** — le `MotionPlanner` du cœur
+  reste le modèle trapézoïdal de référence testé sur PC ; `ServoBank` pilote le
+  PCA9685 **et** les servos en GPIO direct (LEDC 14 bits) ; `Net` (Wi-Fi non
+  bloquant), `WebApi` (REST + WebSocket), `MidiWifi` (transport), `ProfileStorage`
+  (LittleFS + NVS pour les secrets). Ces couches consomment le cœur sans le
+  modifier.
+* **Tests natifs** (`firmware/test/`) — 86 tests unitaires compilés et exécutés
   avec `g++ -std=c++17` via `firmware/test/Makefile`, couvrant les 8 modules du
   cœur (`test_board`, `test_selector`, `test_allocator`, `test_motion`,
   `test_string_fsm`, `test_profile`, `test_sysex`, + `test_main`).
@@ -242,7 +247,7 @@ sélecteur corde/frette et le générateur de capacités.
 | **6 — Communications futures** | BLE MIDI, USB MIDI, MIDI DIN, liaisons filaires | nouveaux transports réutilisant `MidiEvent` |
 
 L'état actuel du dépôt couvre le **cœur algorithmique** des phases 1 à 3 (modules
-`core/*` + 48 tests natifs). Les adaptateurs de plateforme et l'interface Web
+`core/*` + 86 tests natifs). Les adaptateurs de plateforme et l'interface Web
 constituent les couches restantes.
 
 ---

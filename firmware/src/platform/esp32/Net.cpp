@@ -7,9 +7,11 @@
 
 namespace gmb {
 
-bool Net::begin(const NetworkConfig& cfg, const std::string& stationPassword) {
+bool Net::begin(const NetworkConfig& cfg, const std::string& stationPassword,
+                const std::string& apPassword) {
     cfg_ = cfg;
     password_ = stationPassword;
+    apPassword_ = apPassword;
     if (cfg_.mode == NetworkMode::Station && !cfg_.ssid.empty()) {
 #if defined(ARDUINO)
         beginStationAttempt(millis());
@@ -25,7 +27,9 @@ bool Net::begin(const NetworkConfig& cfg, const std::string& stationPassword) {
 void Net::startAccessPoint() {
 #if defined(ARDUINO)
     WiFi.mode(WIFI_AP);
-    WiFi.softAP(cfg_.apSsid.c_str());
+    // WPA2 when a password (>= 8 chars) is set, otherwise an open AP.
+    if (apPassword_.size() >= 8) WiFi.softAP(cfg_.apSsid.c_str(), apPassword_.c_str());
+    else WiFi.softAP(cfg_.apSsid.c_str());
     ip_ = WiFi.softAPIP().toString().c_str();
 #else
     ip_ = "192.168.4.1";

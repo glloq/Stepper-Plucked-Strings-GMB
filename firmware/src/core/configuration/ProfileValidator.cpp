@@ -22,26 +22,88 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
     if (p.strings.size() != p.instrument.stringCount) {
         err("strings", "Number of configured axes must equal the string count");
     }
-    if (!p.homing.empty() && p.homing.size() != p.strings.size()) {
-        err("homing", "One homing configuration is required per axis");
+    if (p.homing.size() != p.strings.size()) {
+        err("homing", "Exactly one homing configuration is required per axis");
     }
+
+    // Mandatory mechanical pins must be present, not merely conflict-free.
+    auto hasPin = [&](const std::string& sig) {
+        for (const auto& a : p.pins)
+            if (a.signal == sig && a.gpio >= 0) return true;
+        return false;
+    };
+    bool anyPca = false;
+    int directServos = 0;
+    for (const auto& s : p.servos) {
+        if (!s.enabled) continue;
+        if (s.source == ServoSource::Pca) anyPca = true;
+        else ++directServos;
+    }
+    for (size_t i = 0; i < p.strings.size(); ++i) {
+        std::string n = std::to_string(i + 1);
+        if (!hasPin("STEP" + n)) err("pins.STEP" + n, "STEP pin is required for this axis");
+        if (!hasPin("DIR" + n)) err("pins.DIR" + n, "DIR pin is required for this axis");
+        if (!hasPin("HOME" + n)) err("pins.HOME" + n, "HOME endstop pin is required for this axis");
+    }
+    if (!p.strings.empty() && !hasPin("ENABLE"))
+        err("pins.ENABLE", "A driver ENABLE pin is required");
+    if (anyPca) {
+        if (!hasPin("SDA") || !hasPin("SCL"))
+            err("pins.i2c", "SDA and SCL are required when a PCA9685 is used");
+        if (!hasPin("SERVO_OE"))
+            err("pins.SERVO_OE", "The PCA9685 /OE safety pin is required");
+    }
+    // ESP32-S3 has 8 LEDC channels; a direct servo consumes one.
+    if (directServos > 8)
+        err("servos.direct",
+            "At most 8 direct-GPIO servos are supported (ESP32-S3 has 8 LEDC channels)");
 
     // Per-string sanity.
     for (size_t i = 0; i < p.strings.size(); ++i) {
         const AxisConfig& a = p.strings[i];
+        std::string t = "strings[" + std::to_string(i) + "]";
         if (a.maxPositionMm <= a.minPositionMm) {
-            err("strings[" + std::to_string(i) + "].limits",
-                "Maximum position must be greater than minimum position");
+            err(t + ".limits", "Maximum position must be greater than minimum position");
         }
         if (a.scaleLengthMm <= 0.0) {
-            err("strings[" + std::to_string(i) + "].scaleLength",
-                "Scale length must be positive");
+            err(t + ".scaleLength", "Scale length must be positive");
         }
+        // Numeric drive parameters.
+        if (a.microsteps == 0) err(t + ".microsteps", "Microstepping must be > 0");
+        if (a.stepsPerRevolution == 0)
+            err(t + ".stepsPerRevolution", "Steps per revolution must be > 0");
+        if (a.maxSpeedMmS <= 0.0) err(t + ".maxSpeedMmS", "Max speed must be > 0");
+        if (a.maxAccelMmS2 <= 0.0) err(t + ".maxAccelMmS2", "Max acceleration must be > 0");
+
         // Ensure the calculated span physically fits.
         double lastFret = gmb::fretPositionMm(a.scaleLengthMm, a.maxFret);
         if (lastFret > a.maxPositionMm - a.minPositionMm + 0.001) {
-            warn("strings[" + std::to_string(i) + "].travel",
-                 "Highest fret position exceeds the configured travel");
+            warn(t + ".travel", "Highest fret position exceeds the configured travel");
+        }
+
+        // Calibrated fret table must be monotonic and inside the travel.
+        double prev = -1e9;
+        for (size_t f = 0; f < a.calibratedFretMm.size(); ++f) {
+            double v = a.calibratedFretMm[f];
+            if (v < a.minPositionMm - 1e-6 || v > a.maxPositionMm + 1e-6)
+                err(t + ".calibratedFretMm[" + std::to_string(f) + "]",
+                    "Calibrated fret position is outside the axis travel");
+            if (v < prev - 1e-6)
+                err(t + ".calibratedFretMm[" + std::to_string(f) + "]",
+                    "Calibrated fret positions must be non-decreasing");
+            prev = v;
+        }
+
+        // Homing sanity for this axis.
+        if (i < p.homing.size()) {
+            const HomingConfig& h = p.homing[i];
+            if (h.direction != 1 && h.direction != -1)
+                err(t + ".homing.direction", "Homing direction must be +1 or -1");
+            if (h.fastSpeedMmS <= 0.0 || h.slowSpeedMmS <= 0.0)
+                err(t + ".homing.speed", "Homing speeds must be > 0");
+            if (h.timeoutMs == 0) err(t + ".homing.timeout", "Homing timeout must be > 0");
+            if (h.maxSearchMm <= 0.0)
+                err(t + ".homing.maxSearch", "Homing max search distance must be > 0");
         }
     }
 
@@ -84,6 +146,10 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
 
             if (s.pulseMinUs >= s.pulseMaxUs)
                 err(tag + ".pulse", "pulseMinUs must be less than pulseMaxUs");
+            if (s.restUs < s.pulseMinUs || s.restUs > s.pulseMaxUs)
+                err(tag + ".restUs", "Rest pulse is outside the servo's min/max range");
+            if (s.activeUs < s.pulseMinUs || s.activeUs > s.pulseMaxUs)
+                err(tag + ".activeUs", "Active pulse is outside the servo's min/max range");
 
             if (s.source == ServoSource::Pca) {
                 if (s.pcaBoard > 3)
@@ -111,6 +177,34 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
                                                " already used by " + u.second);
                 if (s.gpio >= 0) usedGpio.push_back({s.gpio, tag});
             }
+        }
+    }
+
+    // Pluck-mode servo presence (cahier des charges §5.3).
+    {
+        auto hasServoRole = [&](const std::string& fn, int strIdx) {
+            for (const auto& s : p.servos)
+                if (s.enabled && s.function == fn && s.stringIndex == strIdx) return true;
+            return false;
+        };
+        bool needIndividual = p.instrument.pluckMode == PluckMode::Individual ||
+                              p.instrument.pluckMode == PluckMode::Both;
+        bool needShared = p.instrument.pluckMode == PluckMode::SharedStrum ||
+                          p.instrument.pluckMode == PluckMode::Both;
+        if (needIndividual) {
+            for (size_t i = 0; i < p.strings.size(); ++i)
+                if (!hasServoRole("pluck", static_cast<int>(i)))
+                    err("servos.pluck",
+                        "String " + std::to_string(i) +
+                            " needs a pluck servo for the individual pluck mode");
+        }
+        if (needShared) {
+            bool found = false;
+            for (const auto& s : p.servos)
+                if (s.enabled && s.function == "sharedStrum") found = true;
+            if (!found)
+                err("servos.sharedStrum",
+                    "A sharedStrum servo is required for the shared-strum pluck mode");
         }
     }
 

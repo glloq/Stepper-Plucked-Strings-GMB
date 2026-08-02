@@ -63,6 +63,16 @@ bool StringFretSelector::onControlChange(const MidiEvent& e) {
             return true;  // consumed, but invalid — handled at Note On time
         }
         lastValidString_ = axis;
+        // If a fret arrived first, complete that oldest fret-only entry instead
+        // of opening a new one (symmetric with the fret branch below).
+        for (auto& s : pending_) {
+            if (s.midiChannel == key && s.hasFret && !s.hasString) {
+                s.hasString = true;
+                s.stringValue = static_cast<uint8_t>(axis);
+                s.expiresAtUs = e.timestampUs + timeoutUs;
+                return true;
+            }
+        }
         // New selection in the FIFO (spec section 9).
         if (pending_.size() >= cfg_.queueDepth) pending_.erase(pending_.begin());
         PendingStringSelection s;

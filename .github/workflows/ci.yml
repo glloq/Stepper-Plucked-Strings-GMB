@@ -19,6 +19,30 @@ jobs:
         working-directory: firmware/test
         run: make
 
+  esp32-build:
+    name: Firmware — ESP32-S3 build (PlatformIO)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+      - name: Sync web UI into the LittleFS image
+        working-directory: firmware
+        run: ./sync_web_data.sh
+      - name: Build firmware (esp32-s3-devkitc-1)
+        working-directory: firmware
+        run: pio run -e esp32-s3-devkitc-1
+
   web-lint:
     name: Web interface — JS syntax check
     runs-on: ubuntu-latest

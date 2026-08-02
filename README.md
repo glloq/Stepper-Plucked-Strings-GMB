@@ -99,6 +99,31 @@ pour lancer l'assistant de configuration
 
 Implémenté et testé : cœur logique complet (GPIO, MIDI, sélection corde/frette,
 allocation, homing, machines d'état, profils, capacités/SysEx, sécurité),
-adaptateurs ESP32, interface Web, profils d'exemple, documentation. Le matériel
-dédié (schéma, PCB — phase 5 du cahier des charges) reste au stade de
-documentation.
+adaptateurs ESP32 (génération STEP par moteur matériel FastAccelStepper, servos
+PCA9685 **et** GPIO direct, Wi-Fi non bloquant, API REST/WebSocket), interface
+Web, profils d'exemple, documentation. Le matériel dédié (schéma, PCB — phase 5
+du cahier des charges) reste au stade de documentation.
+
+Le cœur C++ est vérifié par des tests natifs (86 tests) exécutés en CI ; la CI
+compile aussi le firmware ESP32 réel (`pio run`) avec la chaîne Arduino-ESP32
+3.x (fork *pioarduino*, voir [`firmware/platformio.ini`](firmware/platformio.ini)
+et [`docs/ARDUINO_IDE.md`](docs/ARDUINO_IDE.md)).
+
+## Limitations connues / feuille de route
+
+Points volontairement encore ouverts (le projet n'a pas été validé sur matériel
+réel) :
+
+* **Validation matérielle** : timing STEP à l'analyseur logique, six axes
+  simultanés, endurance MIDI, tests capteur absent/bloqué/inversé — non encore
+  réalisés.
+* **Authentification de l'API Web** : absente ; protégez le point d'accès par
+  mot de passe (WPA2) sur un réseau non maîtrisé.
+* **Généricité instruments** : l'architecture cible « un moteur + un doigt par
+  corde » (ukulélé, guitare, basse, mandoline, banjo…). Les instruments à
+  chariot commun, fretless, microtonaux, à solénoïdes ou > 6 cordes
+  demanderaient des interfaces d'abstraction (`IPositioner`, `IExciter`,
+  `IDamper`, `IMotionBackend`).
+* **Vélocité** : appliquée à la profondeur d'attaque du servo ; d'autres
+  mappings (vitesse, courbe par actionneur) restent possibles.
+* **TMC2209 `DIAG` / détection de décrochage** : non exploités.

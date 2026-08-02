@@ -10,6 +10,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 
 #include <vector>
 
@@ -47,6 +48,12 @@ AppPhase g_phase = AppPhase::Boot;
 
 std::vector<HomingController> g_homing;
 std::vector<bool> g_anchored;
+
+int8_t g_estopPin = -1;
+
+// Pending test-note Note Off (scheduled by /api/test/note).
+struct TestNoteOff { bool armed = false; uint8_t channel; uint8_t note; uint32_t atMs; };
+TestNoteOff g_testOff;
 
 // Per-string non-blocking playback scheduler.
 struct StringSched {
@@ -179,6 +186,17 @@ void tickString(size_t i, uint32_t nowMs) {
         sch.phaseStartMs = nowMs;
     }
 
+    // A LIMIT switch tripped during a move faults this axis without disturbing
+    // the others (cahier des charges §13.2).
+    if (sch.phase == StringSched::MovingToFret && g_steppers.limitActive(i)) {
+        g_steppers.stop(i);
+        sc.fault();
+        g_safety.recordFault("limit", "LIMIT tripped on axis " + std::to_string(i),
+                             nowMs);
+        sch.phase = StringSched::Idle;
+        return;
+    }
+
     switch (sch.phase) {
         case StringSched::MovingToFret:
             if (g_steppers.atTarget(i)) {
@@ -207,8 +225,12 @@ void tickString(size_t i, uint32_t nowMs) {
             break;
         case StringSched::Ready:
             if (sc.pluckArmed() && sc.executePluck(tgt.commandId)) {
+                // Individual plectrum if present, otherwise the shared strummer
+                // (pluckMode Individual / SharedStrum / Both). Velocity shapes
+                // the strike depth.
                 int pi = g_servos.pluckIndex(static_cast<int>(i));
-                if (pi >= 0) g_servos.strike(pi);  // pulse auto-returns to rest
+                if (pi < 0) pi = g_servos.sharedStrumIndex();
+                if (pi >= 0) g_servos.strike(pi, tgt.intensity);
             }
             break;
         case StringSched::Idle:
@@ -230,7 +252,17 @@ void setup() {
     bool valid = ProfileValidator::isActivatable(g_profile);
     applyProfile();
 
-    g_net.begin(g_profile.network, /*stationPassword=*/"");
+    // Optional hardware E-stop input (cahier des charges §21.2).
+    g_estopPin = pinOf("ESTOP");
+    if (g_estopPin >= 0) pinMode(g_estopPin, INPUT_PULLUP);
+
+    // Wi-Fi secrets live in NVS, never in the exportable profile (§20).
+    Preferences prefs;
+    prefs.begin("gmb", true);
+    String staPass = prefs.getString("wifipass", "");
+    String apPass = prefs.getString("appass", "");
+    prefs.end();
+    g_net.begin(g_profile.network, staPass.c_str(), apPass.c_str());
     g_midi.begin(5006);
 
     WebContext ctx;
@@ -243,6 +275,26 @@ void setup() {
     ctx.safety = &g_safety;
     ctx.storage = &g_storage;
     ctx.onPanic = doPanic;
+    // Test note: only accepted when Ready; schedules the matching Note Off.
+    ctx.onTestNote = [](uint8_t channel, uint8_t note, uint8_t vel,
+                        uint16_t durationMs) -> bool {
+        if (g_phase != AppPhase::Ready) return false;
+        MidiEvent on;
+        on.type = static_cast<uint8_t>(MidiType::NoteOn);
+        on.channel = channel; on.data1 = note; on.data2 = vel;
+        on.timestampUs = micros();
+        on.source = static_cast<uint8_t>(MidiSource::WebUiTest);
+        g_instrument.handleEvent(on, on.timestampUs);
+        g_testOff = {true, channel, note, millis() + (durationMs ? durationMs : 500)};
+        return true;
+    };
+    ctx.onSetWifi = [](const std::string& sta, const std::string& ap) {
+        Preferences p;
+        p.begin("gmb", false);
+        p.putString("wifipass", String(sta.c_str()));
+        p.putString("appass", String(ap.c_str()));
+        p.end();
+    };
     ctx.onActivateProfile = [](const Profile& p) {
         if (!ProfileValidator::isActivatable(p)) return false;
         g_profile = p;
@@ -263,6 +315,22 @@ void loop() {
     uint32_t nowMs = millis();
 
     g_net.tick(nowMs);
+
+    // Hardware E-stop (active-low) latches a panic immediately.
+    if (g_estopPin >= 0 && digitalRead(g_estopPin) == LOW &&
+        g_phase != AppPhase::Boot) {
+        doPanic();
+    }
+
+    // Deliver a scheduled test-note Note Off.
+    if (g_testOff.armed && (int32_t)(nowMs - g_testOff.atMs) >= 0) {
+        MidiEvent off;
+        off.type = static_cast<uint8_t>(MidiType::NoteOff);
+        off.channel = g_testOff.channel; off.data1 = g_testOff.note;
+        off.timestampUs = nowUs;
+        g_instrument.handleEvent(off, nowUs);
+        g_testOff.armed = false;
+    }
 
     // Ingest Wi-Fi MIDI. SysEx is always answered; notes only play once Ready.
     g_midi.poll(nowUs);

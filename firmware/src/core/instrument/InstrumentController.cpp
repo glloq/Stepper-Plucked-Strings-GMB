@@ -47,9 +47,17 @@ int InstrumentController::soundingCount() const {
     return n;
 }
 
+void InstrumentController::removeActiveByString(int stringIndex) {
+    // A string can hold only one note; drop any stale mapping so the previous
+    // note's Note Off can never stop the note that replaced it.
+    for (int i = static_cast<int>(active_.size()) - 1; i >= 0; --i)
+        if (active_[i].stringIndex == stringIndex) active_.erase(active_.begin() + i);
+}
+
 void InstrumentController::startNote(int stringIndex, int fret, uint8_t channel,
                                      uint8_t note, uint8_t velocity) {
     if (stringIndex < 0 || stringIndex >= static_cast<int>(strings_.size())) return;
+    removeActiveByString(stringIndex);
     uint32_t id = strings_[stringIndex].noteOn(fret);
     if (id == 0) return;
     // Keep the allocator's view of busy strings in sync (explicit CC selections
@@ -80,22 +88,6 @@ int InstrumentController::findActive(uint8_t channel, uint8_t note) const {
         if (active_[i].channel == channel && active_[i].note == note) return i;
     }
     return -1;
-}
-
-void InstrumentController::releaseNote(uint8_t channel, uint8_t note) {
-    // Prefer the selector's explicit record; fall back to our own map.
-    MidiEvent off;
-    off.type = static_cast<uint8_t>(MidiType::NoteOff);
-    off.channel = channel;
-    off.data1 = note;
-    ActiveNote a;
-    selector_.onNoteOff(off, &a);
-
-    int idx = findActive(channel, note);
-    if (idx < 0) return;
-    int stringIndex = active_[idx].stringIndex;
-    active_.erase(active_.begin() + idx);
-    stopString(stringIndex);
 }
 
 void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
@@ -139,12 +131,30 @@ void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
     }
 
     if (e.isNoteOff()) {
+        // Always clear the selector's record for this note so its history never
+        // keeps stale instances (sustain/selector sync).
+        ActiveNote a;
+        selector_.onNoteOff(e, &a);
+
+        // Cancel a note still waiting in the chord buffer (ghost-note fix): the
+        // Note Off arrived before the grouping window flushed.
+        for (int i = static_cast<int>(chordBuffer_.size()) - 1; i >= 0; --i) {
+            if (chordBuffer_[i].channel == e.channel &&
+                chordBuffer_[i].note == e.data1) {
+                chordBuffer_.erase(chordBuffer_.begin() + i);
+                return;
+            }
+        }
+
         int idx = findActive(e.channel, e.data1);
-        if (idx >= 0 && pedalDown_ && sustainEnabled_) {
+        if (idx < 0) return;
+        if (pedalDown_ && sustainEnabled_) {
             active_[idx].heldByPedal = true;  // keep sounding until pedal up
             return;
         }
-        releaseNote(e.channel, e.data1);
+        int stringIndex = active_[idx].stringIndex;
+        active_.erase(active_.begin() + idx);
+        stopString(stringIndex);
         return;
     }
 }
@@ -161,6 +171,7 @@ void InstrumentController::flushChord() {
         const PendingNote& src = chordBuffer_[a.index];
         // allocateChord already marked the string busy; record the note mapping
         // and command the string/motion.
+        removeActiveByString(a.stringIndex);
         uint32_t id = strings_[a.stringIndex].noteOn(a.fret);
         if (id == 0) continue;
         StringTarget& t = targets_[a.stringIndex];

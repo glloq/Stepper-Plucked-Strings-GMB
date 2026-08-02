@@ -11,9 +11,11 @@ namespace gmb {
 
 class Net {
 public:
-    // `password` is supplied separately from the Profile so it is never stored
-    // in exportable config (cahier des charges §20).
-    bool begin(const NetworkConfig& cfg, const std::string& stationPassword);
+    // Passwords are supplied separately from the Profile so they are never
+    // stored in exportable config (cahier des charges §20). An empty apPassword
+    // leaves the access point open.
+    bool begin(const NetworkConfig& cfg, const std::string& stationPassword,
+               const std::string& apPassword = "");
 
     // Poll connection state; returns to AP mode after repeated station failures.
     void tick(uint32_t nowMs);
@@ -26,6 +28,7 @@ public:
 private:
     NetworkConfig cfg_;
     std::string password_;
+    std::string apPassword_;
     bool connected_ = false;
     bool apActive_ = false;
     bool connecting_ = false;
