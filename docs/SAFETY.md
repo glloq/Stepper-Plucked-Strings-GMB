@@ -64,6 +64,26 @@ Pendant `Boot` et `Homing`, les `Note On` ne sont pas joués (seules les requêt
 SysEx sont traitées). Un changement de configuration mécanique depuis
 l'interface Web relance un homing avant de rejouer.
 
+### Arrêt d'urgence matériel et fins de course
+
+* **E-stop matériel** : si une broche `ESTOP` est affectée (active bas), `loop()`
+  la lit à chaque passage et déclenche immédiatement un panic (drivers coupés,
+  servos neutralisés). Sans broche `ESTOP` affectée, seul le panic logiciel
+  (bouton STOP Web / CC120/CC123) est disponible.
+* **Fins de course `LIMIT`** : un `LIMIT` actif pendant un déplacement arrête
+  l'axe concerné et le met en défaut, sans perturber les autres axes.
+
+### Secrets Wi-Fi et accès
+
+* Les mots de passe Wi-Fi (station et point d'accès) sont stockés en **NVS**
+  (`Preferences`), jamais dans le profil exportable, et se règlent via
+  `POST /api/wifi`. Le point d'accès peut être protégé en WPA2 (mot de passe ≥ 8
+  caractères) ; sinon il reste ouvert.
+* **Limitation connue** : l'API Web n'a pas encore d'authentification. Sur un
+  réseau non maîtrisé, protégez le point d'accès par mot de passe. Une
+  authentification de l'API reste un point ouvert (voir la note de limitations
+  dans le [`README`](../README.md)).
+
 ---
 
 ## 2. Arrêt d'urgence matériel — /OE du PCA9685 (§21.2)
