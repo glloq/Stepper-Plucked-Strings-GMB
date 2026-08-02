@@ -70,8 +70,36 @@ l'interface Web relance un homing avant de rejouer.
   la lit à chaque passage et déclenche immédiatement un panic (drivers coupés,
   servos neutralisés). Sans broche `ESTOP` affectée, seul le panic logiciel
   (bouton STOP Web / CC120/CC123) est disponible.
-* **Fins de course `LIMIT`** : un `LIMIT` actif pendant un déplacement arrête
-  l'axe concerné et le met en défaut, sans perturber les autres axes.
+* **Fins de course `LIMIT`** : un `LIMIT` actif pendant un déplacement provoque
+  un **arrêt immédiat** de l'axe concerné (pas une décélération), invalide sa
+  position (re-homing obligatoire) et le met en défaut, sans perturber les
+  autres axes.
+
+### Reprise après panic / E-stop (`POST /api/reset`)
+
+Après un panic ou un E-stop, l'état de sécurité est **verrouillé** : ni le
+chargement d'un profil ni un nouveau homing ne peuvent réactiver les moteurs.
+La reprise est explicite via `POST /api/reset` (bouton « Reset & re-home » du
+tableau de bord), acceptée uniquement si :
+
+* l'E-stop est physiquement relâché ;
+* aucun `LIMIT` n'est actif ;
+* le profil est valide ;
+* tous les axes/servos ont pu attacher leur canal matériel.
+
+La reprise force alors un **nouveau homing** avant de rejouer.
+
+### Mode dégradé (`readyDegraded`)
+
+Si un ou plusieurs axes échouent leur homing, le système passe malgré tout en
+lecture **mais** :
+
+* les cordes défaillantes sont désactivées (aucune note, même en sélection CC) ;
+* la **polyphonie annoncée** par SysEx est réduite au nombre d'axes
+  fonctionnels et la **révision des capacités** est incrémentée (General-Midi-
+  Boop cesse d'envoyer les notes injouables) ;
+* l'état exposé devient `readyDegraded` et le défaut apparaît dans le tableau
+  de bord.
 
 ### Secrets Wi-Fi et accès
 

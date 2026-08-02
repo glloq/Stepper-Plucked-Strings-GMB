@@ -45,6 +45,7 @@ WebApi g_web;
 
 enum class AppPhase { Boot, Homing, Ready };
 AppPhase g_phase = AppPhase::Boot;
+bool g_degraded = false;  // Ready but with one or more axes disabled by a fault
 
 std::vector<HomingController> g_homing;
 std::vector<bool> g_anchored;
@@ -119,6 +120,7 @@ bool beginHoming(uint32_t nowMs) {
                              nowMs);
         return false;
     }
+    g_degraded = false;
     g_steppers.enableDrivers(true);
     g_servos.outputEnable(true);   // servos hold their rest position (fingers up)
     for (size_t i = 0; i < g_homing.size(); ++i) {
@@ -151,10 +153,12 @@ bool doReset(uint32_t nowMs) {
 
 void doHoming(uint32_t nowMs) {
     bool allDone = true;
+    int faulted = 0;
     for (size_t i = 0; i < g_homing.size(); ++i) {
         if (g_homing[i].failed()) {
             g_instrument.string(i).disable();  // fault this axis, keep the others
             g_steppers.stop(i);
+            ++faulted;
             continue;
         }
         if (g_homing[i].ready()) {
@@ -178,6 +182,18 @@ void doHoming(uint32_t nowMs) {
     if (allDone) {
         g_phase = AppPhase::Ready;
         g_safety.arm(true, true);  // profile already validated before homing
+        // Degraded run (cahier des charges §13.2): some axes failed homing.
+        // Announce the reduced polyphony so General-Midi-Boop stops sending notes
+        // the instrument can no longer play, and bump the capabilities revision.
+        int ready = static_cast<int>(g_homing.size()) - faulted;
+        g_degraded = faulted > 0;
+        if (g_degraded) {
+            g_profile.capabilitiesRevision++;
+            g_sysex.rebuild(g_profile, ready);  // polyphony override = working axes
+            g_safety.recordFault("homing",
+                                 std::to_string(faulted) + " axis/axes failed homing "
+                                 "(degraded run)", nowMs);
+        }
     }
 }
 
@@ -334,8 +350,8 @@ void setup() {
         p.end();
     };
     ctx.appState = []() -> std::string {
-        return g_phase == AppPhase::Ready ? "ready"
-               : g_phase == AppPhase::Homing ? "homing" : "boot";
+        if (g_phase == AppPhase::Ready) return g_degraded ? "readyDegraded" : "ready";
+        return g_phase == AppPhase::Homing ? "homing" : "boot";
     };
     ctx.onActivateProfile = [](const Profile& p) {
         if (!ProfileValidator::isActivatable(p)) return false;
