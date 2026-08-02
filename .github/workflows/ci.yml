@@ -19,6 +19,17 @@ jobs:
         working-directory: firmware/test
         run: make
 
+  esp32-compile-check:
+    name: Firmware — ESP32 platform compile-check (host stubs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install g++
+        run: sudo apt-get update && sudo apt-get install -y g++ curl
+      - name: Compile the ESP32 platform layer against real ArduinoJson + stubs
+        working-directory: firmware/test/hostcheck
+        run: ./run.sh
+
   esp32-build:
     name: Firmware — ESP32-S3 build (PlatformIO)
     runs-on: ubuntu-latest

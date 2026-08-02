@@ -321,7 +321,8 @@ void setup() {
         on.timestampUs = micros();
         on.source = static_cast<uint8_t>(MidiSource::WebUiTest);
         g_instrument.handleEvent(on, on.timestampUs);
-        g_testOff = {true, channel, note, millis() + (durationMs ? durationMs : 500)};
+        uint32_t offAt = millis() + (durationMs ? durationMs : 500u);
+        g_testOff = {true, channel, note, offAt};
         return true;
     };
     ctx.onSetWifi = [](bool hasSta, const std::string& sta, bool hasAp,
