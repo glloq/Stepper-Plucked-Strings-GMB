@@ -45,7 +45,15 @@ private:
     CapabilitySnapshot snapshot_;
     bool useV2_ = false;
     uint32_t lastResponseMs_ = 0;
-    uint32_t minIntervalMs_ = 2;  // basic rate limit (SysEx spec §20)
+
+    // Token-bucket rate limiter (SysEx spec §20): allows a discovery burst but
+    // caps sustained request floods so repeated UDP packets cannot force endless
+    // responses/allocations.
+    static constexpr int kMaxTokens = 16;
+    static constexpr uint32_t kRefillMs = 5;  // +1 token every 5 ms (~200/s)
+    int tokens_ = kMaxTokens;
+    uint32_t lastRefillMs_ = 0;
+    bool allow(uint32_t nowMs);
 };
 
 }  // namespace gmb

@@ -364,6 +364,7 @@ std::vector<std::string> ProfileStorage::list() const {
 }
 
 bool ProfileStorage::load(int slot, Profile& out) const {
+    if (slot < 0 || slot >= kMaxProfiles) return false;
     File f = LittleFS.open(slotPath(slot).c_str(), "r");
     if (!f) return false;
     JsonDocument doc;
@@ -413,10 +414,12 @@ int ProfileStorage::startupSlot() const {
     if (!f) return 0;
     int slot = f.parseInt();
     f.close();
+    if (slot < 0 || slot >= kMaxProfiles) return 0;  // bound the stored value
     return slot;
 }
 
 void ProfileStorage::setStartupSlot(int slot) {
+    if (slot < 0 || slot >= kMaxProfiles) return;  // never store out of range
     File f = LittleFS.open("/startup.txt", "w");
     if (f) {
         f.print(slot);

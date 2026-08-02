@@ -158,6 +158,21 @@ TEST(sysex_service_rejects_foreign_channel) {
     CHECK(r.empty());
 }
 
+// The SysEx service rate-limits a flood of requests (token bucket).
+TEST(sysex_service_rate_limits_flood) {
+    Profile p = ukulele();
+    GmbSysExService svc;
+    svc.rebuild(p);
+    uint8_t req[] = {0xF0, 0x7D, 0x00, 0x06, 0x00, 0x00, 0xF7};
+    int answered = 0;
+    for (int i = 0; i < 40; ++i)  // all at the same instant
+        if (!svc.handleMessage(req, sizeof(req), 100).empty()) ++answered;
+    CHECK(answered <= 16);        // burst capped
+    CHECK(answered > 0);
+    // After enough time the bucket refills and responses resume.
+    CHECK(!svc.handleMessage(req, sizeof(req), 100 + 200).empty());
+}
+
 // A config change increments the revision and the notification carries it.
 TEST(sysex_service_notification_after_change) {
     Profile p = ukulele();

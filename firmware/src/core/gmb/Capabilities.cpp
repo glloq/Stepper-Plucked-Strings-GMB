@@ -92,9 +92,17 @@ CapabilitySnapshot buildSnapshot(const Profile& p, int polyphonyOverride) {
     // ---- String configuration (spec section 8 / 10) ----
     StringInstrumentConfig& sc = snap.stringConfig;
     sc.channel = channel;
-    sc.stringCount = static_cast<uint8_t>(p.strings.size());
+    // Announce only the strings that are actually available (enabled). In a
+    // degraded run the faulted axes are disabled in the runtime profile copy, so
+    // the whole string config shrinks consistently.
+    uint8_t enabledCount = 0;
     uint8_t maxFret = 0;
-    for (const auto& s : p.strings) maxFret = std::max<uint8_t>(maxFret, s.maxFret);
+    for (const auto& s : p.strings) {
+        if (!s.enabled) continue;
+        ++enabledCount;
+        maxFret = std::max<uint8_t>(maxFret, s.maxFret);
+    }
+    sc.stringCount = enabledCount;
     sc.fretCount = maxFret;
     sc.isFretless = 0;
     sc.capo = static_cast<uint8_t>(capo);
@@ -104,7 +112,8 @@ CapabilitySnapshot buildSnapshot(const Profile& p, int polyphonyOverride) {
 
     // Tuning announced low -> high (spec section 8).
     std::vector<uint8_t> tuning;
-    for (const auto& s : p.strings) tuning.push_back(s.openNote);
+    for (const auto& s : p.strings)
+        if (s.enabled) tuning.push_back(s.openNote);
     std::sort(tuning.begin(), tuning.end());
     sc.tuning = tuning;
 
@@ -118,7 +127,8 @@ CapabilitySnapshot buildSnapshot(const Profile& p, int polyphonyOverride) {
     sc.selectionMode = static_cast<uint8_t>(p.selector.mode);
     sc.stringOrder = p.selector.string.reverseOrder ? 1 : 0;
     if (!p.selector.string.mapping.empty()) sc.stringOrder = 2;
-    for (const auto& s : p.strings) sc.fretsPerString.push_back(s.maxFret);
+    for (const auto& s : p.strings)
+        if (s.enabled) sc.fretsPerString.push_back(s.maxFret);
     for (int8_t m : p.selector.string.mapping) sc.mapping.push_back(static_cast<uint8_t>(m));
 
     snap.identity.deviceName = p.instrument.name;

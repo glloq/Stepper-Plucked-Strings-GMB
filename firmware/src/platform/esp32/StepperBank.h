@@ -29,8 +29,12 @@ struct AxisPins {
 
 class StepperBank {
 public:
+    // `homeActiveHigh[i]` gives the sensor polarity for axis i (from its homing
+    // config). homeActive()/limitActive() are normalised through it; empty means
+    // active-low (the common endstop wiring).
     void begin(const std::vector<AxisConfig>& axes,
-               const std::vector<AxisPins>& pins, int8_t enablePin);
+               const std::vector<AxisPins>& pins, int8_t enablePin,
+               const std::vector<bool>& homeActiveHigh = {});
 
     void enableDrivers(bool on);
     bool enabled() const { return enabled_; }
@@ -50,6 +54,7 @@ public:
 
     double positionMm(size_t axis) const;
     bool atTarget(size_t axis) const;
+    bool isRunning(size_t axis) const;  // true while the step engine is moving
     bool homeActive(size_t axis) const;   // normalised active-low reading
     bool homeRawHigh(size_t axis) const;  // raw level (polarity-aware homing)
     bool limitActive(size_t axis) const;
@@ -68,6 +73,7 @@ private:
         AxisPins pins;
         double stepsPerMm = 80.0;
         long position = 0;  // used by the non-Arduino stub only
+        bool homeActiveHigh = false;
         AxisRt(const AxisConfig& c) : geom(c) {}
     };
     std::vector<AxisRt> axes_;

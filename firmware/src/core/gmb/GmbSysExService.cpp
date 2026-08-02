@@ -8,6 +8,19 @@ void GmbSysExService::rebuild(const Profile& p, int polyphonyOverride) {
     snapshot_ = buildSnapshot(p, polyphonyOverride);
 }
 
+bool GmbSysExService::allow(uint32_t nowMs) {
+    if (lastRefillMs_ == 0) lastRefillMs_ = nowMs;
+    uint32_t elapsed = nowMs - lastRefillMs_;
+    if (elapsed >= kRefillMs) {
+        int add = static_cast<int>(elapsed / kRefillMs);
+        tokens_ = tokens_ + add > kMaxTokens ? kMaxTokens : tokens_ + add;
+        lastRefillMs_ += static_cast<uint32_t>(add) * kRefillMs;
+    }
+    if (tokens_ <= 0) return false;
+    --tokens_;
+    return true;
+}
+
 std::vector<uint8_t> GmbSysExService::handleMessage(const uint8_t* data, size_t len,
                                                     uint32_t nowMs) {
     if (!GmbSysEx::isWellFormed(data, len)) return {};  // ignore malformed
@@ -20,10 +33,8 @@ std::vector<uint8_t> GmbSysExService::handleMessage(const uint8_t* data, size_t 
         return {};  // invalid channel (SysEx spec §20)
     }
 
-    // Basic response-rate limit.
-    if (lastResponseMs_ != 0 && (nowMs - lastResponseMs_) < minIntervalMs_) {
-        // Still answer, but do not update the throttle window aggressively.
-    }
+    // Enforce the rate limit: drop (no response, no work) when out of tokens.
+    if (!allow(nowMs)) return {};
     lastResponseMs_ = nowMs;
 
     return GmbSysEx::respond(req, snapshot_, useV2_);

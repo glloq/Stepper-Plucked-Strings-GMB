@@ -12,6 +12,7 @@ namespace gmb {
 enum class HomingState : uint8_t {
     Idle,
     CheckSensor,
+    ReleaseAtStart,  // sensor already active at start: back off until it clears
     SeekFast,
     BrakeFast,   // stop and wait for standstill before reversing (backoff)
     Backoff,
@@ -56,9 +57,12 @@ public:
     void configure(const HomingConfig& cfg) { cfg_ = cfg; }
     void start(uint32_t nowMs);
 
-    // Advance the machine. `rawSensor` is the electrical level; it is normalised
-    // through sensorActiveHigh internally.
-    HomingCommand update(uint32_t nowMs, bool rawSensor, double currentPosMm);
+    // Advance the machine. `rawSensor` is the electrical level (normalised
+    // through sensorActiveHigh). `isMoving` is the motor's real running state
+    // (from the step engine): the brake phases wait for it to become false
+    // before commanding a reversal, so a reverse is never issued mid-motion.
+    HomingCommand update(uint32_t nowMs, bool rawSensor, double currentPosMm,
+                         bool isMoving);
 
     HomingState state() const { return state_; }
     HomingFault fault() const { return fault_; }
@@ -79,15 +83,10 @@ private:
     HomingFault fault_ = HomingFault::None;
     uint32_t startMs_ = 0;
     double startPosMm_ = 0.0;
-    double triggerPosMm_ = 0.0;
+    double triggerPosMm_ = 0.0;        // fast-seek trigger (for back-off distance)
+    double sensorTriggerPosMm_ = 0.0;  // slow-seek trigger = the zero reference
     double backoffTargetMm_ = 0.0;
     double offsetTargetMm_ = 0.0;
-    double lastPosMm_ = 0.0;
-    int stableTicks_ = 0;
-
-    // Standstill detection: the axis is considered stopped once its position has
-    // not changed by more than ~20 µm for a couple of ticks.
-    bool stopped(double currentPosMm);
 
     bool active(bool raw) const { return raw == cfg_.sensorActiveHigh; }
     HomingCommand fail(HomingFault f);

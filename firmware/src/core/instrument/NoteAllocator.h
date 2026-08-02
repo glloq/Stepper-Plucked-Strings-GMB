@@ -49,6 +49,16 @@ public:
     bool canPlay(int stringIndex, uint8_t note) const;
     int fretFor(int stringIndex, uint8_t note) const;
 
+    // Mark a string faulted at runtime so it is never allocated again (and free
+    // it if it was holding a note).
+    void setFaulted(int stringIndex, bool faulted) {
+        if (stringIndex >= 0 && stringIndex < static_cast<int>(specs_.size())) {
+            specs_[stringIndex].faulted = faulted;
+            if (faulted && stringIndex < static_cast<int>(runtime_.size()))
+                runtime_[stringIndex].free = true;
+        }
+    }
+
     // Allocate one note to the best available string; -1 if none.
     // Marks the string busy on success.
     int8_t allocateOne(uint8_t note, uint8_t* fretOut = nullptr);

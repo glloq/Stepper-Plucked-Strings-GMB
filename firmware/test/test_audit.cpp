@@ -2,6 +2,7 @@
 #include "TestFramework.h"
 #include "../src/core/configuration/Profile.h"
 #include "../src/core/configuration/ProfileValidator.h"
+#include "../src/core/gmb/Capabilities.h"
 #include "../src/core/instrument/InstrumentController.h"
 #include "../src/core/midi/MidiParser.h"
 #include "../src/core/midi/StringFretSelector.h"
@@ -194,6 +195,38 @@ TEST(sysex_parser_ignores_realtime_and_bounds) {
     q.feed(0xF0, 0);
     for (size_t i = 0; i < MidiParser::kMaxSysExBytes + 100; ++i) q.feed(0x01, 0);
     CHECK_EQ((int)q.sysex().size(), 0);  // never completed, buffer released
+}
+
+// --- P0: a runtime-faulted axis is removed from the allocator ---
+TEST(faulted_string_removed_from_allocation) {
+    InstrumentController ic;
+    ic.load(uke());              // GCEA: 67,60,64,69
+    ic.faultString(0);           // take string 0 (G) out of service
+    // A full open chord: 60->s1, 64->s2, 69->s3; 67 can only go on s0 (faulted)
+    // -> dropped. So exactly 3 sound and string 0 stays inactive.
+    ic.handleEvent(noteOn(0, 67, 100, 0), 0);
+    ic.handleEvent(noteOn(0, 60, 100, 0), 0);
+    ic.handleEvent(noteOn(0, 64, 100, 0), 0);
+    ic.handleEvent(noteOn(0, 69, 100, 0), 0);
+    ic.tick(5000);
+    CHECK(!ic.target(0).active);
+    CHECK_EQ(ic.soundingCount(), 3);
+}
+
+// --- P0: degraded capabilities exclude the faulted axis entirely ---
+TEST(degraded_snapshot_excludes_disabled_string) {
+    Profile p = Profile::makeDefault("Guitar", 6, {40, 45, 50, 55, 59, 64}, 12);
+    CapabilitySnapshot full = buildSnapshot(p);
+    CHECK_EQ((int)full.stringConfig.stringCount, 6);
+    CHECK_EQ((int)full.stringConfig.tuning.size(), 6);
+
+    p.strings[0].enabled = false;  // low E axis failed homing (runtime copy)
+    CapabilitySnapshot deg = buildSnapshot(p);
+    CHECK_EQ((int)deg.stringConfig.stringCount, 5);
+    CHECK_EQ((int)deg.stringConfig.tuning.size(), 5);
+    CHECK_EQ((int)deg.stringConfig.fretsPerString.size(), 5);
+    CHECK_EQ((int)deg.capabilities.polyphony, 5);
+    CHECK_EQ((int)deg.capabilities.noteMin, 45);  // low E gone -> A2 is the floor
 }
 
 // --- selection spec: fret-then-string CC order ---

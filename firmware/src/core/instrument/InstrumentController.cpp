@@ -193,6 +193,15 @@ void InstrumentController::tick(uint32_t nowUs) {
     if (nowUs - chordBuffer_.front().atUs >= chordWindowUs_) flushChord();
 }
 
+void InstrumentController::faultString(size_t index) {
+    if (index >= strings_.size()) return;
+    strings_[index].fault();                          // -> Fault: noteOn() refused
+    allocator_.setFaulted(static_cast<int>(index), true);
+    allocator_.release(static_cast<int>(index));
+    targets_[index].active = false;
+    removeActiveByString(static_cast<int>(index));    // drop any active note here
+}
+
 void InstrumentController::panic() {
     for (auto& s : strings_) s.panic();
     for (auto& t : targets_) t.active = false;

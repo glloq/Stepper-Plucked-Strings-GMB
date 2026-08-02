@@ -33,6 +33,7 @@ void ServoBank::begin(const std::vector<ServoConfig>& servos, int8_t sda, int8_t
     directCount_ = 0;
     pcaUsed_ = false;
     directAttachFault_ = false;
+    pcaAttachFault_ = false;
     for (int i = 0; i < kMaxPca; ++i) pcaPresent_[i] = false;
 
     for (const auto& s : servos_) {
@@ -51,7 +52,8 @@ void ServoBank::begin(const std::vector<ServoConfig>& servos, int8_t sda, int8_t
         Wire.begin(sda, scl);
         for (int i = 0; i < kMaxPca; ++i) {
             if (!pcaPresent_[i]) continue;
-            pca_[i].begin();
+            // begin() returns false if the board does not ACK on I2C.
+            if (!pca_[i].begin()) pcaAttachFault_ = true;
             pca_[i].setPWMFreq(kServoFreqHz);
         }
     }
