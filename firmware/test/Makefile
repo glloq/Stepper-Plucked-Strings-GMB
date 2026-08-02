@@ -35,7 +35,8 @@ TEST_SRC := \
   test_profile.cpp \
   test_sysex.cpp \
   test_integration.cpp \
-  test_midiparser.cpp
+  test_midiparser.cpp \
+  test_servos.cpp
 
 BIN := run_tests
 

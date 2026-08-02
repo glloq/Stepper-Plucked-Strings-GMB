@@ -141,8 +141,12 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
     for (const auto& s : p.servos) {
         JsonObject o = servos.add<JsonObject>();
         o["enabled"] = s.enabled;
-        o["channel"] = s.channel;
         o["function"] = s.function;
+        o["stringIndex"] = s.stringIndex;
+        o["source"] = s.source == ServoSource::DirectGpio ? "gpio" : "pca";
+        o["pcaBoard"] = s.pcaBoard;
+        o["channel"] = s.channel;
+        o["gpio"] = s.gpio;
         o["pulseMinUs"] = s.pulseMinUs;
         o["pulseMaxUs"] = s.pulseMaxUs;
         o["restUs"] = s.restUs;
@@ -268,8 +272,13 @@ bool ProfileStorage::fromJson(const JsonDocument& doc, Profile& out) {
     for (JsonObjectConst o : doc["servos"].as<JsonArrayConst>()) {
         ServoConfig s;
         s.enabled = o["enabled"] | false;
-        s.channel = o["channel"] | 0;
         s.function = o["function"] | "finger";
+        s.stringIndex = o["stringIndex"] | -1;
+        std::string src = o["source"] | "pca";
+        s.source = src == "gpio" ? ServoSource::DirectGpio : ServoSource::Pca;
+        s.pcaBoard = o["pcaBoard"] | 0;
+        s.channel = o["channel"] | 0;
+        s.gpio = o["gpio"] | -1;
         s.pulseMinUs = o["pulseMinUs"] | 500;
         s.pulseMaxUs = o["pulseMaxUs"] | 2500;
         s.restUs = o["restUs"] | 1000;

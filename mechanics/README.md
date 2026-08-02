@@ -59,6 +59,25 @@ Two modes, which may be combined on the same instrument:
 The profile field `instrument.pluckMode` selects `individual`, `sharedStrum`, or
 `both`.
 
+Per string, up to four servo roles can be defined: `finger` (press), `pluck`
+(individual plectrum), `strum` (per-string strum / grattage) and `damper`
+(per-string mute / silencieux / étouffoir). Each string also has its own endstop
+(FDC): the `HOME` reference sensor, plus an optional `LIMIT` switch at the far
+end.
+
+## 3.1 Servo signal source: PCA9685 or direct GPIO
+
+Every servo picks its own source, so an instrument can be built **with or without
+a PCA9685**, or with a mix of both:
+
+* **PCA9685** — up to **four boards** (`pcaBoard` 0–3, I²C 0x40–0x43 = 64
+  channels). Use this once you exceed the ESP32's free PWM pins.
+* **Direct GPIO** — the servo hangs off a free ESP32-S3 pin (LEDC 50 Hz PWM),
+  handy when there is no PCA or only a couple of servos.
+
+The web interface exposes this choice per servo and prevents channel/pin
+conflicts (see [`../docs/CALIBRATION.md`](../docs/CALIBRATION.md) §4).
+
 ## 4. Transmission options (§5.1)
 
 The carriage can be driven by any of:

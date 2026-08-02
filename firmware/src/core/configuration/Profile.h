@@ -50,10 +50,32 @@ struct MidiConfig {
     bool sustainPedal = true;
 };
 
+// Where a servo's PWM signal comes from. The system must work with OR without a
+// PCA9685 (a servo can hang directly off a free ESP32 GPIO), and both can be
+// mixed on the same instrument.
+enum class ServoSource : uint8_t { Pca = 0, DirectGpio = 1 };
+
+// Servo roles. Per-string roles carry a stringIndex; shared roles use -1.
+//   finger : presses the string at the fret            (per string)
+//   pluck  : individual plectrum                       (per string)
+//   strum  : per-string strum/grattage servo           (per string)
+//   damper : per-string damper/silencieux (étouffoir)  (per string)
+//   sharedStrum / sharedDamper : one mechanism across several strings
+//   aux    : any auxiliary actuator
+// (Function is kept as a string so the web UI can offer new roles without a
+// firmware change.)
 struct ServoConfig {
     bool enabled = false;
-    uint8_t channel = 0;         // PCA9685 channel
-    std::string function = "finger"; // finger / pluck / damper / aux
+    std::string function = "finger";
+    int8_t stringIndex = -1;      // owning string, or -1 for a shared/global servo
+
+    // Signal source.
+    ServoSource source = ServoSource::Pca;
+    uint8_t pcaBoard = 0;         // 0..3 : up to four PCA9685 (0x40..0x43)
+    uint8_t channel = 0;          // PCA9685 channel 0..15 (source == Pca)
+    int8_t gpio = -1;             // ESP32 GPIO           (source == DirectGpio)
+
+    // Motion calibration (microseconds).
     uint16_t pulseMinUs = 500;
     uint16_t pulseMaxUs = 2500;
     uint16_t restUs = 1000;

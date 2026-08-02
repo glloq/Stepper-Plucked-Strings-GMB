@@ -145,10 +145,18 @@ logicielles avant et arrière (`minPositionMm` / `maxPositionMm`, appliquées pa
 Chaque servo utilise des impulsions calibrées en microsecondes (`ServoConfig`) :
 
 ```cpp
+enum class ServoSource : uint8_t { Pca = 0, DirectGpio = 1 };
+
 struct ServoConfig {
     bool enabled;
-    uint8_t channel;              // canal PCA9685
-    std::string function;         // "finger" / "pluck" / "damper" / "aux"
+    std::string function;         // "finger"/"pluck"/"strum"/"damper"/"sharedStrum"/"aux"
+    int8_t stringIndex;           // corde propriétaire, -1 = partagé/global
+
+    ServoSource source;           // PCA9685 OU GPIO direct de l'ESP32
+    uint8_t pcaBoard;             // 0..3 : jusqu'à quatre PCA9685 (0x40..0x43)
+    uint8_t channel;              // canal PCA9685 0..15   (source == Pca)
+    int8_t  gpio;                 // GPIO ESP32            (source == DirectGpio)
+
     uint16_t pulseMinUs, pulseMaxUs;
     uint16_t restUs, activeUs;    // position de repos / active
     bool inverted;
@@ -157,6 +165,37 @@ struct ServoConfig {
     bool disableAtRest;           // désactivation au repos
 };
 ```
+
+### 4.0 Source du signal : PCA9685 ou GPIO direct
+
+Le système fonctionne **avec ou sans PCA9685**. Chaque servo choisit
+indépendamment sa source :
+
+* **PCA9685** — jusqu'à **quatre cartes** (`pcaBoard` 0–3, adresses 0x40–0x43),
+  soit **64 canaux** au total ; chaque servo indique sa carte et son `channel`
+  (0–15). Idéal quand le nombre de servos dépasse les broches PWM libres.
+* **GPIO direct** — le servo est piloté par une broche libre de l'ESP32-S3
+  (LEDC PWM 50 Hz). Utile sans PCA ou pour quelques servos seulement.
+
+Les deux modes peuvent être **mélangés** sur le même instrument. Le validateur
+refuse : un canal PCA (carte + canal) utilisé deux fois, un GPIO direct réservé
+ou en conflit avec un signal moteur ou un autre servo, et un rôle par corde
+pointant vers une corde inexistante.
+
+### 4.1 Rôles par corde
+
+Chaque corde (1 à 6) peut disposer de ses propres servos :
+
+| Rôle     | Fonction                                             |
+| -------- | ---------------------------------------------------- |
+| `finger` | appui du doigt sur la frette                         |
+| `pluck`  | médiator individuel                                  |
+| `strum`  | grattage propre à la corde                           |
+| `damper` | étouffoir / silencieux propre à la corde             |
+
+Des rôles **partagés** (`sharedStrum`, `aux`, `stringIndex = -1`) permettent un
+mécanisme traversant plusieurs cordes. Le firmware relève le doigt et actionne
+l'étouffoir de la corde au relâchement de la note.
 
 ### 4.1 Doigt (§15.1)
 
@@ -175,6 +214,8 @@ Doigt relevé, moteur éventuellement déplacé vers une position de sécurité,
 pincement autorisé directement. Option avancée : utiliser le doigt sur le fret
 zéro pour une mécanique spécifique.
 
-Répartition recommandée des 16 canaux PCA9685 : 0–5 appui des doigts, 6–11
-pincement individuel, 12–15 étouffoirs / grattage partagé / auxiliaires. La sortie
-`/OE` du PCA9685 est reliée à une broche de sécurité — voir [`SAFETY.md`](SAFETY.md).
+Répartition recommandée sur une première carte PCA9685 (16 canaux) : 0–5 appui
+des doigts, 6–11 pincement individuel, 12–15 étouffoirs / grattage partagé /
+auxiliaires. Au-delà, ajouter des cartes (`pcaBoard` 1–3) ou des servos en GPIO
+direct. La sortie `/OE` de chaque PCA9685 est reliée à une broche de sécurité —
+voir [`SAFETY.md`](SAFETY.md).

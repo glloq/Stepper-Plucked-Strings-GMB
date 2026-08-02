@@ -31,14 +31,18 @@ Profile Profile::makeDefault(const std::string& name, uint8_t stringCount,
 
         ServoConfig finger;
         finger.enabled = true;
-        finger.channel = i;             // channels 0..5 : finger press
         finger.function = "finger";
+        finger.stringIndex = static_cast<int8_t>(i);
+        finger.source = ServoSource::Pca;
+        finger.channel = i;             // channels 0..5 : finger press
         p.servos.push_back(finger);
 
         ServoConfig pluck;
         pluck.enabled = true;
-        pluck.channel = static_cast<uint8_t>(6 + i);  // channels 6..11 : pluck
         pluck.function = "pluck";
+        pluck.stringIndex = static_cast<int8_t>(i);
+        pluck.source = ServoSource::Pca;
+        pluck.channel = static_cast<uint8_t>(6 + i);  // channels 6..11 : pluck
         p.servos.push_back(pluck);
     }
 

@@ -98,7 +98,16 @@ void tickString(size_t i, uint32_t nowMs) {
     StringSched& sch = g_sched[i];
 
     if (!tgt.active) {
-        sch.phase = StringSched::Idle;
+        if (sch.phase != StringSched::Idle) {
+            // Note just released: lift the finger and damp the string.
+            int fi = g_servos.fingerIndex(static_cast<int>(i));
+            if (fi >= 0) g_servos.toRest(fi);
+            int di = g_servos.damperIndex(static_cast<int>(i));
+            if (di >= 0) g_servos.toActive(di);
+            sc.dampingDone();
+            sch.phase = StringSched::Idle;
+            sch.commandId = 0;
+        }
         return;
     }
 
@@ -117,7 +126,7 @@ void tickString(size_t i, uint32_t nowMs) {
                 if (sc.openString()) {
                     sch.phase = StringSched::Ready;
                 } else {
-                    int fi = g_servos.fingerIndex(i);
+                    int fi = g_servos.fingerIndex(static_cast<int>(i));
                     if (fi >= 0) g_servos.toActive(fi);
                     sch.phase = StringSched::PressingFinger;
                     sch.phaseStartMs = nowMs;
@@ -140,7 +149,7 @@ void tickString(size_t i, uint32_t nowMs) {
         case StringSched::Ready:
             // Deferred pluck, guarded by command id (cahier des charges §16).
             if (sc.pluckArmed() && sc.executePluck(tgt.commandId)) {
-                int pi = g_servos.pluckIndex(i);
+                int pi = g_servos.pluckIndex(static_cast<int>(i));
                 if (pi >= 0) {
                     g_servos.toActive(pi);  // strike
                 }
