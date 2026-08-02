@@ -611,6 +611,19 @@ void WebApi::registerRoutes() {
     setAuth->setMethod(HTTP_POST);
     server_->addHandler(setAuth);
 
+    // ---- POST /api/storage/format (deliberate LittleFS reformat) ----
+    server_->on("/api/storage/format", HTTP_POST, [this](AsyncWebServerRequest* req) {
+        if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized";
+                            sendJson(req, d, 401); return; }
+        bool ok;
+        { WebStorageLock sl(ctx_);  // serialise with other LittleFS operations
+          ok = ctx_.onFormatStorage && ctx_.onFormatStorage(); }
+        JsonDocument doc;
+        doc["ok"] = ok;
+        if (!ok) doc["error"] = "format failed or unavailable";
+        sendJson(req, doc, ok ? 200 : 500);
+    });
+
     // ---- POST /api/sysex/request (run a SysEx buffer through the service) ----
     auto* sysexReq = new AsyncCallbackJsonWebHandler(
         "/api/sysex/request", [this](AsyncWebServerRequest* req, JsonVariant& body) {

@@ -761,6 +761,12 @@ void setup() {
     g_storageMutex = xSemaphoreCreateMutex();
 
     g_storage.begin();
+    if (g_storage.degraded()) {
+        // A previously-initialised filesystem that won't mount: don't auto-wipe.
+        g_safety.recordFault("storage",
+            "LittleFS unmountable — profiles unavailable; POST /api/storage/format "
+            "to reformat", millis());
+    }
     // Never configure GPIO (STEP/DIR/HOME/LIMIT/ENABLE/I²C/PCA/LEDC) from a
     // profile that fails semantic validation: fall back to the safe default so a
     // corrupt or malicious stored profile can't drive the pins at boot (§21.1).
@@ -819,6 +825,9 @@ void setup() {
         c.servoActive = active;
         return enqueueCommand(c);
     };
+    // Storage reformat runs in the web task under the storage lock (loop() never
+    // touches LittleFS, so this can't stall the safety loop).
+    ctx.onFormatStorage = []() -> bool { return g_storage.format(); };
     // Read-only web handlers hold this around their reads so a reload in loop()
     // is never observed half-applied.
     ctx.lockState = []() { if (g_stateMutex) xSemaphoreTake(g_stateMutex, portMAX_DELAY); };

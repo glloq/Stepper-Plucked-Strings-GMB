@@ -32,5 +32,6 @@ using fs::File;
 class LittleFSClass : public fs::FS {
 public:
   bool begin(bool = false) { return true; }
+  void end() {}
 };
 static LittleFSClass LittleFS;

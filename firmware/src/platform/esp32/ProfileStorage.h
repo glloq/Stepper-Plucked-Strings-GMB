@@ -19,7 +19,15 @@ class ProfileStorage {
 public:
     static constexpr int kMaxProfiles = 8;
 
-    bool begin();  // mount LittleFS
+    bool begin();  // mount LittleFS (see degraded())
+
+    // True when the filesystem could not be mounted AND it had been initialised
+    // before (an NVS marker proves it): rather than auto-formatting and wiping
+    // every profile, storage stays read-unavailable until an explicit format().
+    bool degraded() const { return degraded_; }
+    // Explicit administrative format: reformats LittleFS and clears the degraded
+    // state. Destroys all stored profiles — only called on a deliberate request.
+    bool format();
 
     // Serialise / parse a single profile <-> JSON (no secrets by default).
     // fromJson accepts a JsonDocument, JsonObjectConst or the JsonVariant handed
@@ -41,6 +49,7 @@ public:
 
 private:
     static std::string slotPath(int slot);
+    bool degraded_ = false;
 };
 
 }  // namespace gmb

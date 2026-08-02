@@ -38,6 +38,7 @@ struct WebContext {
     std::function<bool(const Profile&)> onActivateProfile;  // validate + enqueue apply
     std::function<bool(uint8_t, uint8_t, uint8_t, uint16_t)> onTestNote;  // ch,note,vel,ms
     std::function<bool(int, bool)> onTestServo;  // enqueue a servo pulse (index, active)
+    std::function<bool()> onFormatStorage;       // deliberate LittleFS reformat
     // Guard shared state during read-only handlers so a reload in loop() is never
     // observed half-applied. Both may be null (host build / no locking).
     std::function<void()> lockState;
