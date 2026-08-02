@@ -6,3 +6,6 @@ test/run_tests
 .pio/
 .pioenvs/
 .piolibdeps/
+
+# Generated LittleFS image (mirror of ../web-interface)
+data/www/

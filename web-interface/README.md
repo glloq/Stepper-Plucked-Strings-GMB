@@ -87,6 +87,42 @@ values, hidden fine-tuning, only recommended GPIOs) and **Advanced** (manual
 GPIO assignment including caution pins, detailed motor/servo/homing parameters,
 SysEx block toggles, raw byte views), per cahier des charges §9.2.
 
+## Per-string servos, endstops & fret editor (wizard steps 5–7)
+
+The setup wizard configures a full instrument (1–6 strings) with a stepper plus
+servos per string, **with or without a PCA9685**:
+
+- **Servos per string (step 6).** For each string, add the servos it uses —
+  **finger (doigt)**, **strum (grattage)**, **damper (étouffoir)** and an
+  optional **pluck (médiator)**. Each servo picks its signal **source**:
+  - **PCA9685** — choose `pcaBoard` (0–3, i.e. up to four boards / 64 channels)
+    and `channel` (0–15). A compact channel-availability map flags duplicate
+    `board+channel` in red.
+  - **Direct GPIO** — choose a free ESP32 pin, filtered with the same
+    green/yellow/red capability rules as the pin grid (reserved/USB pins hidden,
+    caution pins Advanced-only, pins already used by a stepper signal or another
+    servo excluded).
+
+  The system works with **no PCA at all** (every servo on a direct GPIO) or any
+  mix. Per-string servos get their `stringIndex` set automatically; Advanced mode
+  also exposes **shared/auxiliary** servos (`stringIndex = -1`, e.g.
+  `sharedStrum`/`aux`). Each servo carries its calibration (rest/active µs,
+  pulse min/max, inverted, travelMs, settleMs, disableAtRest) and **Test
+  rest/active** buttons (`POST /api/test/servo`).
+
+- **Endstops per string (step 5).** Each string's HOME switch GPIO
+  (input+interrupt capable) plus the full homing sub-object
+  (`sensorActiveHigh/direction/fast+slow speed/backoff/offset/timeout/maxSearch`),
+  and an optional **LIMIT** switch GPIO (Advanced). A **Test endstop** button
+  shows a live HIGH/LOW readout (`POST /api/test/endstop`).
+
+- **Fret positions per string (step 7).** A per-string table with one row per
+  fret (0..`maxFret`) editing `calibratedFretMm[]`: **Remplir automatiquement
+  (théorique)** fills every fret from `scaleLength·(1−2^(−fret/12))`, per-fret
+  **+/−** nudge buttons and a direct numeric field, **Aller à cette frette**
+  (jog/test — updates the displayed motor position), and **Enregistrer la
+  position**. A calibrated value always overrides theory in the firmware.
+
 ## Backend endpoints
 
 REST (all JSON):
@@ -103,8 +139,13 @@ REST (all JSON):
 | POST | `/api/pins/validate` | validate assignments, returns per-signal errors + suggestions |
 | POST | `/api/panic` | software panic / STOP (§21.3) |
 | POST | `/api/test/note` | integrated note/string/fret test; returns a step trace (§16) |
+| POST | `/api/test/servo` | drive one servo to `rest`/`active`; returns the pulse width + wiring |
+| POST | `/api/test/endstop` | live HOME/LIMIT switch readout for one string (`{level, active}`) |
 | POST | `/api/sysex/request` | run a SysEx request, returns sent + received + decoded (§18) |
 | GET  | `/api/capabilities` | computed GMB capabilities snapshot (§17) |
+
+`POST /api/test/servo` body: `{ function, source, pcaBoard, channel, gpio, to:"rest"|"active", restUs, activeUs }`.
+`POST /api/test/endstop` body: `{ string, homeGpio, limitGpio, sensorActiveHigh }` → `{ home:{gpio,level,active}, limit?:{...} }`.
 
 WebSocket:
 
@@ -118,7 +159,11 @@ WebSocket:
 Import/export use the project profile schema (`project`, `profileVersion`,
 `capabilitiesRevision`, `instrument`, `board`, `pins`, `network`, `midi`,
 `stringFretSelection`, `strings`, `servos`). Field names match the firmware core
-(`firmware/src/core/…`). **The Wi-Fi password is never included in exports.**
+(`firmware/src/core/…`). Each entry in `servos` carries
+`source` (`"pca"`/`"gpio"`), `stringIndex`, `pcaBoard`, `channel` and `gpio`
+alongside its µs calibration; each string in `strings` carries a `homing`
+sub-object and an optional `calibratedFretMm[]` table.
+**The Wi-Fi password is never included in exports.**
 
 ## Notes
 

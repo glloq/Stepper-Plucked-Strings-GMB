@@ -138,7 +138,7 @@
   // Which capability a signal kind needs (mirrors BoardProfile::candidatesFor).
   var SIGNAL_KIND = {
     step: 'step', dir: 'dir', enable: 'enable', home: 'home', limit: 'limit',
-    diag: 'diag', sda: 'i2cSda', scl: 'i2cScl', servoOe: 'servoOe'
+    diag: 'diag', sda: 'i2cSda', scl: 'i2cScl', servoOe: 'servoOe', servo: 'servo'
   };
   GMB.SIGNAL_KIND = SIGNAL_KIND;
 
@@ -149,6 +149,7 @@
       case 'step': return p.output && p.highSpeedOutput;
       case 'dir':
       case 'enable':
+      case 'servo':    // direct-GPIO servo: LEDC 50 Hz PWM — any output pin
       case 'servoOe': return p.output;
       case 'home':
       case 'limit': return p.input && p.interrupt;
@@ -176,6 +177,35 @@
       }
     };
   }
+
+  // A single servo entry (matches firmware ServoConfig). `source` is "pca" or
+  // "gpio"; per-string servos carry stringIndex, shared/aux servos use -1.
+  function servo(fn, stringIndex, opts) {
+    opts = opts || {};
+    return {
+      enabled: opts.enabled !== false,
+      function: fn,
+      stringIndex: stringIndex === undefined ? -1 : stringIndex,
+      source: opts.source || 'pca',   // "pca" | "gpio"
+      pcaBoard: opts.pcaBoard || 0,   // 0..3 (0x40..0x43)
+      channel: opts.channel === undefined ? 0 : opts.channel, // 0..15 (source == pca)
+      gpio: opts.gpio === undefined ? -1 : opts.gpio,         // ESP32 GPIO (source == gpio)
+      pulseMinUs: opts.pulseMinUs || 500,
+      pulseMaxUs: opts.pulseMaxUs || 2500,
+      restUs: opts.restUs || 1000,
+      activeUs: opts.activeUs || 1800,
+      inverted: !!opts.inverted,
+      travelMs: opts.travelMs || 120,
+      settleMs: opts.settleMs || 30,
+      disableAtRest: opts.disableAtRest !== false
+    };
+  }
+  GMB.servoDefaults = servo;
+
+  // Theoretical fret position (cahier des charges 14.2): scale·(1−2^(−fret/12)).
+  GMB.fretTheoreticalMm = function (s, fret) {
+    return (s.scaleLengthMm || 0) * (1 - Math.pow(2, -fret / 12));
+  };
 
   function sampleProfile() {
     return {
@@ -218,11 +248,19 @@
       },
       // Ukulele GCEA: physical order low->high used by GMB = G4(67) C4(60) E4(64) A4(69)
       strings: [ukuleleString(67), ukuleleString(60), ukuleleString(64), ukuleleString(69)],
+      // A representative mix: one finger + one pluck per string on PCA board 0
+      // (channels 0–3 fingers, 6–9 plucks — the recommended layout), plus one
+      // shared strum driven directly from a free ESP32 GPIO (no PCA needed).
       servos: [
-        { enabled: true, channel: 0, function: 'finger', pulseMinUs: 500, pulseMaxUs: 2500,
-          restUs: 1000, activeUs: 1800, inverted: false, travelMs: 120, settleMs: 30, disableAtRest: true },
-        { enabled: true, channel: 6, function: 'pluck', pulseMinUs: 500, pulseMaxUs: 2500,
-          restUs: 1000, activeUs: 1700, inverted: false, travelMs: 90, settleMs: 20, disableAtRest: true }
+        servo('finger', 0, { channel: 0 }),
+        servo('finger', 1, { channel: 1 }),
+        servo('finger', 2, { channel: 2 }),
+        servo('finger', 3, { channel: 3 }),
+        servo('pluck', 0, { channel: 6, activeUs: 1700, travelMs: 90, settleMs: 20 }),
+        servo('pluck', 1, { channel: 7, activeUs: 1700, travelMs: 90, settleMs: 20 }),
+        servo('pluck', 2, { channel: 8, activeUs: 1700, travelMs: 90, settleMs: 20 }),
+        servo('pluck', 3, { channel: 9, activeUs: 1700, travelMs: 90, settleMs: 20 }),
+        servo('sharedStrum', -1, { source: 'gpio', gpio: 2, activeUs: 1700, travelMs: 90, settleMs: 20 })
       ]
     };
   }
@@ -539,6 +577,16 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
       }, function () { return mockTestNote(payload); });
     },
+    testServo: function (payload) {
+      return this._call('/api/test/servo', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+      }, function () { return mockTestServo(payload); });
+    },
+    testEndstop: function (payload) {
+      return this._call('/api/test/endstop', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+      }, function () { return mockTestEndstop(payload); });
+    },
     sysexRequest: function (kind) {
       return this._call('/api/sysex/request', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ request: kind })
@@ -588,6 +636,40 @@
     // Also inject the events into the mock MIDI stream so the monitor shows them.
     injectMidi(payload);
     return { ok: true, steps: steps };
+  }
+
+  // Mock servo test (/api/test/servo): drive a servo to rest or active and
+  // report the pulse width used and its wiring (PCA board+channel or GPIO).
+  function mockTestServo(payload) {
+    var to = payload.to === 'rest' ? 'rest' : 'active';
+    var us = to === 'rest' ? (payload.restUs || 1000) : (payload.activeUs || 1800);
+    var where = payload.source === 'gpio'
+      ? ('GPIO' + (payload.gpio >= 0 ? payload.gpio : '—'))
+      : ('PCA board ' + (payload.pcaBoard || 0) + ', channel ' + (payload.channel || 0));
+    return {
+      ok: true, function: payload.function || 'servo', source: payload.source || 'pca',
+      target: to, pulseUs: us, where: where,
+      message: 'Servo "' + (payload.function || 'servo') + '" (' + where + ') driven to ' +
+        to + ' (' + us + ' µs).'
+    };
+  }
+
+  // Mock endstop test (/api/test/endstop): a live-ish HOME/LIMIT readout. HOME is
+  // usually released (idle); the reported electrical level honours sensorActiveHigh.
+  function mockTestEndstop(payload) {
+    function read(gpio, activeChance) {
+      var active = Math.random() < activeChance;
+      var high = payload.sensorActiveHigh === false ? !active : active;
+      return { gpio: gpio, level: high ? 'HIGH' : 'LOW', active: active };
+    }
+    var res = { ok: true, string: payload.string };
+    res.home = (payload.homeGpio !== undefined && payload.homeGpio >= 0)
+      ? read(payload.homeGpio, 0.25)
+      : { gpio: -1, level: '—', active: false, unassigned: true };
+    if (payload.limitGpio !== undefined && payload.limitGpio >= 0) {
+      res.limit = read(payload.limitGpio, 0.1);
+    }
+    return res;
   }
 
   // ---------------------------------------------------------------------------
