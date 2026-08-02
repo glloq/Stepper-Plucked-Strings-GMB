@@ -24,7 +24,21 @@
     host.appendChild(h('div.card.panic-card', [
       h('div', [h('h2', 'Emergency stop'),
         h('p.muted', 'Disables drivers, neutralises servos (PCA9685 /OE), flushes the MIDI queue.')]),
-      h('button.btn.danger.panic-big', { onclick: GMB.doPanic }, 'STOP')
+      h('div.panic-actions', [
+        h('button.btn.danger.panic-big', { onclick: GMB.doPanic }, 'STOP'),
+        h('button.btn', {
+          title: 'Recover from a panic / E-stop and re-home (refused while E-stop or a LIMIT is active)',
+          onclick: function () {
+            GMB.api.resetSystem().then(function (res) {
+              if (res && res.ok === false) {
+                GMB.toast('Reset refused: ' + (res.error || 'E-stop/LIMIT active or invalid config') + '.', 'warn');
+              } else {
+                GMB.toast('Reset accepted — re-homing.', 'ok');
+              }
+            }).catch(function (e) { GMB.toast('Reset failed: ' + (e && e.message || e), 'error'); });
+          }
+        }, 'Reset & re-home')
+      ])
     ]));
     host.appendChild(h('div.card', [h('h2', 'General state'), summary]));
     host.appendChild(h('div.card', [h('h2', 'Active faults'), faultsBox]));
@@ -120,8 +134,11 @@
   function dot(on) { return h('span.leddot' + (on ? '.on' : '')); }
   function stateBadge(s) { return h('span.pill.' + stateClass(s), s); }
   function stateClass(s) {
-    if (s === 'READY' || s === 'IDLE') return 'ok';
-    if (s === 'FAULT' || s === 'DISABLED') return 'error';
+    var u = String(s).toUpperCase();
+    if (u === 'READY' || u === 'IDLE') return 'ok';
+    if (u === 'READYDEGRADED') return 'warn';  // playing, but some axes disabled
+    if (u === 'FAULT' || u === 'DISABLED' || u === 'PANIC' || u === 'EMERGENCYSTOP')
+      return 'error';
     if (s === '—') return 'muted';
     return 'warn';
   }
