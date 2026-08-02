@@ -46,6 +46,12 @@ public:
     // Reply to a specific SysEx sender.
     void reply(const SysExPacket& to, const uint8_t* data, size_t len);
 
+    // Send an UNSOLICITED message (e.g. a capabilities-changed notification) to
+    // the last host that made a SysEx request. Returns false if no host is known
+    // yet. Used so a runtime capability change is pushed, not only polled.
+    bool notifyLastSender(const uint8_t* data, size_t len);
+    bool hasLastSender() const { return lastSenderPort_ != 0; }
+
 private:
     static constexpr int kMaxPacketsPerTick = 8;
     static constexpr size_t kMaxEventsPerTick = 128;
@@ -54,8 +60,10 @@ private:
     uint16_t port_ = 5006;
     std::vector<MidiEvent> events_;
     std::vector<SysExPacket> sysex_;
+    uint16_t lastSenderPort_ = 0;
 #if defined(ARDUINO)
     WiFiUDP udp_;
+    IPAddress lastSenderIp_;
     uint8_t buf_[512];
 #endif
 };

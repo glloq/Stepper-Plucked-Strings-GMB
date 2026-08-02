@@ -228,6 +228,14 @@ int rebuildRuntimeCapabilities() {
     return ready;
 }
 
+// Push a spontaneous "capabilities changed" SysEx (block 8) to the last host that
+// queried us, so General-MIDI-Boop learns of a runtime change without polling.
+void notifyCapabilitiesChanged() {
+    if (!g_midi.hasLastSender()) return;
+    std::vector<uint8_t> msg = g_sysex.notification(0x01);  // bit0 = caps changed
+    if (!msg.empty()) g_midi.notifyLastSender(msg.data(), msg.size());
+}
+
 void neutraliseAll();  // defined below; needed by faultRuntimeAxis
 
 // Central runtime axis-fault path (LIMIT, motor/servo error, homing failure).
@@ -241,6 +249,7 @@ void faultRuntimeAxis(size_t i, const char* reason, uint32_t nowMs) {
     g_safety.recordFault("axis", std::string(reason) + " on axis " + std::to_string(i),
                          nowMs);
     int working = rebuildRuntimeCapabilities();
+    notifyCapabilitiesChanged();  // push block-8 so GMB learns of the change
     // If the last operational axis just failed, the instrument can no longer play
     // anything: neutralise and latch a panic rather than sitting "armed" with zero
     // strings (which would also emit a bogus 0..0 capability range).
@@ -401,6 +410,7 @@ void doHoming(uint32_t nowMs) {
     if (faulted > 0) {
         // Announce only the axes that actually work (cahier des charges §13.2).
         rebuildRuntimeCapabilities();
+        notifyCapabilitiesChanged();
         g_safety.recordFault("homing",
                              std::to_string(faulted) + " axis/axes failed homing "
                              "(degraded run)", nowMs);
@@ -946,6 +956,17 @@ void loop() {
 
     g_instrument.tick(nowUs);   // flush chord groups
     g_servos.update(nowMs);     // scheduled servo returns / rest cut-off
+
+    // Runtime PCA9685 health: a board lost AFTER arming (unplugged / brown-out)
+    // means no finger/pluck can act — panic rather than keep "playing" blind.
+    static uint32_t lastPcaCheckMs = 0;
+    if (g_phase == AppPhase::Ready && nowMs - lastPcaCheckMs >= 500) {
+        lastPcaCheckMs = nowMs;
+        if (!g_servos.pcaHealthy()) {
+            g_safety.recordFault("servo", "PCA9685 stopped responding on I2C", nowMs);
+            doPanic();
+        }
+    }
 
     if (g_phase == AppPhase::Homing) {
         doHoming(nowMs);

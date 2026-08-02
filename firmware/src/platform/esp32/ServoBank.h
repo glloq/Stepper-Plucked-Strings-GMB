@@ -58,6 +58,10 @@ public:
     bool directAttachFault() const { return directAttachFault_; }
     // True if a referenced PCA9685 board did not respond on I2C.
     bool pcaAttachFault() const { return pcaAttachFault_; }
+    // Runtime health probe: re-checks that every used PCA9685 still ACKs on I2C,
+    // so a board unplugged AFTER arming is detected (returns true when no PCA is
+    // used). Cheap enough to call a few times a second.
+    bool pcaHealthy() const;
 
     size_t count() const { return servos_.size(); }
     // True if `index` refers to a real, enabled servo that can actually be driven

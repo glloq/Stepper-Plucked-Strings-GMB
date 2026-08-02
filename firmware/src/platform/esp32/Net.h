@@ -34,11 +34,13 @@ private:
     bool connected_ = false;
     bool apActive_ = false;
     bool connecting_ = false;
+    bool apIsFallback_ = false;  // AP entered because station failed (retry later)
     std::string ip_;
     int failures_ = 0;
     uint32_t attemptStartMs_ = 0;
+    uint32_t lastStationRetryMs_ = 0;
 
-    void startAccessPoint();
+    void startAccessPoint(bool fallback = false);
     void beginStationAttempt(uint32_t nowMs);  // non-blocking: kicks off WiFi.begin
     bool pollStation(uint32_t nowMs);          // returns true once connected
 };
