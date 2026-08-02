@@ -1,5 +1,7 @@
 #include "ProfileValidator.h"
 
+#include <utility>
+
 namespace gmb {
 
 using Sev = ValidationIssue::Severity;
@@ -55,6 +57,61 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
         }
     } else {
         warn("board", "Unknown board profile; pins cannot be validated");
+    }
+
+    // Servo configuration: PCA vs direct GPIO, with or without a PCA9685.
+    {
+        const BoardProfile* board = builtinBoardProfile(p.boardIdentifier);
+        // Collect stepper/other GPIOs already used so direct servos can't clash.
+        std::vector<std::pair<int8_t, std::string>> usedGpio;
+        for (const auto& a : p.pins)
+            if (a.gpio >= 0) usedGpio.push_back({a.gpio, a.signal});
+
+        std::vector<std::pair<int, int>> usedPcaChannels;  // (board, channel)
+        for (size_t i = 0; i < p.servos.size(); ++i) {
+            const ServoConfig& s = p.servos[i];
+            if (!s.enabled) continue;
+            std::string tag = "servos[" + std::to_string(i) + "]";
+
+            // Per-string roles must reference an existing string.
+            bool perString = s.function == "finger" || s.function == "pluck" ||
+                             s.function == "strum" || s.function == "damper";
+            if (perString) {
+                if (s.stringIndex < 0 || s.stringIndex >= (int)p.strings.size())
+                    err(tag + ".stringIndex",
+                        "Per-string servo references a string that does not exist");
+            }
+
+            if (s.pulseMinUs >= s.pulseMaxUs)
+                err(tag + ".pulse", "pulseMinUs must be less than pulseMaxUs");
+
+            if (s.source == ServoSource::Pca) {
+                if (s.pcaBoard > 3)
+                    err(tag + ".pcaBoard", "PCA board index must be 0..3 (max four PCA9685)");
+                if (s.channel > 15)
+                    err(tag + ".channel", "PCA channel must be 0..15");
+                std::pair<int, int> key{s.pcaBoard, s.channel};
+                for (auto& u : usedPcaChannels)
+                    if (u == key)
+                        err(tag + ".channel",
+                            "PCA board " + std::to_string(s.pcaBoard) + " channel " +
+                                std::to_string(s.channel) + " is already used by another servo");
+                usedPcaChannels.push_back(key);
+            } else {  // DirectGpio
+                if (s.gpio < 0) {
+                    err(tag + ".gpio", "Direct servo requires a GPIO");
+                } else if (board && !board->supports(s.gpio, SignalKind::Generic)) {
+                    err(tag + ".gpio",
+                        "GPIO " + std::to_string(s.gpio) +
+                            " cannot drive a servo on this board (reserved or output-incapable)");
+                }
+                for (auto& u : usedGpio)
+                    if (u.first == s.gpio)
+                        err(tag + ".gpio", "GPIO " + std::to_string(s.gpio) +
+                                               " already used by " + u.second);
+                if (s.gpio >= 0) usedGpio.push_back({s.gpio, tag});
+            }
+        }
     }
 
     // String/fret selection CC configuration (selection spec section 18).
