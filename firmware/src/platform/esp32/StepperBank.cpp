@@ -72,6 +72,11 @@ void StepperBank::stop(size_t axis) {
     if (axis < steppers_.size() && steppers_[axis]) steppers_[axis]->stopMove();
 }
 
+void StepperBank::emergencyStop(size_t axis) {
+    if (axis < steppers_.size() && steppers_[axis])
+        steppers_[axis]->forceStopAndNewPosition(steppers_[axis]->getCurrentPosition());
+}
+
 void StepperBank::stopAll() {
     for (auto* s : steppers_)
         if (s) s->forceStopAndNewPosition(s->getCurrentPosition());
@@ -132,6 +137,7 @@ void StepperBank::moveToMmRaw(size_t axis, double mm) {
 }
 void StepperBank::setVelocityMm(size_t, double) {}
 void StepperBank::stop(size_t) {}
+void StepperBank::emergencyStop(size_t) {}
 void StepperBank::stopAll() {}
 void StepperBank::setPositionReference(size_t axis, double mm) {
     if (axis < axes_.size()) axes_[axis].position = axes_[axis].geom.mmToSteps(mm);

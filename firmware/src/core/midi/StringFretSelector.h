@@ -140,6 +140,17 @@ public:
     // Drop expired pending selections (spec section 4.4). Call periodically.
     void expire(uint32_t nowUs);
 
+    // Clear all pending/active selections and last-valid state. Call on profile
+    // load, panic, or tuning/string-count change so stale CC selections from a
+    // previous configuration are never applied to the new one.
+    void reset() {
+        pending_.clear();
+        active_.clear();
+        lastValidString_ = -1;
+        lastValidFret_ = -1;
+        nextInstanceId_ = 1;
+    }
+
     const std::vector<PendingStringSelection>& pending() const { return pending_; }
     const std::vector<ActiveNote>& active() const { return active_; }
 

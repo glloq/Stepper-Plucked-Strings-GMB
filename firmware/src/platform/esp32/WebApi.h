@@ -14,6 +14,7 @@
 #include "../../core/safety/SafetyManager.h"
 
 #if defined(ARDUINO)
+#include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
 #endif
 
@@ -31,15 +32,23 @@ struct WebContext {
     SafetyManager* safety = nullptr;
     ProfileStorage* storage = nullptr;
     std::function<void()> onPanic;
+    std::function<bool()> onReset;                          // recover from panic/E-stop
+    std::function<std::string()> appState;                  // "boot"/"homing"/"ready"
     std::function<bool(const Profile&)> onActivateProfile;  // validate + apply
     std::function<bool(uint8_t, uint8_t, uint8_t, uint16_t)> onTestNote;  // ch,note,vel,ms
-    std::function<void(const std::string&, const std::string&)> onSetWifi;  // sta,ap
+    // Only the flagged passwords are written (empty fields are left unchanged).
+    std::function<void(bool, const std::string&, bool, const std::string&)> onSetWifi;
 };
 
 class WebApi {
 public:
     void begin(const WebContext& ctx, uint16_t port = 80);
     void broadcastStatus();  // push live state over the status WebSocket
+#if defined(ARDUINO)
+    void broadcastMidi(const MidiEvent& e);  // push a MIDI event over /ws/midi
+#else
+    void broadcastMidi(const MidiEvent&) {}
+#endif
 
 private:
     WebContext ctx_;
@@ -50,6 +59,7 @@ private:
     AsyncWebSocket statusWs_{"/ws/status"};
     AsyncWebSocket midiWs_{"/ws/midi"};
     void registerRoutes();
+    void fillStatus(JsonDocument& doc);
 #endif
 };
 

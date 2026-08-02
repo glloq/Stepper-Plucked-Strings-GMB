@@ -28,7 +28,9 @@ void ServoBank::begin(const std::vector<ServoConfig>& servos, int8_t sda, int8_t
     servos_ = servos;
     rt_.assign(servos.size(), Rt{});
     ledcCh_.assign(servos.size(), -1);
+    attached_.assign(servos.size(), false);
     oePin_ = oePin;
+    directCount_ = 0;
     pcaUsed_ = false;
     directAttachFault_ = false;
     for (int i = 0; i < kMaxPca; ++i) pcaPresent_[i] = false;
@@ -54,31 +56,49 @@ void ServoBank::begin(const std::vector<ServoConfig>& servos, int8_t sda, int8_t
         }
     }
     // Attach direct-GPIO servos to LEDC channels (max 8 on the ESP32-S3).
-    int direct = 0;
     for (size_t i = 0; i < servos_.size(); ++i) {
         const ServoConfig& s = servos_[i];
-        if (!(s.enabled && s.source == ServoSource::DirectGpio && s.gpio >= 0)) continue;
-        if (direct >= kMaxDirectServos) {
-            directAttachFault_ = true;  // out of LEDC channels
-            continue;
-        }
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
-        if (!ledcAttach(s.gpio, kServoFreqHz, kLedcResBits)) {
-            directAttachFault_ = true;
-            continue;
-        }
-#else
-        ledcSetup(direct, kServoFreqHz, kLedcResBits);
-        ledcAttachPin(s.gpio, direct);
-#endif
-        ledcCh_[i] = static_cast<int8_t>(direct);
-        ++direct;
+        if (s.enabled && s.source == ServoSource::DirectGpio && s.gpio >= 0)
+            attachDirect(static_cast<int>(i));
     }
 #else
     (void)sda;
     (void)scl;
 #endif
     neutraliseAll();
+}
+
+bool ServoBank::attachDirect(int index) {
+    if (index < 0 || index >= (int)servos_.size()) return false;
+    const ServoConfig& s = servos_[index];
+    if (s.source != ServoSource::DirectGpio || s.gpio < 0) return false;
+    if (attached_[index]) return true;
+#if defined(ARDUINO)
+    // Reuse a previously-assigned channel, otherwise allocate a new one.
+    int ch = ledcCh_[index];
+    if (ch < 0) {
+        if (directCount_ >= kMaxDirectServos) {
+            directAttachFault_ = true;  // out of LEDC channels
+            return false;
+        }
+        ch = directCount_++;
+        ledcCh_[index] = static_cast<int8_t>(ch);
+    }
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    if (!ledcAttach(s.gpio, kServoFreqHz, kLedcResBits)) {
+        directAttachFault_ = true;
+        return false;
+    }
+#else
+    ledcSetup(ch, kServoFreqHz, kLedcResBits);
+    ledcAttachPin(s.gpio, ch);
+#endif
+    attached_[index] = true;
+    return true;
+#else
+    attached_[index] = true;
+    return true;
+#endif
 }
 
 void ServoBank::writeMicros(int index, uint16_t us) {
@@ -92,6 +112,7 @@ void ServoBank::writeMicros(int index, uint16_t us) {
         if (s.pcaBoard < kMaxPca && pcaPresent_[s.pcaBoard])
             pca_[s.pcaBoard].writeMicroseconds(s.channel, us);
     } else if (s.gpio >= 0) {
+        if (!attached_[index] && !attachDirect(index)) return;  // reattach if cut
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
         ledcWrite(s.gpio, usToDuty(us));
 #else
@@ -119,6 +140,7 @@ void ServoBank::writeOff(int index) {
         if (ledcCh_[index] >= 0) ledcWrite(ledcCh_[index], 0);
         ledcDetachPin(s.gpio);
 #endif
+        attached_[index] = false;  // must reattach before the next write
     }
     rt_[index].pwmOff = true;
 #else

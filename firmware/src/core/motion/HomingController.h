@@ -13,8 +13,10 @@ enum class HomingState : uint8_t {
     Idle,
     CheckSensor,
     SeekFast,
+    BrakeFast,   // stop and wait for standstill before reversing (backoff)
     Backoff,
     SeekSlow,
+    BrakeSlow,   // stop and wait for standstill before setting zero
     SetZero,
     MoveToOffset,
     Ready,
@@ -80,6 +82,12 @@ private:
     double triggerPosMm_ = 0.0;
     double backoffTargetMm_ = 0.0;
     double offsetTargetMm_ = 0.0;
+    double lastPosMm_ = 0.0;
+    int stableTicks_ = 0;
+
+    // Standstill detection: the axis is considered stopped once its position has
+    // not changed by more than ~20 µm for a couple of ticks.
+    bool stopped(double currentPosMm);
 
     bool active(bool raw) const { return raw == cfg_.sensorActiveHigh; }
     HomingCommand fail(HomingFault f);

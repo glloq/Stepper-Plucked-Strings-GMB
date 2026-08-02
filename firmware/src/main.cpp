@@ -76,11 +76,11 @@ void buildStepperPins(std::vector<AxisPins>& out, int8_t& enablePin) {
     for (const auto& a : g_profile.pins) {
         if (a.signal == "ENABLE") enablePin = a.gpio;
         for (size_t i = 0; i < out.size(); ++i) {
-            String idx = String(static_cast<int>(i) + 1);
-            if (a.signal == String("STEP") + idx) out[i].step = a.gpio;
-            else if (a.signal == String("DIR") + idx) out[i].dir = a.gpio;
-            else if (a.signal == String("HOME") + idx) out[i].home = a.gpio;
-            else if (a.signal == String("LIMIT") + idx) out[i].limit = a.gpio;
+            const std::string idx = std::to_string(i + 1);
+            if (a.signal == "STEP" + idx) out[i].step = a.gpio;
+            else if (a.signal == "DIR" + idx) out[i].dir = a.gpio;
+            else if (a.signal == "HOME" + idx) out[i].home = a.gpio;
+            else if (a.signal == "LIMIT" + idx) out[i].limit = a.gpio;
         }
     }
 }
@@ -103,7 +103,22 @@ void applyProfile() {
     }
 }
 
-void beginHoming(uint32_t nowMs) {
+bool safetyLocked() {
+    SafetyState s = g_safety.state();
+    return s == SafetyState::Panic || s == SafetyState::EmergencyStop;
+}
+
+// Start homing only when it is safe to move. Refuses if a panic/E-stop is
+// latched, if the profile is invalid, or if a required motor could not attach a
+// hardware step generator (cahier des charges §13/§21).
+bool beginHoming(uint32_t nowMs) {
+    if (safetyLocked()) return false;
+    if (!ProfileValidator::isActivatable(g_profile)) return false;
+    if (g_steppers.attachFault() || g_servos.directAttachFault()) {
+        g_safety.recordFault("attach", "a motor/servo could not attach a channel",
+                             nowMs);
+        return false;
+    }
     g_steppers.enableDrivers(true);
     g_servos.outputEnable(true);   // servos hold their rest position (fingers up)
     for (size_t i = 0; i < g_homing.size(); ++i) {
@@ -112,6 +127,26 @@ void beginHoming(uint32_t nowMs) {
         g_anchored[i] = false;
     }
     g_phase = AppPhase::Homing;
+    return true;
+}
+
+// Whether any endstop is currently asserted (blocks a reset / re-home).
+bool anyLimitActive() {
+    for (size_t i = 0; i < g_steppers.count(); ++i)
+        if (g_steppers.limitActive(i)) return true;
+    return false;
+}
+
+// Explicit recovery after a panic / E-stop: only proceeds when the E-stop is
+// released, no LIMIT is asserted, the profile is valid and all channels attached.
+bool doReset(uint32_t nowMs) {
+    if (g_estopPin >= 0 && digitalRead(g_estopPin) == LOW) return false;  // still pressed
+    if (anyLimitActive()) return false;
+    if (!ProfileValidator::isActivatable(g_profile)) return false;
+    if (g_steppers.attachFault() || g_servos.directAttachFault()) return false;
+    g_safety.reset();                 // Panic/EStop -> PowerOnSafe
+    g_safety.clearFaults();
+    return beginHoming(nowMs);         // mandatory re-home before playing again
 }
 
 void doHoming(uint32_t nowMs) {
@@ -188,9 +223,10 @@ void tickString(size_t i, uint32_t nowMs) {
 
     // A LIMIT switch tripped during a move faults this axis without disturbing
     // the others (cahier des charges §13.2).
-    if (sch.phase == StringSched::MovingToFret && g_steppers.limitActive(i)) {
-        g_steppers.stop(i);
+    if (g_steppers.limitActive(i)) {
+        g_steppers.emergencyStop(i);   // immediate hard stop, not a decel
         sc.fault();
+        g_anchored[i] = false;         // position invalid: require a re-home
         g_safety.recordFault("limit", "LIMIT tripped on axis " + std::to_string(i),
                              nowMs);
         sch.phase = StringSched::Idle;
@@ -288,26 +324,37 @@ void setup() {
         g_testOff = {true, channel, note, millis() + (durationMs ? durationMs : 500)};
         return true;
     };
-    ctx.onSetWifi = [](const std::string& sta, const std::string& ap) {
+    ctx.onSetWifi = [](bool hasSta, const std::string& sta, bool hasAp,
+                       const std::string& ap) {
         Preferences p;
         p.begin("gmb", false);
-        p.putString("wifipass", String(sta.c_str()));
-        p.putString("appass", String(ap.c_str()));
+        if (hasSta) p.putString("wifipass", String(sta.c_str()));  // only overwrite
+        if (hasAp) p.putString("appass", String(ap.c_str()));      // provided fields
         p.end();
+    };
+    ctx.appState = []() -> std::string {
+        return g_phase == AppPhase::Ready ? "ready"
+               : g_phase == AppPhase::Homing ? "homing" : "boot";
     };
     ctx.onActivateProfile = [](const Profile& p) {
         if (!ProfileValidator::isActivatable(p)) return false;
+        // Refuse to (re)start motion while a panic / E-stop is latched; the user
+        // must explicitly reset first (POST /api/reset).
+        if (safetyLocked()) return false;
         g_profile = p;
         g_profile.capabilitiesRevision++;
         applyProfile();
         g_sysex.rebuild(g_profile);
-        beginHoming(millis());  // re-home after a mechanical config change (§16)
-        return true;
+        return beginHoming(millis());  // re-home after a mechanical change (§16)
     };
+    ctx.onReset = []() { return doReset(millis()); };
     g_web.begin(ctx, 80);
 
     // Home every axis before allowing play; unhomed axes never move for notes.
-    if (valid) beginHoming(millis());
+    // beginHoming() itself refuses if the profile is invalid or a channel failed
+    // to attach, leaving the system safely in Boot.
+    beginHoming(millis());
+    (void)valid;
 }
 
 void loop() {
@@ -335,6 +382,7 @@ void loop() {
     // Ingest Wi-Fi MIDI. SysEx is always answered; notes only play once Ready.
     g_midi.poll(nowUs);
     for (auto& e : g_midi.parser().events()) {
+        g_web.broadcastMidi(e);  // feed the Web MIDI monitor (all phases)
         if (g_phase == AppPhase::Ready) g_instrument.handleEvent(e, nowUs);
     }
     for (auto& msg : g_midi.parser().sysex()) {

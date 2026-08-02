@@ -29,6 +29,9 @@ public:
         sysex_.clear();
     }
 
+    // Maximum SysEx message length; longer messages are aborted (RAM guard).
+    static constexpr size_t kMaxSysExBytes = 512;
+
 private:
     uint8_t source_ = static_cast<uint8_t>(MidiSource::WifiUdp);
     uint8_t status_ = 0;       // running status

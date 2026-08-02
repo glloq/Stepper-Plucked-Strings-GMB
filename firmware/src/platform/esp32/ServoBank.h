@@ -78,7 +78,9 @@ private:
 
     std::vector<ServoConfig> servos_;
     std::vector<int8_t> ledcCh_;  // LEDC channel per direct servo (Arduino 2.x)
+    std::vector<bool> attached_;  // direct-servo LEDC attach state
     int8_t oePin_ = -1;
+    int directCount_ = 0;         // number of LEDC channels handed out
     bool pcaUsed_ = false;
     bool pcaPresent_[kMaxPca] = {false, false, false, false};
     bool directAttachFault_ = false;
@@ -90,6 +92,7 @@ private:
 #endif
     void writeMicros(int index, uint16_t us);
     void writeOff(int index);
+    bool attachDirect(int index);  // (re)attach a direct servo's LEDC channel
 };
 
 }  // namespace gmb
