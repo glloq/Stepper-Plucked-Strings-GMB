@@ -12,8 +12,11 @@ CORE_SRC := \
   $(CORE)/board/BoardProfile.cpp \
   $(CORE)/board/PinManager.cpp \
   $(CORE)/midi/StringFretSelector.cpp \
+  $(CORE)/midi/MidiParser.cpp \
   $(CORE)/instrument/NoteAllocator.cpp \
   $(CORE)/instrument/StringController.cpp \
+  $(CORE)/instrument/InstrumentController.cpp \
+  $(CORE)/gmb/GmbSysExService.cpp \
   $(CORE)/motion/StepperAxis.cpp \
   $(CORE)/motion/HomingController.cpp \
   $(CORE)/configuration/Profile.cpp \
@@ -30,7 +33,9 @@ TEST_SRC := \
   test_motion.cpp \
   test_string_fsm.cpp \
   test_profile.cpp \
-  test_sysex.cpp
+  test_sysex.cpp \
+  test_integration.cpp \
+  test_midiparser.cpp
 
 BIN := run_tests
 
