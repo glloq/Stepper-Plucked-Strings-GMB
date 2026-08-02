@@ -1,0 +1,8 @@
+# Native test build artifacts
+test/run_tests
+*.o
+*.obj
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/

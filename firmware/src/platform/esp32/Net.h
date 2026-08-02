@@ -1,0 +1,39 @@
+// Wi-Fi management: AP for first setup, station for normal use, automatic
+// fallback to AP after repeated failures (cahier des charges §8.1).
+#pragma once
+
+#include <cstdint>
+#include <string>
+
+#include "../../core/configuration/Profile.h"
+
+namespace gmb {
+
+class Net {
+public:
+    // `password` is supplied separately from the Profile so it is never stored
+    // in exportable config (cahier des charges §20).
+    bool begin(const NetworkConfig& cfg, const std::string& stationPassword);
+
+    // Poll connection state; returns to AP mode after repeated station failures.
+    void tick(uint32_t nowMs);
+
+    bool connected() const { return connected_; }
+    bool accessPointActive() const { return apActive_; }
+    std::string ipAddress() const { return ip_; }
+    std::string mode() const { return apActive_ ? "accessPoint" : "station"; }
+
+private:
+    NetworkConfig cfg_;
+    std::string password_;
+    bool connected_ = false;
+    bool apActive_ = false;
+    std::string ip_;
+    int failures_ = 0;
+    uint32_t lastAttemptMs_ = 0;
+
+    void startAccessPoint();
+    bool startStation();
+};
+
+}  // namespace gmb
