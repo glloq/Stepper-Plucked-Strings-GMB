@@ -94,7 +94,12 @@ void applyProfile() {
     std::vector<AxisPins> axisPins;
     int8_t enablePin = -1;
     buildStepperPins(axisPins, enablePin);
-    g_steppers.begin(g_profile.strings, axisPins, enablePin);
+    std::vector<bool> homeActiveHigh;
+    for (size_t i = 0; i < g_profile.strings.size(); ++i)
+        homeActiveHigh.push_back(i < g_profile.homing.size()
+                                     ? g_profile.homing[i].sensorActiveHigh
+                                     : false);
+    g_steppers.begin(g_profile.strings, axisPins, enablePin, homeActiveHigh);
     g_servos.begin(g_profile.servos, pinOf("SDA"), pinOf("SCL"), pinOf("SERVO_OE"));
 
     g_homing.assign(g_profile.strings.size(), HomingController{});
@@ -114,10 +119,17 @@ bool safetyLocked() {
 // hardware step generator (cahier des charges §13/§21).
 bool beginHoming(uint32_t nowMs) {
     if (safetyLocked()) return false;
+    // Never enable drivers while a hardware E-stop is physically asserted, even
+    // if the software state has not caught up yet (closes the power-on window).
+    if (g_estopPin >= 0 && digitalRead(g_estopPin) == LOW) {
+        g_safety.emergencyStop(nowMs);
+        return false;
+    }
     if (!ProfileValidator::isActivatable(g_profile)) return false;
-    if (g_steppers.attachFault() || g_servos.directAttachFault()) {
-        g_safety.recordFault("attach", "a motor/servo could not attach a channel",
-                             nowMs);
+    if (g_steppers.attachFault() || g_servos.directAttachFault() ||
+        g_servos.pcaAttachFault()) {
+        g_safety.recordFault("attach",
+                             "a motor/servo/PCA9685 could not attach or respond", nowMs);
         return false;
     }
     g_degraded = false;
@@ -145,7 +157,9 @@ bool doReset(uint32_t nowMs) {
     if (g_estopPin >= 0 && digitalRead(g_estopPin) == LOW) return false;  // still pressed
     if (anyLimitActive()) return false;
     if (!ProfileValidator::isActivatable(g_profile)) return false;
-    if (g_steppers.attachFault() || g_servos.directAttachFault()) return false;
+    if (g_steppers.attachFault() || g_servos.directAttachFault() ||
+        g_servos.pcaAttachFault())
+        return false;
     g_safety.reset();                 // Panic/EStop -> PowerOnSafe
     g_safety.clearFaults();
     return beginHoming(nowMs);         // mandatory re-home before playing again
@@ -156,7 +170,7 @@ void doHoming(uint32_t nowMs) {
     int faulted = 0;
     for (size_t i = 0; i < g_homing.size(); ++i) {
         if (g_homing[i].failed()) {
-            g_instrument.string(i).disable();  // fault this axis, keep the others
+            g_instrument.faultString(i);  // remove from allocator + selection too
             g_steppers.stop(i);
             ++faulted;
             continue;
@@ -172,7 +186,8 @@ void doHoming(uint32_t nowMs) {
         }
         allDone = false;
         bool rawHigh = g_steppers.homeRawHigh(i);
-        HomingCommand cmd = g_homing[i].update(nowMs, rawHigh, g_steppers.positionMm(i));
+        HomingCommand cmd = g_homing[i].update(nowMs, rawHigh, g_steppers.positionMm(i),
+                                               g_steppers.isRunning(i));
         switch (cmd.kind) {
             case MoveKind::Stop: g_steppers.stop(i); break;
             case MoveKind::MoveVelocity: g_steppers.setVelocityMm(i, cmd.velocityMmS); break;
@@ -185,11 +200,18 @@ void doHoming(uint32_t nowMs) {
         // Degraded run (cahier des charges §13.2): some axes failed homing.
         // Announce the reduced polyphony so General-Midi-Boop stops sending notes
         // the instrument can no longer play, and bump the capabilities revision.
-        int ready = static_cast<int>(g_homing.size()) - faulted;
         g_degraded = faulted > 0;
         if (g_degraded) {
+            // Recompute the FULL capability snapshot from a reduced runtime copy
+            // of the profile (faulted axes disabled) so the announced range,
+            // discrete notes, string count, tuning, frets and polyphony all
+            // reflect only the axes that actually work.
+            Profile rp = g_profile;
+            for (size_t i = 0; i < g_homing.size() && i < rp.strings.size(); ++i)
+                if (g_homing[i].failed()) rp.strings[i].enabled = false;
             g_profile.capabilitiesRevision++;
-            g_sysex.rebuild(g_profile, ready);  // polyphony override = working axes
+            rp.capabilitiesRevision = g_profile.capabilitiesRevision;
+            g_sysex.rebuild(rp);
             g_safety.recordFault("homing",
                                  std::to_string(faulted) + " axis/axes failed homing "
                                  "(degraded run)", nowMs);
@@ -197,14 +219,24 @@ void doHoming(uint32_t nowMs) {
     }
 }
 
-void doPanic() {
+void neutraliseAll() {
     g_instrument.panic();
     g_steppers.stopAll();
     g_steppers.enableDrivers(false);
     g_servos.neutraliseAll();
     for (auto& s : g_sched) s = StringSched{};
-    g_safety.panic("web/CC panic", millis());
     g_phase = AppPhase::Boot;
+}
+
+void doPanic() {
+    neutraliseAll();
+    g_safety.panic("web/CC panic", millis());
+}
+
+// Hardware E-stop: latches the distinct EmergencyStop state (not Panic).
+void doEmergencyStop() {
+    neutraliseAll();
+    g_safety.emergencyStop(millis());
 }
 
 // Drive one string's mechanical sequence toward a plucked note.
@@ -353,6 +385,13 @@ void setup() {
         if (g_phase == AppPhase::Ready) return g_degraded ? "readyDegraded" : "ready";
         return g_phase == AppPhase::Homing ? "homing" : "boot";
     };
+    ctx.readyStrings = []() -> int {
+        if (g_phase != AppPhase::Ready) return 0;
+        int n = 0;
+        for (size_t i = 0; i < g_homing.size(); ++i)
+            if (g_anchored[i] && !g_homing[i].failed()) ++n;
+        return n;
+    };
     ctx.onActivateProfile = [](const Profile& p) {
         if (!ProfileValidator::isActivatable(p)) return false;
         // Refuse to (re)start motion while a panic / E-stop is latched; the user
@@ -380,10 +419,21 @@ void loop() {
 
     g_net.tick(nowMs);
 
-    // Hardware E-stop (active-low) latches a panic immediately.
+    // Wi-Fi loss policy (cahier des charges §21.4, default): cancel pending
+    // commands and release notes in a controlled way, but stay armed/READY.
+    static bool wasConnected = false;
+    bool nowConnected = g_net.connected() && !g_net.accessPointActive();
+    if (wasConnected && !nowConnected && g_phase == AppPhase::Ready) {
+        g_instrument.panic();  // flushes queue + releases active notes
+        g_safety.recordFault("wifi", "Wi-Fi link lost — pending commands cancelled",
+                             nowMs);
+    }
+    wasConnected = nowConnected;
+
+    // Hardware E-stop (active-low) latches the EmergencyStop state immediately.
     if (g_estopPin >= 0 && digitalRead(g_estopPin) == LOW &&
-        g_phase != AppPhase::Boot) {
-        doPanic();
+        g_safety.state() != SafetyState::EmergencyStop) {
+        doEmergencyStop();
     }
 
     // Deliver a scheduled test-note Note Off.

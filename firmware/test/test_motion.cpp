@@ -60,21 +60,34 @@ TEST(homing_reaches_ready) {
     h.configure(hc);
 
     double pos = 50.0;         // start away from home
+    double vel = 0.0;          // virtual axis with deceleration
+    bool moving = false;
     const double homePos = 0.0;
+    const double dt = 0.001;
     uint32_t t = 0;
     h.start(t);
 
     for (int i = 0; i < 100000 && !h.ready() && !h.failed(); ++i) {
         t += 1;  // 1 ms tick
         bool sensor = pos <= homePos + 0.2;  // sensor active near home
-        HomingCommand cmd = h.update(t, sensor, pos);
+        HomingCommand cmd = h.update(t, sensor, pos, moving);
         if (cmd.kind == MoveKind::MoveVelocity) {
-            pos += cmd.velocityMmS * 0.001;  // integrate 1 ms
+            vel = cmd.velocityMmS;
+            pos += vel * dt;
+            moving = vel != 0.0;
         } else if (cmd.kind == MoveKind::MoveTo) {
-            // Move a small step toward the target.
             double d = cmd.targetMm - pos;
-            double step = d > 0 ? 0.1 : -0.1;
-            if (std::fabs(d) < 0.1) pos = cmd.targetMm; else pos += step;
+            if (std::fabs(d) < 0.1) { pos = cmd.targetMm; vel = 0.0; moving = false; }
+            else { pos += d > 0 ? 0.1 : -0.1; moving = true; }
+        } else {  // Stop: decelerate over a few ticks so isMoving stays true briefly
+            if (std::fabs(vel) > 1e-9) {
+                vel *= 0.4;
+                if (std::fabs(vel) < 1.0) vel = 0.0;
+                pos += vel * dt;
+                moving = vel != 0.0;
+            } else {
+                moving = false;
+            }
         }
     }
     CHECK(h.ready());
@@ -94,7 +107,7 @@ TEST(homing_faults_if_sensor_never_reached) {
     h.start(t);
     for (int i = 0; i < 100000 && !h.ready() && !h.failed(); ++i) {
         t += 1;
-        HomingCommand cmd = h.update(t, false /*never active*/, pos);
+        HomingCommand cmd = h.update(t, false /*never active*/, pos, true);
         if (cmd.kind == MoveKind::MoveVelocity) pos += cmd.velocityMmS * 0.001;
     }
     CHECK(h.failed());
@@ -106,7 +119,7 @@ TEST(homing_faults_if_sensor_active_at_start) {
     HomingController h;
     h.configure(hc);
     h.start(0);
-    h.update(1, true /*already active*/, 0.0);
+    h.update(1, true /*already active*/, 0.0, false);
     CHECK(h.failed());
     CHECK(h.fault() == HomingFault::SensorActiveAtStart);
 }

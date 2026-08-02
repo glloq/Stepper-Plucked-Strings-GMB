@@ -61,7 +61,9 @@ void WebApi::fillStatus(JsonDocument& doc) {
     int total = ctx_.instrument ? static_cast<int>(ctx_.instrument->stringCount()) : 0;
     bool armed = ctx_.safety && ctx_.safety->actuatorsAllowed();
     doc["stringsTotal"] = total;
-    doc["stringsReady"] = armed ? total : 0;
+    // Actually-homed, non-faulted axes (not just "armed => all") so a degraded
+    // run reports the true count.
+    doc["stringsReady"] = ctx_.readyStrings ? ctx_.readyStrings() : (armed ? total : 0);
     doc["notesPlaying"] = ctx_.instrument ? ctx_.instrument->soundingCount() : 0;
     doc["safety"] = armed ? "armed" : "safe";
     JsonArray faults = doc["faults"].to<JsonArray>();

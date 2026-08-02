@@ -56,6 +56,8 @@ public:
 
     // True if any configured direct-GPIO servo failed to attach an LEDC channel.
     bool directAttachFault() const { return directAttachFault_; }
+    // True if a referenced PCA9685 board did not respond on I2C.
+    bool pcaAttachFault() const { return pcaAttachFault_; }
 
     size_t count() const { return servos_.size(); }
     bool usesPca() const { return pcaUsed_; }
@@ -84,6 +86,7 @@ private:
     bool pcaUsed_ = false;
     bool pcaPresent_[kMaxPca] = {false, false, false, false};
     bool directAttachFault_ = false;
+    bool pcaAttachFault_ = false;
     static constexpr int kMaxDirectServos = 8;  // ESP32-S3 has 8 LEDC channels
 #if defined(ARDUINO)
     Adafruit_PWMServoDriver pca_[kMaxPca] = {

@@ -34,6 +34,7 @@ struct WebContext {
     std::function<void()> onPanic;
     std::function<bool()> onReset;                          // recover from panic/E-stop
     std::function<std::string()> appState;                  // "boot"/"homing"/"ready"
+    std::function<int()> readyStrings;                      // axes homed & not faulted
     std::function<bool(const Profile&)> onActivateProfile;  // validate + apply
     std::function<bool(uint8_t, uint8_t, uint8_t, uint16_t)> onTestNote;  // ch,note,vel,ms
     // Only the flagged passwords are written (empty fields are left unchanged).

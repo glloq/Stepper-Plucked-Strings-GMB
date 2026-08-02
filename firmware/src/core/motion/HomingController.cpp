@@ -17,15 +17,8 @@ HomingCommand HomingController::fail(HomingFault f) {
     return {MoveKind::Stop, 0.0, 0.0};
 }
 
-bool HomingController::stopped(double currentPosMm) {
-    if (std::fabs(currentPosMm - lastPosMm_) < 0.02) ++stableTicks_;
-    else stableTicks_ = 0;
-    lastPosMm_ = currentPosMm;
-    return stableTicks_ >= 2;
-}
-
 HomingCommand HomingController::update(uint32_t nowMs, bool rawSensor,
-                                       double currentPosMm) {
+                                       double currentPosMm, bool isMoving) {
     const bool sensor = active(rawSensor);
     const double dir = cfg_.direction >= 0 ? 1.0 : -1.0;
 
@@ -50,8 +43,6 @@ HomingCommand HomingController::update(uint32_t nowMs, bool rawSensor,
                 // reversing target issued while still moving can be ignored by
                 // the hardware step engine.
                 triggerPosMm_ = currentPosMm;
-                stableTicks_ = 0;
-                lastPosMm_ = currentPosMm;
                 state_ = HomingState::BrakeFast;
                 return {MoveKind::Stop, 0.0, 0.0};
             }
@@ -60,8 +51,10 @@ HomingCommand HomingController::update(uint32_t nowMs, bool rawSensor,
 
         case HomingState::BrakeFast: {
             if (timedOut(nowMs)) return fail(HomingFault::Timeout);
-            if (stopped(currentPosMm)) {
-                backoffTargetMm_ = currentPosMm - dir * cfg_.backoffMm;
+            if (!isMoving) {  // motor truly stopped (step engine reports idle)
+                // Back off from the sensor trigger, not the (speed-dependent)
+                // stop position.
+                backoffTargetMm_ = triggerPosMm_ - dir * cfg_.backoffMm;
                 state_ = HomingState::Backoff;
                 return {MoveKind::MoveTo, 0.0, backoffTargetMm_};
             }
@@ -84,9 +77,10 @@ HomingCommand HomingController::update(uint32_t nowMs, bool rawSensor,
             if (std::fabs(currentPosMm - startPosMm_) > cfg_.maxSearchMm)
                 return fail(HomingFault::SensorNeverReached);
             if (sensor) {
-                triggerPosMm_ = currentPosMm;
-                stableTicks_ = 0;
-                lastPosMm_ = currentPosMm;
+                // Record the SENSOR TRIGGER position now — this is the zero
+                // reference. The later stop position depends on braking distance
+                // and must not become the reference.
+                sensorTriggerPosMm_ = currentPosMm;
                 state_ = HomingState::BrakeSlow;
                 return {MoveKind::Stop, 0.0, 0.0};
             }
@@ -95,8 +89,7 @@ HomingCommand HomingController::update(uint32_t nowMs, bool rawSensor,
 
         case HomingState::BrakeSlow: {
             if (timedOut(nowMs)) return fail(HomingFault::Timeout);
-            if (stopped(currentPosMm)) {
-                triggerPosMm_ = currentPosMm;
+            if (!isMoving) {  // motor truly stopped
                 state_ = HomingState::SetZero;
                 return {MoveKind::Stop, 0.0, 0.0};
             }
@@ -104,9 +97,9 @@ HomingCommand HomingController::update(uint32_t nowMs, bool rawSensor,
         }
 
         case HomingState::SetZero:
-            // The axis zero is the trigger point. Move to the resting offset,
-            // expressed relative to that trigger (away from the sensor).
-            offsetTargetMm_ = triggerPosMm_ - dir * cfg_.offsetMm;
+            // Zero = the sensor trigger point (repeatable). Move to the resting
+            // offset relative to that trigger (away from the sensor).
+            offsetTargetMm_ = sensorTriggerPosMm_ - dir * cfg_.offsetMm;
             state_ = HomingState::MoveToOffset;
             return {MoveKind::MoveTo, 0.0, offsetTargetMm_};
 

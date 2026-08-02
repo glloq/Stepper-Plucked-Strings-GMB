@@ -39,6 +39,11 @@ public:
     // Emergency stop everything (cahier des charges §21.3).
     void panic();
 
+    // Take a string out of service at runtime (failed homing, etc.): fault its
+    // state machine, mark it faulted in the allocator, drop its target and any
+    // active note. It can no longer be chosen automatically OR by explicit CC.
+    void faultString(size_t index);
+
     size_t stringCount() const { return strings_.size(); }
     const StringController& string(size_t i) const { return strings_[i]; }
     StringController& string(size_t i) { return strings_[i]; }
