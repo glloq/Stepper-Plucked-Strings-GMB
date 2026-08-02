@@ -1,5 +1,7 @@
 #include "ProfileStorage.h"
 
+#include "../../core/configuration/ProfileValidator.h"
+
 #if defined(ARDUINO)
 #include <LittleFS.h>
 #endif
@@ -385,6 +387,9 @@ bool ProfileStorage::load(int slot, Profile& out) const {
 
 bool ProfileStorage::save(int slot, const Profile& p) {
     if (slot < 0 || slot >= kMaxProfiles) return false;
+    // Centralised gate: never persist a semantically invalid profile — it could
+    // be chosen as the startup slot and would then be rejected at boot (§21.1).
+    if (!ProfileValidator::isActivatable(p)) return false;
     // Write to a temp file first, and only replace the existing slot once the
     // temp file is fully written — so a failure never destroys the old profile.
     std::string finalPath = slotPath(slot);

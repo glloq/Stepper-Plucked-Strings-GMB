@@ -45,8 +45,12 @@ CapabilitySnapshot buildSnapshot(const Profile& p, int polyphonyOverride) {
         }
     }
     if (maxNote < 0) {
+        // No enabled/working string: the snapshot is NOT a playable instrument.
+        // Mark it invalid instead of announcing a bogus 0..0 range so a host can
+        // tell "silent, degraded to nothing" from "can play MIDI note 0".
         minNote = 0;
         maxNote = 0;
+        snap.valid = false;
     }
 
     InstrumentCapabilities& caps = snap.capabilities;

@@ -32,6 +32,8 @@ void InstrumentController::load(const Profile& p) {
     sustainEnabled_ = p.midi.sustainPedal;
     sustainCc_ = p.midi.sustainCc;
     velocityCurve_ = static_cast<int>(p.midi.velocityCurve);
+    volume_ = 1.0;
+    expression_ = 1.0;
 
     std::vector<StringSpec> specs;
     for (const auto& s : p.strings) {
@@ -110,7 +112,7 @@ bool InstrumentController::triggerPreparedNote(int stringIndex, int fret,
     StringTarget& t = targets_[stringIndex];
     t.active = true;
     t.velocity = velocity;
-    t.intensity = applyVelocityCurve(velocityCurve_, velocity);
+    t.intensity = applyVelocityCurve(velocityCurve_, velocity) * attackGain();
     active_.push_back({channel, note, stringIndex, false});
     preparedFret_[stringIndex] = -1;
     preparedId_[stringIndex] = 0;
@@ -137,7 +139,7 @@ void InstrumentController::startNote(int stringIndex, int fret, uint8_t channel,
     t.positionMm = axes_[stringIndex].fretPositionMm(fret);
     t.commandId = id;
     t.velocity = velocity;
-    t.intensity = applyVelocityCurve(velocityCurve_, velocity);
+    t.intensity = applyVelocityCurve(velocityCurve_, velocity) * attackGain();
     active_.push_back({channel, note, stringIndex, false});
 }
 
@@ -163,6 +165,14 @@ void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
     if (e.isControlChange()) {
         if (e.data1 == 120 || e.data1 == 123) {  // all sound / notes off
             panic();
+            return;
+        }
+        if (e.data1 == 7) {  // channel volume -> attack gain
+            volume_ = e.data2 / 127.0;
+            return;
+        }
+        if (e.data1 == 11) {  // expression -> attack gain
+            expression_ = e.data2 / 127.0;
             return;
         }
         if (sustainEnabled_ && e.data1 == sustainCc_) {
@@ -255,7 +265,7 @@ void InstrumentController::flushChord() {
         t.positionMm = axes_[a.stringIndex].fretPositionMm(a.fret);
         t.commandId = id;
         t.velocity = src.velocity;
-        t.intensity = applyVelocityCurve(velocityCurve_, src.velocity);
+        t.intensity = applyVelocityCurve(velocityCurve_, src.velocity) * attackGain();
         active_.push_back({src.channel, src.note, a.stringIndex, false});
     }
     chordBuffer_.clear();
@@ -297,6 +307,8 @@ void InstrumentController::panic() {
     active_.clear();
     chordBuffer_.clear();
     pedalDown_ = false;
+    volume_ = 1.0;
+    expression_ = 1.0;
     selector_.reset();  // clear pending/active CC selections on panic
 }
 

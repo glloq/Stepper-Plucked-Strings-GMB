@@ -21,6 +21,10 @@ void MidiWifi::poll(uint32_t nowUs) {
         uint16_t remotePort = udp_.remotePort();
         int n = udp_.read(buf_, sizeof(buf_));
         if (n > 0) {
+            // Each UDP datagram is self-contained: drop any running status or
+            // in-progress SysEx from a previous packet so one sender can never
+            // continue/terminate another sender's message (shared-parser fix).
+            parser_.resetStream();
             parser_.feed(buf_, static_cast<size_t>(n), nowUs);
             // Move decoded events out (bounded).
             for (auto& e : parser_.events()) {

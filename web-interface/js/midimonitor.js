@@ -33,9 +33,43 @@
 
     conn = GMB.api.connectMidi(function (ev) { push(ev); });
 
-    function push(ev) {
-      if (t0 === null) t0 = ev.t || Date.now();
-      var rel = ((ev.t || Date.now()) - t0);
+    // Normalise the firmware DTO ({timestampUs, type:"controlChange", data1,
+    // data2}) and the mock DTO ({t, type:"cc", cc, value, note}) to one shape.
+    function normalize(ev) {
+      var type = ev.type === 'controlChange' ? 'cc' : ev.type;
+      var isCc = type === 'cc';
+      var d1 = ev.data1 !== undefined ? ev.data1 : (isCc ? ev.cc : ev.note);
+      var d2 = ev.data2 !== undefined ? ev.data2 : ev.value;
+      var ts = ev.timestampUs !== undefined ? ev.timestampUs / 1000 : (ev.t || Date.now());
+      return {
+        type: type, channel: ev.channel,
+        cc: isCc ? d1 : undefined,
+        note: isCc ? undefined : (ev.note !== undefined ? ev.note : d1),
+        value: d2, ts: ts, interpretation: ev.interpretation
+      };
+    }
+
+    function ccName(cc) {
+      if (cc === 7) return 'Volume';
+      if (cc === 11) return 'Expression';
+      if (cc === 64) return 'Sustain';
+      if (cc === 120) return 'All Sound Off';
+      if (cc === 123) return 'All Notes Off';
+      return 'Controller ' + cc;
+    }
+
+    function interpret(n) {
+      if (n.interpretation) return n.interpretation;
+      if (n.type === 'cc') return ccName(n.cc);
+      if (n.type === 'noteOn' || n.type === 'noteOff')
+        return GMB.noteName ? GMB.noteName(n.note) : ('note ' + n.note);
+      return '';
+    }
+
+    function push(raw) {
+      var ev = normalize(raw);
+      if (t0 === null) t0 = ev.ts;
+      var rel = Math.round(ev.ts - t0);
       var msg = ev.type === 'cc' ? ('CC' + ev.cc)
         : ev.type === 'noteOn' ? ('Note On ' + ev.note)
         : ev.type === 'noteOff' ? ('Note Off ' + ev.note)
@@ -46,7 +80,7 @@
         h('td', String(ev.channel)),
         h('td', msg),
         h('td', String(ev.value !== undefined ? ev.value : '')),
-        h('td', ev.interpretation || '')
+        h('td', interpret(ev))
       ]);
       tbody.insertBefore(tr, tbody.firstChild);
       rows.push(ev);

@@ -67,6 +67,12 @@ private:
     int velocityCurve_ = 0;
 
     bool pedalDown_ = false;
+    // Global attack gain from CC7 (volume) and CC11 (expression), 0..1 each. A
+    // plucked string can't modulate a sustained note, so these scale the attack
+    // intensity of subsequent plucks (spec section 7).
+    double volume_ = 1.0;
+    double expression_ = 1.0;
+    double attackGain() const { return volume_ * expression_; }
 
     struct ActiveMap {
         uint8_t channel;

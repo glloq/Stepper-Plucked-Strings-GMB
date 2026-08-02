@@ -29,6 +29,18 @@ public:
         sysex_.clear();
     }
 
+    // Reset the streaming state (running status, partial channel message, and any
+    // in-progress SysEx) WITHOUT discarding already-decoded output. Call at a hard
+    // message boundary — e.g. between two independent UDP datagrams — so running
+    // status or a half-finished SysEx from one sender never bleeds into the next.
+    void resetStream() {
+        status_ = 0;
+        dataCount_ = 0;
+        expected_ = 0;
+        inSysex_ = false;
+        sysbuf_.clear();
+    }
+
     // Maximum SysEx message length; longer messages are aborted (RAM guard).
     static constexpr size_t kMaxSysExBytes = 512;
 

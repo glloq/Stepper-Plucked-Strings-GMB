@@ -570,6 +570,10 @@ void setup() {
         g_profile = Profile::makeDefault("Ukulele", 4, {67, 60, 64, 69}, 12);
     }
     applyProfile();  // also resolves the E-stop pin from the profile
+    // Answer StringConfig discovery with the richer v2 block (CC bounds, offsets,
+    // per-string frets, string mapping/order). The block carries its own version
+    // byte so a v1-only client can still detect and skip it.
+    g_sysex.setUseV2(true);
 
     // Wi-Fi secrets live in NVS, never in the exportable profile (§20).
     Preferences prefs;

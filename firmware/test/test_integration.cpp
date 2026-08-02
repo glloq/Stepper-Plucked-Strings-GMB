@@ -157,6 +157,29 @@ TEST(controller_prepare_disabled) {
     CHECK_EQ(ic.soundingCount(), 1);
 }
 
+// CC7 (volume) and CC11 (expression) scale the attack intensity of later plucks.
+TEST(controller_cc7_cc11_scale_attack) {
+    Profile p = ukulele();
+    p.selector.mode = SelectionMode::Explicit;
+    p.selector.prepareOnCompleteSelection = false;
+    InstrumentController ic;
+    ic.load(p);
+    ic.handleEvent(cc(0, 20, 3), 0);   // string index 2
+    ic.handleEvent(cc(0, 21, 5), 0);   // fret 5
+    ic.handleEvent(noteOn(0, 69, 100), 0);
+    double full = ic.target(2).intensity;
+    CHECK(full > 0.0);
+    ic.handleEvent(noteOff(0, 69), 100);
+    // Halve the volume: the next pluck should attack softer.
+    ic.handleEvent(cc(0, 7, 64), 200);
+    ic.handleEvent(cc(0, 20, 3), 300);
+    ic.handleEvent(cc(0, 21, 5), 300);
+    ic.handleEvent(noteOn(0, 69, 100), 300);
+    double half = ic.target(2).intensity;
+    CHECK(half > 0.0);
+    CHECK(half < full);
+}
+
 // A 4-note chord uses four distinct strings (criterion 14 at ukulele scale).
 TEST(controller_chord) {
     InstrumentController ic;

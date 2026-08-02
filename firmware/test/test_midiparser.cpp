@@ -22,6 +22,33 @@ TEST(parser_running_status) {
     CHECK_EQ((int)p.events()[2].data1, 64);
 }
 
+// resetStream() drops running status: data bytes fed after a reset with no fresh
+// status byte are ignored, so one UDP sender can't ride another's running status.
+TEST(parser_reset_stream_drops_running_status) {
+    MidiParser p;
+    uint8_t first[] = {0x90, 60, 100};  // sender A: Note On, establishes status
+    p.feed(first, sizeof(first), 0);
+    CHECK_EQ((int)p.events().size(), 1);
+    p.clear();
+    p.resetStream();                    // datagram boundary (different sender)
+    uint8_t second[] = {62, 100};       // sender B: bare data bytes, no status
+    p.feed(second, sizeof(second), 0);
+    CHECK_EQ((int)p.events().size(), 0);  // must NOT decode under A's old status
+}
+
+// resetStream() also abandons an in-progress SysEx so a stray F7 from another
+// datagram can't terminate a SysEx started in a previous one.
+TEST(parser_reset_stream_abandons_sysex) {
+    MidiParser p;
+    uint8_t start[] = {0xF0, 0x7D, 0x01};  // sender A: SysEx start, unterminated
+    p.feed(start, sizeof(start), 0);
+    CHECK_EQ((int)p.sysex().size(), 0);    // still open
+    p.resetStream();                        // datagram boundary
+    uint8_t end[] = {0x02, 0xF7};           // sender B: data + EOX
+    p.feed(end, sizeof(end), 0);
+    CHECK_EQ((int)p.sysex().size(), 0);     // no SysEx completed from mixed senders
+}
+
 TEST(parser_control_change) {
     MidiParser p;
     uint8_t bytes[] = {0xB2, 20, 3};  // CC20=3 on channel 2
