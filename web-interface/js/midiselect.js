@@ -227,12 +227,23 @@
   function runTest(p, log) {
     log.innerHTML = '';
     var sfs = p.stringFretSelection;
+    // The firmware reads only channel/note/velocity/durationMs; the extra
+    // string/fret/CC fields feed the offline mock's step trace.
     GMB.api.testNote({
       string: testCfg.string, fret: testCfg.fret,
       stringCc: sfs.string.ccNumber, fretCc: sfs.fret.ccNumber,
       note: testCfg.note, velocity: testCfg.velocity, channel: testCfg.channel, durationMs: testCfg.durationMs
     }).then(function (res) {
-      (res.steps || []).forEach(function (s, i) {
+      if (res && res.ok === false) {
+        log.appendChild(h('div.step-line.error', [h('span.step-dot'), h('strong', 'Rejected'),
+          h('span.muted', ' — ' + (res.error || 'instrument not ready'))]));
+        GMB.toast('Test note rejected: ' + (res.error || 'not ready'), 'warn');
+        return;
+      }
+      // Real firmware returns { ok:true } with no trace; the mock returns steps.
+      var steps = res.steps || [{ step: 'Note sent', detail: 'ch ' + (testCfg.channel + 1) +
+        ', note ' + testCfg.note + ', vel ' + testCfg.velocity }];
+      steps.forEach(function (s, i) {
         setTimeout(function () {
           log.appendChild(h('div.step-line', [h('span.step-dot'), h('strong', s.step),
             s.detail ? h('span.muted', ' — ' + s.detail) : null]));
@@ -241,11 +252,15 @@
       // Emit the corresponding Note Off after the chosen duration (mock stream).
       setTimeout(function () {
         GMB.injectMidi && GMB.api.mock && (function () {
-          var host = document.getElementById('monitor-host');
           if (monitor) monitor.push({ channel: testCfg.channel + 1, type: 'noteOff', note: testCfg.note,
             value: 0, interpretation: 'release string ' + testCfg.string, t: Date.now() });
         })();
       }, testCfg.durationMs);
+    }).catch(function (e) {
+      var msg = (e && e.body && e.body.error) || (e && e.message) || 'error';
+      log.appendChild(h('div.step-line.error', [h('span.step-dot'), h('strong', 'Error'),
+        h('span.muted', ' — ' + msg)]));
+      GMB.toast('Test note failed: ' + msg, 'error');
     });
   }
 

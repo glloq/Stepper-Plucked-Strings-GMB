@@ -333,29 +333,32 @@
       ]));
     });
     body.appendChild(h('div.toolbar', [GMB.button('Start homing (test all axes)', function () {
-      GMB.api.testNote({ homing: true, string: 0, fret: 0, stringCc: 20, fretCc: 21, note: 60, velocity: 1, channel: 0 })
-        .then(function () { GMB.toast('Homing command sent to all axes.', 'ok'); });
+      GMB.api.testNote({ channel: 0, note: 60, velocity: 1, durationMs: 200 })
+        .then(function (res) {
+          if (res && res.ok === false) { GMB.toast(res.error || 'Instrument not ready.', 'warn'); return; }
+          GMB.toast('Homing command sent to all axes.', 'ok');
+        }).catch(function (e) { testErr('Homing test failed', e); });
     }, 'primary')]));
   }
 
+  // POST /api/test/endstop -> { ok:true, home:Bool, limit:Bool } for axis i.
   function testEndstop(i, s, readout) {
     var homeGpio = pinSignalGpio('HOME' + (i + 1)), limitGpio = pinSignalGpio('LIMIT' + (i + 1));
-    GMB.api.testEndstop({ string: i, homeGpio: homeGpio, limitGpio: limitGpio, sensorActiveHigh: s.homing.sensorActiveHigh })
-      .then(function (res) {
-        readout.innerHTML = '';
-        if (res.home && res.home.unassigned) {
-          readout.appendChild(h('span.pill.mini.error', 'HOME switch has no GPIO assigned.'));
-        } else {
-          readout.appendChild(endstopLed('HOME', res.home));
-        }
-        if (res.limit) readout.appendChild(endstopLed('LIMIT', res.limit));
-      });
+    GMB.api.testEndstop({ axis: i }).then(function (res) {
+      readout.innerHTML = '';
+      if (homeGpio < 0) {
+        readout.appendChild(h('span.pill.mini.error', 'HOME switch has no GPIO assigned.'));
+      } else {
+        readout.appendChild(endstopLed('HOME', homeGpio, !!res.home));
+      }
+      if (limitGpio >= 0) readout.appendChild(endstopLed('LIMIT', limitGpio, !!res.limit));
+    }).catch(function (e) { testErr('Endstop read failed', e); });
   }
-  function endstopLed(name, r) {
+  function endstopLed(name, gpio, active) {
     return h('div.endstop-line', [
-      h('span.leddot' + (r.active ? '.on' : '')),
-      h('span.endstop-name', name + ' GPIO' + r.gpio),
-      h('span.pill.mini' + (r.active ? '.ok' : '.muted'), r.level + (r.active ? ' · active' : ' · idle'))
+      h('span.leddot' + (active ? '.on' : '')),
+      h('span.endstop-name', name + ' GPIO' + gpio),
+      h('span.pill.mini' + (active ? '.ok' : '.muted'), active ? 'active' : 'idle')
     ]);
   }
 
@@ -464,10 +467,21 @@
     });
   }
   function testServo(sv, to) {
+    var index = GMB.state.profile.servos.indexOf(sv);
     GMB.api.testServo({
+      index: index, active: to === 'active',
       function: sv.function, source: sv.source, pcaBoard: sv.pcaBoard, channel: sv.channel,
-      gpio: sv.gpio, to: to, restUs: sv.restUs, activeUs: sv.activeUs
-    }).then(function (res) { GMB.toast(res.message || 'Servo tested.', 'ok'); });
+      gpio: sv.gpio, restUs: sv.restUs, activeUs: sv.activeUs
+    }).then(function (res) {
+      if (res && res.ok === false) { GMB.toast('Servo not driven: ' + (res.error || 'actuators not armed') + '.', 'warn'); return; }
+      GMB.toast(res.message || ('Servo driven to ' + to + '.'), 'ok');
+    }).catch(function (e) { testErr('Servo test failed', e); });
+  }
+
+  // Surface a 409/other backend error from a /api/test/* call.
+  function testErr(prefix, e) {
+    var body = e && e.body;
+    GMB.toast(prefix + ': ' + ((body && body.error) || (e && e.message) || 'error'), 'error');
   }
 
   function servoRow(sv) {
@@ -628,9 +642,11 @@
     var testWrap = h('div.toolbar.wrap');
     p.strings.forEach(function (s, i) {
       testWrap.appendChild(GMB.button('Test string ' + (i + 1), function () {
-        GMB.api.testNote({ string: i + 1, fret: 0, stringCc: p.stringFretSelection.string.ccNumber,
-          fretCc: p.stringFretSelection.fret.ccNumber, note: s.openNote, velocity: 100, channel: 0 })
-          .then(function () { GMB.toast('Tested string ' + (i + 1), 'ok'); });
+        GMB.api.testNote({ channel: 0, note: s.openNote, velocity: 100, durationMs: 400 })
+          .then(function (res) {
+            if (res && res.ok === false) { GMB.toast(res.error || 'Instrument not ready.', 'warn'); return; }
+            GMB.toast('Tested string ' + (i + 1), 'ok');
+          }).catch(function (e) { testErr('Note test failed', e); });
       }, 'ghost'));
     });
     testWrap.appendChild(GMB.button('Test chord', function () { GMB.toast('Chord test sent.', 'ok'); }, 'ghost'));

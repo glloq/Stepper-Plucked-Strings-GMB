@@ -345,17 +345,38 @@
 
   // ---------------------------------------------------------------------------
   // Mock store.
+  //
+  // `slots` mirrors the firmware's slotted ProfileStorage: an array where each
+  // entry is null (empty slot) or a full profile object. GET /api/profiles
+  // derives { profiles:[{slot,name,used}], startupSlot } from it.
   // ---------------------------------------------------------------------------
+  function demoProfile(name, type) {
+    var p = sampleProfile();
+    p.instrument.name = name;
+    p.instrument.type = type;
+    return p;
+  }
+
   var MOCK = {
     board: buildDevKitC1(),
     profile: sampleProfile(),
-    profiles: [
-      { id: 'ukulele-gcea', name: 'Ukulele GCEA', stringCount: 4, type: 'ukulele', startup: true },
-      { id: 'guitar-eadgbe', name: 'Guitar Standard', stringCount: 6, type: 'guitar', startup: false },
-      { id: 'bass-eadg', name: 'Bass EADG', stringCount: 4, type: 'bass', startup: false }
-    ]
+    slots: [
+      sampleProfile(),
+      demoProfile('Guitar Standard', 'guitar'),
+      demoProfile('Bass EADG', 'bass'),
+      null, null, null, null, null
+    ],
+    startupSlot: 0
   };
   GMB.mockBoard = function () { return MOCK.board; };
+
+  // Build the { profiles:[...], startupSlot } list from the slot array.
+  function mockProfilesList() {
+    var profiles = MOCK.slots.map(function (p, i) {
+      return { slot: i, name: p ? (p.instrument.name || '') : '', used: !!p };
+    });
+    return { profiles: profiles, startupSlot: MOCK.startupSlot };
+  }
 
   // ---------------------------------------------------------------------------
   // Mock auto-assign — reproduces the recommended profile, respecting the
@@ -378,8 +399,11 @@
     return { pins: pins, errors: [] };
   }
 
-  // Mock validation (cahier des charges 11.6). Returns { errors: [PinError] }.
-  function mockValidatePins(pins, reserveUsb) {
+  // Mock validation (cahier des charges 11.6). Mirrors the firmware contract:
+  // decodes the full profile and returns { ok, issues:[{field,message,severity}] }.
+  function mockValidatePins(profile) {
+    var pins = (profile && profile.pins) || [];
+    var reserveUsb = !!(profile && profile.board && profile.board.reserveUsb);
     var errors = [];
     var byGpio = {};
     pins.forEach(function (a) {
@@ -412,7 +436,13 @@
           suggestion: suggest(a.kind, pins), conflictWith: '' });
       }
     });
-    return { errors: errors };
+    // Map the rich mock errors onto the firmware's { field, message, severity }
+    // issue shape.
+    var issues = errors.map(function (e) {
+      var msg = e.reason + (e.suggestion ? ' ' + e.suggestion : '');
+      return { field: e.signal + ' (GPIO' + e.gpio + ')', message: msg, severity: 'error' };
+    });
+    return { ok: issues.length === 0, issues: issues };
   }
 
   function suggest(kind, pins) {
@@ -432,67 +462,136 @@
   function hex(bytes) { return bytes.map(function (b) { return ('0' + b.toString(16)).slice(-2).toUpperCase(); }).join(' '); }
   GMB.hex = hex;
 
-  function mockSysEx(kind) {
-    var p = MOCK.profile, caps = GMB.computeCapabilities(p);
-    var ch = p.midi.globalChannel;
-    var req, resp, decoded;
-    var t0 = performance.now();
+  // Block ids (SysEx spec). dir 0x00 = request (host->device).
+  var BLOCK = { identity: 0x01, descriptor: 0x05, capabilities: 0x06, stringConfig: 0x07, notify: 0x08 };
+
+  // Build the raw request bytes for a block. Channel-bearing blocks
+  // (capabilities 0x06, stringConfig 0x07) carry the MIDI channel byte.
+  // Returns null for spontaneous, device-emitted blocks (notify).
+  function buildSysexRequest(kind, channel) {
+    var ch = (channel || 0) & 0x7F;
     switch (kind) {
-      case 'identity':
-        req = HEADER.concat([0x01, 0x00, 0xF7]);
-        resp = HEADER.concat([0x01, 0x01, 0x01]) // version
-          .concat([0x01, 0x02, 0x03, 0x04, 0x05]) // device id[5]
-          .concat(strBytes(p.instrument.name, 32))
-          .concat([0x01, 0x00, 0x00]) // firmware 1.0.0
-          .concat([0x38, 0xF7]); // features (blocks 5/6/7)
-        decoded = { Version: 1, 'Device id': '01 02 03 04 05', Name: p.instrument.name,
-          Firmware: '1.0.0', Features: '0x38 (descriptor+capabilities+stringConfig)' };
-        break;
-      case 'descriptor':
-        req = HEADER.concat([0x05, 0x00, 0xF7]);
-        resp = HEADER.concat([0x05, 0x01, 0x01, 0x01, ch, p.instrument.gmProgram, p.instrument.typeId, 0xF7]);
-        decoded = { Channel: ch + 1, 'GM program': p.instrument.gmProgram, 'Type id': '0x0' + p.instrument.typeId.toString(16) };
-        break;
-      case 'capabilities':
-        req = HEADER.concat([0x06, 0x00, ch, 0xF7]);
-        resp = HEADER.concat([0x06, 0x01, 0x01, ch, p.instrument.gmProgram, p.instrument.typeId,
+      case 'identity':     return HEADER.concat([BLOCK.identity, 0x00, 0xF7]);
+      case 'descriptor':   return HEADER.concat([BLOCK.descriptor, 0x00, 0xF7]);
+      case 'capabilities': return HEADER.concat([BLOCK.capabilities, 0x00, ch, 0xF7]);
+      case 'stringConfig': return HEADER.concat([BLOCK.stringConfig, 0x00, ch, 0xF7]);
+      default:             return null;   // notify has no host->device request
+    }
+  }
+  GMB.buildSysexRequest = buildSysexRequest;
+
+  // Build the block-8 change-notification message (device-emitted).
+  function buildNotifyMessage(p) {
+    var caps = GMB.computeCapabilities(p);
+    return HEADER.concat([BLOCK.notify, 0x02, 0x01, p.midi.globalChannel])
+      .concat(encodeRevision(caps.revision)).concat([0x0C, 0xF7]);
+  }
+
+  // MOCK backend for POST /api/sysex/request: accepts { bytes:[...] } and
+  // returns { ok:true, response:[...] } — the raw response bytes for the block
+  // named in the request, built from the active mock profile.
+  function mockSysExBackend(body) {
+    var bytes = (body && body.bytes) || [];
+    return { ok: true, response: mockSysexResponse(bytes) };
+  }
+  GMB.mockSysEx = mockSysExBackend;
+
+  function mockSysexResponse(bytes) {
+    if (!bytes || bytes.length < 5) return [];
+    var block = bytes[3];
+    var p = MOCK.profile, caps = GMB.computeCapabilities(p);
+    var name = p.instrument.name || '';
+    switch (block) {
+      case BLOCK.identity:
+        return HEADER.concat([BLOCK.identity, 0x01, 0x01])   // dir=response, version
+          .concat([0x01, 0x02, 0x03, 0x04, 0x05])            // device id[5]
+          .concat(strBytes(name, 32))
+          .concat([0x01, 0x00, 0x00])                        // firmware 1.0.0
+          .concat([0x38, 0xF7]);                             // features (blocks 5/6/7)
+      case BLOCK.descriptor:
+        return HEADER.concat([BLOCK.descriptor, 0x01, 0x01, 0x01,
+          p.midi.globalChannel, p.instrument.gmProgram, p.instrument.typeId, 0xF7]);
+      case BLOCK.capabilities: {
+        var ch = bytes[5] & 0x7F;
+        return HEADER.concat([BLOCK.capabilities, 0x01, 0x01, ch, p.instrument.gmProgram, p.instrument.typeId,
           0x00, caps.noteMode, caps.noteMin, caps.noteMax, caps.polyphony, 0x00,
           caps.supportedCc.length]).concat(caps.supportedCc)
-          .concat([p.instrument.name.length]).concat(strBytes(p.instrument.name, p.instrument.name.length))
+          .concat([name.length]).concat(strBytes(name, name.length))
           .concat([0xF7]);
-        decoded = { Channel: ch + 1, Type: p.instrument.type,
-          Range: GMB.noteName(caps.noteMin) + ' .. ' + GMB.noteName(caps.noteMax),
-          'Note mode': caps.noteMode === 0 ? 'continuous' : 'discrete',
-          Polyphony: caps.polyphony, CC: caps.supportedCc.join(', ') };
-        break;
-      case 'stringConfig':
-        req = HEADER.concat([0x07, 0x00, ch, 0xF7]);
-        resp = HEADER.concat([0x07, 0x01, 0x01, ch, caps.strings, caps.frets, 0x00, caps.capo,
+      }
+      case BLOCK.stringConfig: {
+        var ch2 = bytes[5] & 0x7F;
+        return HEADER.concat([BLOCK.stringConfig, 0x01, 0x01, ch2, caps.strings, caps.frets, 0x00, caps.capo,
           caps.ccActive, caps.ccString, caps.ccFret]).concat(caps.tuning).concat([0xF7]);
-        decoded = { Channel: ch + 1, Strings: caps.strings, Frets: caps.frets, Fretless: 'no',
-          Capo: caps.capo, 'CC string': caps.ccString, 'CC fret': caps.ccFret,
-          Tuning: caps.tuningNames.join(' ') };
-        break;
-      case 'notify':
-        req = null;
-        resp = HEADER.concat([0x08, 0x02, 0x01, ch]).concat(encodeRevision(caps.revision)).concat([0x0C, 0xF7]);
-        decoded = { Channel: ch + 1, Revision: caps.revision, Flags: '0x0C (capabilities+stringConfig changed)' };
-        break;
+      }
       default:
-        req = null; resp = []; decoded = {};
+        return [];
     }
+  }
+
+  // Decode raw response bytes for a block into a { field: value } display map,
+  // by parsing the bytes (works for both the mock and the real firmware, which
+  // share the SysEx wire layout).
+  function decodeSysexResponse(kind, resp) {
+    if (!resp || !resp.length) return {};
+    try {
+      switch (kind) {
+        case 'identity': {
+          var name = readStr(resp, 11, 32);
+          return { Version: resp[5], 'Device id': hex(resp.slice(6, 11)),
+            Name: name, Firmware: resp[43] + '.' + resp[44] + '.' + resp[45],
+            Features: '0x' + (resp[46] || 0).toString(16) };
+        }
+        case 'descriptor':
+          return { Channel: resp[7] + 1, 'GM program': resp[8],
+            'Type id': '0x0' + (resp[9] || 0).toString(16) };
+        case 'capabilities': {
+          var ch = resp[6], noteMode = resp[10], noteMin = resp[11], noteMax = resp[12],
+            poly = resp[13], ccLen = resp[15];
+          var cc = resp.slice(16, 16 + ccLen);
+          return { Channel: ch + 1, Range: GMB.noteName(noteMin) + ' .. ' + GMB.noteName(noteMax),
+            'Note mode': noteMode === 0 ? 'continuous' : 'discrete', Polyphony: poly,
+            CC: cc.join(', ') };
+        }
+        case 'stringConfig': {
+          var strings = resp[7], frets = resp[8], capo = resp[10],
+            ccString = resp[12], ccFret = resp[13];
+          var tuning = resp.slice(14, 14 + strings);
+          return { Channel: resp[6] + 1, Strings: strings, Frets: frets, Fretless: 'no',
+            Capo: capo, 'CC string': ccString, 'CC fret': ccFret,
+            Tuning: tuning.map(GMB.noteName).join(' ') };
+        }
+        case 'notify':
+          return { Channel: resp[6] + 1, Revision: decodeRevision(resp.slice(7, 12)),
+            Flags: '0x' + (resp[12] || 0).toString(16) };
+        default:
+          return {};
+      }
+    } catch (e) { return { error: String(e) }; }
+  }
+
+  // Assemble the display view the SysEx tester renders (request/response hex,
+  // decoded fields, 7-bit validity, byte count).
+  function makeSysexView(kind, req, resp, t0) {
     var valid = resp.every(function (b) { return b === 0xF0 || b === 0xF7 || (b >= 0 && b <= 0x7F); });
     return {
       kind: kind, request: req ? hex(req) : '(spontaneous notification)',
-      response: hex(resp), decoded: decoded, valid: valid,
-      length: resp.length, durationMs: +(performance.now() - t0 + 1.2).toFixed(2), error: ''
+      response: hex(resp), decoded: decodeSysexResponse(kind, resp), valid: valid,
+      length: resp.length, durationMs: +(nowMs() - t0 + 1.2).toFixed(2), error: ''
     };
   }
+
+  function nowMs() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
 
   function strBytes(s, len) {
     var out = [];
     for (var i = 0; i < len; i++) out.push(i < s.length ? (s.charCodeAt(i) & 0x7F) : 0x00);
     return out;
+  }
+  function readStr(bytes, off, len) {
+    var s = '';
+    for (var i = 0; i < len; i++) { var b = bytes[off + i]; if (!b) break; s += String.fromCharCode(b); }
+    return s;
   }
   function encodeRevision(r) {
     // 5 x 7-bit bytes, LSB first.
@@ -500,7 +599,11 @@
     for (var i = 0; i < 5; i++) { out.push(r & 0x7F); r = r >> 7; }
     return out;
   }
-  GMB.mockSysEx = mockSysEx;
+  function decodeRevision(bytes) {
+    var r = 0;
+    for (var i = 0; i < bytes.length; i++) r |= (bytes[i] & 0x7F) << (7 * i);
+    return r;
+  }
 
   // ---------------------------------------------------------------------------
   // The API client. Every REST method tries fetch() first. It falls back to the
@@ -567,14 +670,43 @@
         return { ok: true, capabilitiesRevision: MOCK.profile.capabilitiesRevision };
       });
     },
+    // GET /api/profiles -> { profiles:[{slot,name,used}], startupSlot }.
     getProfiles: function () {
-      return this._call('/api/profiles', null, function () { return deepCopy(MOCK.profiles); });
+      return this._call('/api/profiles', null, function () { return mockProfilesList(); });
     },
-    postProfiles: function (action, payload) {
+    // POST /api/profiles -> { ok } : save a full profile to a slot (optionally
+    // making it the startup slot).
+    saveProfileSlot: function (slot, profile, startup) {
+      var body = { slot: slot, profile: profile };
+      if (startup) body.startup = true;
       return this._call('/api/profiles', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: action, payload: payload })
-      }, function () { return mockProfilesAction(action, payload); });
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      }, function () {
+        MOCK.slots[slot] = deepCopy(profile);
+        if (startup) MOCK.startupSlot = slot;
+        return { ok: true };
+      });
+    },
+    // POST /api/profiles/load -> { ok } (404 if the slot is empty).
+    loadProfileSlot: function (slot) {
+      return this._call('/api/profiles/load', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slot: slot })
+      }, function () {
+        var stored = MOCK.slots[slot];
+        if (!stored) return { ok: false, error: 'slot not found' };
+        MOCK.profile = deepCopy(stored);
+        return { ok: true };
+      });
+    },
+    // POST /api/profiles/delete -> { ok }.
+    deleteProfileSlot: function (slot) {
+      return this._call('/api/profiles/delete', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slot: slot })
+      }, function () {
+        MOCK.slots[slot] = null;
+        if (MOCK.startupSlot === slot) MOCK.startupSlot = 0;
+        return { ok: true };
+      });
     },
     getBoard: function (id) {
       return this._call('/api/board/' + id, null, function () { return deepCopy(MOCK.board); });
@@ -584,66 +716,72 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req)
       }, function () { return mockAutoAssign(req); });
     },
-    validatePins: function (pins, reserveUsb) {
+    // POST /api/pins/validate -> { ok, issues:[{field,message,severity}] }.
+    // The backend decodes the body as a full Profile and runs its validator, so
+    // we send the whole draft profile (not just the pins).
+    validatePins: function (profile) {
       return this._call('/api/pins/validate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pins: pins, reserveUsb: reserveUsb })
-      }, function () { return mockValidatePins(pins, reserveUsb); });
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(profile)
+      }, function () { return mockValidatePins(profile); });
     },
     panic: function () {
       return this._call('/api/panic', { method: 'POST' }, function () {
         return { ok: true, message: 'PANIC executed: drivers disabled, servos neutralised, queue flushed.' };
       });
     },
+    // POST /api/test/note -> { ok:true } (200) or { ok:false, error } (409 when
+    // the instrument is homing / not ready). The firmware reads only
+    // channel/note/velocity/durationMs; the richer payload feeds the mock trace.
     testNote: function (payload) {
+      var wire = { channel: payload.channel | 0, note: payload.note | 0,
+        velocity: payload.velocity | 0, durationMs: payload.durationMs || 500 };
       return this._call('/api/test/note', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wire)
       }, function () { return mockTestNote(payload); });
     },
+    // POST /api/test/servo -> { ok } (409 if not armed). Body: { index, active }.
     testServo: function (payload) {
+      var wire = { index: payload.index | 0, active: !!payload.active };
       return this._call('/api/test/servo', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wire)
       }, function () { return mockTestServo(payload); });
     },
+    // POST /api/test/endstop -> { ok:true, home:Bool, limit:Bool }. Body: { axis }.
     testEndstop: function (payload) {
+      var wire = { axis: payload.axis | 0 };
       return this._call('/api/test/endstop', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wire)
       }, function () { return mockTestEndstop(payload); });
     },
+    // POST /api/wifi -> { ok:true }. Passwords are write-only.
+    setWifi: function (payload) {
+      return this._call('/api/wifi', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stationPassword: payload.stationPassword || '', apPassword: payload.apPassword || '' })
+      }, function () { return { ok: true, note: 'stored (mock); reboot to apply' }; });
+    },
+    // POST /api/sysex/request: build the request bytes for the block, send
+    // { bytes:[...] }, then decode the returned response bytes for display.
     sysexRequest: function (kind) {
+      var prof = (global.GMB.state && global.GMB.state.profile) || MOCK.profile;
+      var t0 = nowMs();
+      // Block 8 (notify) is device-emitted — there is no host->device request,
+      // so it is built and decoded locally.
+      if (kind === 'notify') {
+        return Promise.resolve(makeSysexView('notify', null, buildNotifyMessage(prof), t0));
+      }
+      var req = buildSysexRequest(kind, prof.midi.globalChannel);
+      if (!req) return Promise.resolve(makeSysexView(kind, null, [], t0));
       return this._call('/api/sysex/request', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ request: kind })
-      }, function () { return mockSysEx(kind); });
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bytes: req })
+      }, function () { return mockSysExBackend({ bytes: req }); }).then(function (res) {
+        return makeSysexView(kind, req, (res && res.response) || [], t0);
+      });
     },
     getCapabilities: function () {
       return this._call('/api/capabilities', null, function () { return GMB.computeCapabilities(MOCK.profile); });
     }
   };
-
-  function mockProfilesAction(action, payload) {
-    var list = MOCK.profiles;
-    switch (action) {
-      case 'create':
-        list.push({ id: slug(payload.name), name: payload.name, stringCount: payload.stringCount || 4,
-          type: payload.type || 'ukulele', startup: false });
-        break;
-      case 'copy':
-        var src = list.filter(function (x) { return x.id === payload.id; })[0];
-        if (src) list.push({ id: slug(payload.name), name: payload.name,
-          stringCount: src.stringCount, type: src.type, startup: false });
-        break;
-      case 'rename':
-        list.forEach(function (x) { if (x.id === payload.id) x.name = payload.name; });
-        break;
-      case 'delete':
-        MOCK.profiles = list.filter(function (x) { return x.id !== payload.id; });
-        break;
-      case 'setStartup':
-        list.forEach(function (x) { x.startup = (x.id === payload.id); });
-        break;
-    }
-    return deepCopy(MOCK.profiles);
-  }
 
   function mockTestNote(payload) {
     // Emulate the integrated test tool (selection spec 16) with a step log.
@@ -661,38 +799,25 @@
     return { ok: true, steps: steps };
   }
 
-  // Mock servo test (/api/test/servo): drive a servo to rest or active and
-  // report the pulse width used and its wiring (PCA board+channel or GPIO).
+  // Mock servo test (/api/test/servo): matches the firmware contract
+  // { ok } for a { index, active } request.
   function mockTestServo(payload) {
-    var to = payload.to === 'rest' ? 'rest' : 'active';
-    var us = to === 'rest' ? (payload.restUs || 1000) : (payload.activeUs || 1800);
+    var to = payload.active ? 'active' : 'rest';
+    var us = payload.active ? (payload.activeUs || 1800) : (payload.restUs || 1000);
     var where = payload.source === 'gpio'
       ? ('GPIO' + (payload.gpio >= 0 ? payload.gpio : '—'))
       : ('PCA board ' + (payload.pcaBoard || 0) + ', channel ' + (payload.channel || 0));
     return {
-      ok: true, function: payload.function || 'servo', source: payload.source || 'pca',
-      target: to, pulseUs: us, where: where,
+      ok: true,
       message: 'Servo "' + (payload.function || 'servo') + '" (' + where + ') driven to ' +
         to + ' (' + us + ' µs).'
     };
   }
 
-  // Mock endstop test (/api/test/endstop): a live-ish HOME/LIMIT readout. HOME is
-  // usually released (idle); the reported electrical level honours sensorActiveHigh.
+  // Mock endstop test (/api/test/endstop): matches the firmware contract
+  // { ok:true, home:Bool, limit:Bool } for an { axis } request.
   function mockTestEndstop(payload) {
-    function read(gpio, activeChance) {
-      var active = Math.random() < activeChance;
-      var high = payload.sensorActiveHigh === false ? !active : active;
-      return { gpio: gpio, level: high ? 'HIGH' : 'LOW', active: active };
-    }
-    var res = { ok: true, string: payload.string };
-    res.home = (payload.homeGpio !== undefined && payload.homeGpio >= 0)
-      ? read(payload.homeGpio, 0.25)
-      : { gpio: -1, level: '—', active: false, unassigned: true };
-    if (payload.limitGpio !== undefined && payload.limitGpio >= 0) {
-      res.limit = read(payload.limitGpio, 0.1);
-    }
-    return res;
+    return { ok: true, home: Math.random() < 0.25, limit: Math.random() < 0.1 };
   }
 
   // ---------------------------------------------------------------------------

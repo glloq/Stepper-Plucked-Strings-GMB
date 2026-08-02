@@ -194,24 +194,36 @@
     });
   }
 
+  // POST /api/pins/validate takes the FULL profile and returns
+  // { ok, issues:[{field,message,severity}] }. The firmware answers 422 (with
+  // the issues in the body) when there is a blocking error, and 200 otherwise —
+  // so issues can arrive via either the resolve or the reject path.
   function validate() {
     var p = GMB.state.profile;
-    GMB.api.validatePins(p.pins, p.board.reserveUsb).then(function (res) {
+    GMB.api.validatePins(p).then(function (res) {
+      renderIssues((res && res.issues) || []);
+    }).catch(function (e) {
+      var body = e && e.body;
+      if (body && body.issues) { renderIssues(body.issues); return; }
       var box = document.getElementById('pin-errors');
-      if (!box) return;
-      box.innerHTML = '';
-      if (!res.errors || !res.errors.length) {
-        box.appendChild(h('div.pill.ok', 'All pins valid — no conflicts.'));
-        return;
-      }
-      res.errors.forEach(function (e) {
-        box.appendChild(h('div.err-item', [
-          h('div.err-head', [h('strong', e.signal), h('span.pill.mini.error', 'GPIO' + e.gpio)]),
-          h('div.err-reason', e.reason),
-          e.conflictWith ? h('div.err-detail', ['Already used by: ', h('strong', e.conflictWith)]) : null,
-          e.suggestion ? h('div.err-detail', ['Suggestion: ', h('strong', e.suggestion)]) : null
-        ]));
-      });
+      if (box) { box.innerHTML = ''; box.appendChild(h('div.pill.error', 'Validation failed: ' + ((body && body.error) || e.message))); }
+    });
+  }
+
+  function renderIssues(issues) {
+    var box = document.getElementById('pin-errors');
+    if (!box) return;
+    box.innerHTML = '';
+    if (!issues.length) { box.appendChild(h('div.pill.ok', 'All pins valid — no conflicts.')); return; }
+    var blocking = issues.filter(function (i) { return i.severity !== 'warning'; });
+    if (!blocking.length) box.appendChild(h('div.pill.ok', 'No blocking conflicts (warnings only).'));
+    issues.forEach(function (e) {
+      var warn = e.severity === 'warning';
+      box.appendChild(h('div.err-item', [
+        h('div.err-head', [h('strong', e.field || 'issue'),
+          h('span.pill.mini.' + (warn ? 'warn' : 'error'), warn ? 'warning' : 'error')]),
+        h('div.err-reason', e.message)
+      ]));
     });
   }
 

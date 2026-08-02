@@ -92,6 +92,18 @@
     return h('button.btn' + (cls ? '.' + cls : ''), { type: 'button', onclick: onClick }, label);
   };
 
+  // Surface a list of backend validation issues ({field,message,severity}) as
+  // toasts. Used by save (422), pin validation and SysEx publishing.
+  GMB.reportIssues = function (prefix, issues) {
+    if (!issues || !issues.length) return false;
+    GMB.toast(prefix + ': ' + issues.length + ' issue(s).', 'error');
+    issues.forEach(function (is) {
+      var warn = is.severity === 'warning';
+      GMB.toast((warn ? '⚠ ' : '✖ ') + (is.field ? is.field + ' — ' : '') + is.message, warn ? 'warn' : 'error');
+    });
+    return true;
+  };
+
   // Toast notifications.
   GMB.toast = function (msg, kind) {
     var host = document.getElementById('toast-host');
@@ -180,7 +192,9 @@
       GMB.toast('Profile saved (revision ' + (state.profile.capabilitiesRevision) + ').', 'ok');
       updateMockBadge();
     }).catch(function (e) {
-      GMB.toast('Save failed: ' + e.message, 'error');
+      var body = e && e.body;
+      if (body && body.issues && GMB.reportIssues('Save rejected', body.issues)) return;
+      GMB.toast('Save failed: ' + ((body && body.error) || e.message), 'error');
     });
   };
 
