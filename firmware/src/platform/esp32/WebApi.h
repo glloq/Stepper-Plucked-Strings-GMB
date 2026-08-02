@@ -19,6 +19,8 @@
 
 namespace gmb {
 
+class ProfileStorage;
+
 struct WebContext {
     Profile* profile = nullptr;
     InstrumentController* instrument = nullptr;
@@ -27,6 +29,7 @@ struct WebContext {
     ServoBank* servos = nullptr;
     Net* net = nullptr;
     SafetyManager* safety = nullptr;
+    ProfileStorage* storage = nullptr;
     std::function<void()> onPanic;
     std::function<bool(const Profile&)> onActivateProfile;  // validate + apply
 };

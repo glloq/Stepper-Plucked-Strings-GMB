@@ -32,13 +32,59 @@ static MidiEvent noteOff(uint8_t ch, uint8_t note) {
     return e;
 }
 
-// Automatic mode: a bare Note On is allocated to a capable string.
+// Automatic mode: a bare Note On is grouped, then allocated on flush.
 TEST(controller_automatic_note) {
     InstrumentController ic;
     ic.load(ukulele());
     ic.handleEvent(noteOn(0, 62, 100), 0);  // D4: playable on C string fret 2
+    ic.tick(5000);                          // past the 3 ms chord window
     CHECK_EQ(ic.soundingCount(), 1);
-    ic.handleEvent(noteOff(0, 62), 1);
+    ic.handleEvent(noteOff(0, 62), 6000);
+    CHECK_EQ(ic.soundingCount(), 0);
+}
+
+// Notes arriving inside the chord window are allocated together via allocateChord.
+TEST(controller_chord_grouping_window) {
+    InstrumentController ic;
+    ic.load(ukulele());
+    ic.handleEvent(noteOn(0, 67, 100), 0);
+    ic.handleEvent(noteOn(0, 60, 100), 500);   // +0.5 ms
+    ic.handleEvent(noteOn(0, 64, 100), 1000);  // +1 ms
+    CHECK_EQ(ic.soundingCount(), 0);           // still buffered
+    ic.tick(2000);                             // window not elapsed yet
+    CHECK_EQ(ic.soundingCount(), 0);
+    ic.tick(4000);                             // > 3 ms since first note
+    CHECK_EQ(ic.soundingCount(), 3);
+}
+
+// Channel filter: events on other channels are ignored unless omni.
+TEST(controller_channel_filter) {
+    Profile p = ukulele();
+    p.midi.globalChannel = 0;
+    p.midi.omni = false;
+    InstrumentController ic;
+    ic.load(p);
+    ic.handleEvent(noteOn(1, 62, 100), 0);  // wrong channel
+    ic.tick(5000);
+    CHECK_EQ(ic.soundingCount(), 0);
+    ic.handleEvent(noteOn(0, 62, 100), 6000);
+    ic.tick(11000);
+    CHECK_EQ(ic.soundingCount(), 1);
+}
+
+// Sustain pedal (CC64) holds a note through its Note Off until the pedal lifts.
+TEST(controller_sustain_pedal) {
+    Profile p = ukulele();
+    p.midi.sustainPedal = true;
+    InstrumentController ic;
+    ic.load(p);
+    ic.handleEvent(cc(0, 64, 127), 0);      // pedal down
+    ic.handleEvent(noteOn(0, 62, 100), 100);
+    ic.tick(5000);
+    CHECK_EQ(ic.soundingCount(), 1);
+    ic.handleEvent(noteOff(0, 62), 6000);   // held by pedal
+    CHECK_EQ(ic.soundingCount(), 1);
+    ic.handleEvent(cc(0, 64, 0), 7000);     // pedal up -> release
     CHECK_EQ(ic.soundingCount(), 0);
 }
 
@@ -63,6 +109,7 @@ TEST(controller_chord) {
     ic.handleEvent(noteOn(0, 60, 100), 0);
     ic.handleEvent(noteOn(0, 64, 100), 0);
     ic.handleEvent(noteOn(0, 69, 100), 0);
+    ic.tick(5000);
     CHECK_EQ(ic.soundingCount(), 4);
 }
 
@@ -72,8 +119,9 @@ TEST(controller_panic_clears) {
     ic.load(ukulele());
     ic.handleEvent(noteOn(0, 67, 100), 0);
     ic.handleEvent(noteOn(0, 60, 100), 0);
+    ic.tick(5000);
     CHECK(ic.soundingCount() > 0);
-    ic.handleEvent(cc(0, 120, 0), 0);  // all sound off
+    ic.handleEvent(cc(0, 120, 0), 6000);  // all sound off
     CHECK_EQ(ic.soundingCount(), 0);
 }
 

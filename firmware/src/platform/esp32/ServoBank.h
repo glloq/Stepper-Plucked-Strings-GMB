@@ -31,6 +31,16 @@ public:
     void toActive(int index);
     void toMicros(int index, uint16_t us);
 
+    // Non-blocking motion helpers (honour travelMs / settleMs / disableAtRest):
+    //   press  : hold active   (finger down)
+    //   release: return to rest (finger up), then optionally cut PWM at rest
+    //   strike : pulse active then auto-return to rest (pluck / strum / damper)
+    void press(int index);
+    void release(int index);
+    void strike(int index);
+    // Advance scheduled returns and rest-time PWM cut-off. Call from loop().
+    void update(uint32_t nowMs);
+
     // Hardware safety: enable/disable all PCA outputs via /OE.
     void outputEnable(bool on);
     void neutraliseAll();
@@ -44,8 +54,23 @@ public:
 
     size_t count() const { return servos_.size(); }
     bool usesPca() const { return pcaUsed_; }
+    uint16_t travelMs(int index) const {
+        return (index >= 0 && index < (int)servos_.size()) ? servos_[index].travelMs : 0;
+    }
+    uint16_t settleMs(int index) const {
+        return (index >= 0 && index < (int)servos_.size()) ? servos_[index].settleMs : 0;
+    }
 
 private:
+    enum class Mode : uint8_t { Rest, Active, Striking };
+    struct Rt {
+        Mode mode = Mode::Rest;
+        uint32_t returnAtMs = 0;  // when a strike returns to rest
+        uint32_t restAtMs = 0;    // when a resting servo may cut its PWM
+        bool pwmOff = false;
+    };
+    std::vector<Rt> rt_;
+
     std::vector<ServoConfig> servos_;
     int8_t oePin_ = -1;
     bool pcaUsed_ = false;
@@ -56,6 +81,7 @@ private:
         Adafruit_PWMServoDriver(0x42), Adafruit_PWMServoDriver(0x43)};
 #endif
     void writeMicros(const ServoConfig& s, uint16_t us);
+    void writeOff(const ServoConfig& s);
 };
 
 }  // namespace gmb

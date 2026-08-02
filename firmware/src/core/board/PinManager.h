@@ -15,6 +15,10 @@ struct PinAssignment {
     int8_t gpio = -1;
 };
 
+// Infer the signal kind from a signal name (e.g. "STEP3" -> Step). Used to
+// restore PinAssignment.kind on import so GPIO validation stays strict.
+SignalKind signalKindFromName(const std::string& signal);
+
 struct PinError {
     std::string signal;
     int8_t gpio = -1;

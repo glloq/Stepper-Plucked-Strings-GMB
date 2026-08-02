@@ -71,9 +71,9 @@ HomingCommand HomingController::update(uint32_t nowMs, bool rawSensor,
         }
 
         case HomingState::SetZero:
-            // The axis zero is redefined at the trigger point; the offset target
-            // is expressed relative to that new zero.
-            offsetTargetMm_ = cfg_.offsetMm;
+            // The axis zero is the trigger point. Move to the resting offset,
+            // expressed relative to that trigger (away from the sensor).
+            offsetTargetMm_ = triggerPosMm_ - dir * cfg_.offsetMm;
             state_ = HomingState::MoveToOffset;
             return {MoveKind::MoveTo, 0.0, offsetTargetMm_};
 

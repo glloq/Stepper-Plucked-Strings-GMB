@@ -28,12 +28,14 @@ private:
     std::string password_;
     bool connected_ = false;
     bool apActive_ = false;
+    bool connecting_ = false;
     std::string ip_;
     int failures_ = 0;
-    uint32_t lastAttemptMs_ = 0;
+    uint32_t attemptStartMs_ = 0;
 
     void startAccessPoint();
-    bool startStation();
+    void beginStationAttempt(uint32_t nowMs);  // non-blocking: kicks off WiFi.begin
+    bool pollStation(uint32_t nowMs);          // returns true once connected
 };
 
 }  // namespace gmb

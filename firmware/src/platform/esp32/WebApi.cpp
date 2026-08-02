@@ -1,9 +1,11 @@
 #include "WebApi.h"
 
 #include "ProfileStorage.h"
+#include "../../core/configuration/ProfileValidator.h"
 
 #if defined(ARDUINO)
 #include <ArduinoJson.h>
+#include <AsyncJson.h>
 #include <LittleFS.h>
 #endif
 
@@ -146,9 +148,157 @@ void WebApi::registerRoutes() {
         if (ctx_.profile) ProfileStorage::toJson(*ctx_.profile, doc);
         sendJson(req, doc);
     });
-    // Body handlers (PUT /api/profile, POST /api/pins/validate, /api/sysex/request,
-    // /api/test/note) are registered with AsyncCallbackJsonWebHandler in main.cpp
-    // where the JSON body dependency is available.
+
+    // ---- GET /api/profiles (slot list) ----
+    server_->on("/api/profiles", HTTP_GET, [this](AsyncWebServerRequest* req) {
+        JsonDocument doc;
+        JsonArray arr = doc["profiles"].to<JsonArray>();
+        if (ctx_.storage) {
+            auto names = ctx_.storage->list();
+            for (size_t i = 0; i < names.size(); ++i) {
+                JsonObject o = arr.add<JsonObject>();
+                o["slot"] = i;
+                o["name"] = names[i];
+                o["used"] = !names[i].empty();
+            }
+            doc["startupSlot"] = ctx_.storage->startupSlot();
+        }
+        sendJson(req, doc);
+    });
+
+    // Body-parsing endpoints.
+    auto validate = [this](const JsonVariant& body, JsonDocument& out) {
+        Profile p;
+        if (!ProfileStorage::fromJson(body, p)) {
+            out["ok"] = false;
+            out["error"] = "invalid profile JSON";
+            return;
+        }
+        auto issues = ProfileValidator::validate(p);
+        JsonArray errs = out["issues"].to<JsonArray>();
+        bool ok = true;
+        for (const auto& is : issues) {
+            JsonObject o = errs.add<JsonObject>();
+            o["field"] = is.field;
+            o["message"] = is.message;
+            o["severity"] =
+                is.severity == ValidationIssue::Severity::Error ? "error" : "warning";
+            if (is.severity == ValidationIssue::Severity::Error) ok = false;
+        }
+        out["ok"] = ok;
+    };
+
+    // ---- PUT /api/profile (validate + activate) ----
+    auto* putProfile = new AsyncCallbackJsonWebHandler(
+        "/api/profile", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            Profile p;
+            JsonDocument doc;
+            if (!ProfileStorage::fromJson(body, p)) {
+                doc["ok"] = false;
+                doc["error"] = "invalid profile JSON";
+                sendJson(req, doc, 400);
+                return;
+            }
+            auto issues = ProfileValidator::validate(p);
+            bool ok = true;
+            JsonArray errs = doc["issues"].to<JsonArray>();
+            for (const auto& is : issues) {
+                if (is.severity == ValidationIssue::Severity::Error) ok = false;
+                JsonObject o = errs.add<JsonObject>();
+                o["field"] = is.field;
+                o["message"] = is.message;
+                o["severity"] =
+                    is.severity == ValidationIssue::Severity::Error ? "error" : "warning";
+            }
+            if (!ok) {
+                doc["ok"] = false;
+                sendJson(req, doc, 422);  // real error, not masked as success
+                return;
+            }
+            bool applied = ctx_.onActivateProfile && ctx_.onActivateProfile(p);
+            doc["ok"] = applied;
+            sendJson(req, doc, applied ? 200 : 409);
+        });
+    putProfile->setMethod(HTTP_PUT);
+    server_->addHandler(putProfile);
+
+    // ---- POST /api/pins/validate (full-profile validation) ----
+    auto* validatePins = new AsyncCallbackJsonWebHandler(
+        "/api/pins/validate",
+        [this, validate](AsyncWebServerRequest* req, JsonVariant& body) {
+            JsonDocument doc;
+            validate(body, doc);
+            sendJson(req, doc, doc["ok"] == true ? 200 : 422);
+        });
+    validatePins->setMethod(HTTP_POST);
+    server_->addHandler(validatePins);
+
+    // ---- POST /api/profiles (save to a slot) ----
+    auto* saveProfile = new AsyncCallbackJsonWebHandler(
+        "/api/profiles", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            JsonDocument doc;
+            int slot = body["slot"] | -1;
+            Profile p;
+            bool parsed = body["profile"].is<JsonObject>()
+                              ? ProfileStorage::fromJson(body["profile"], p)
+                              : (ctx_.profile ? (p = *ctx_.profile, true) : false);
+            if (slot < 0 || !parsed || !ctx_.storage) {
+                doc["ok"] = false;
+                doc["error"] = "slot and profile required";
+                sendJson(req, doc, 400);
+                return;
+            }
+            bool saved = ctx_.storage->save(slot, p);
+            if (saved && (body["startup"] | false)) ctx_.storage->setStartupSlot(slot);
+            doc["ok"] = saved;
+            sendJson(req, doc, saved ? 200 : 500);
+        });
+    saveProfile->setMethod(HTTP_POST);
+    server_->addHandler(saveProfile);
+
+    // ---- POST /api/test/note (inject a Note On/Off pair) ----
+    auto* testNote = new AsyncCallbackJsonWebHandler(
+        "/api/test/note", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            JsonDocument doc;
+            if (!ctx_.instrument) {
+                doc["ok"] = false;
+                sendJson(req, doc, 409);
+                return;
+            }
+            MidiEvent e;
+            e.type = static_cast<uint8_t>(MidiType::NoteOn);
+            e.channel = body["channel"] | 0;
+            e.data1 = body["note"] | 60;
+            e.data2 = body["velocity"] | 100;
+            e.timestampUs = micros();
+            e.source = static_cast<uint8_t>(MidiSource::WebUiTest);
+            ctx_.instrument->handleEvent(e, e.timestampUs);
+            doc["ok"] = true;
+            sendJson(req, doc);
+        });
+    testNote->setMethod(HTTP_POST);
+    server_->addHandler(testNote);
+
+    // ---- POST /api/sysex/request (run a SysEx buffer through the service) ----
+    auto* sysexReq = new AsyncCallbackJsonWebHandler(
+        "/api/sysex/request", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            JsonDocument doc;
+            if (!ctx_.sysex) {
+                doc["ok"] = false;
+                sendJson(req, doc, 409);
+                return;
+            }
+            std::vector<uint8_t> in;
+            for (JsonVariant v : body["bytes"].as<JsonArray>())
+                in.push_back(static_cast<uint8_t>(v.as<int>() & 0xFF));
+            auto out = ctx_.sysex->handleMessage(in.data(), in.size(), millis());
+            doc["ok"] = true;
+            JsonArray resp = doc["response"].to<JsonArray>();
+            for (uint8_t b : out) resp.add(b);
+            sendJson(req, doc);
+        });
+    sysexReq->setMethod(HTTP_POST);
+    server_->addHandler(sysexReq);
 }
 
 void WebApi::broadcastStatus() {

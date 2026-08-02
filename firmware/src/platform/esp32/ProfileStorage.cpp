@@ -63,6 +63,7 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
         JsonObject o = pins.add<JsonObject>();
         o["signal"] = a.signal;
         o["gpio"] = a.gpio;
+        o["kind"] = static_cast<int>(a.kind);
     }
 
     JsonObject net = doc["network"].to<JsonObject>();
@@ -188,6 +189,10 @@ bool ProfileStorage::fromJson(const JsonDocument& doc, Profile& out) {
         PinAssignment a;
         a.signal = o["signal"] | "";
         a.gpio = o["gpio"] | -1;
+        // Restore the signal kind so GPIO validation stays strict on import.
+        // Prefer the stored value; otherwise infer it from the signal name.
+        if (o["kind"].is<int>()) a.kind = static_cast<SignalKind>(o["kind"].as<int>());
+        else a.kind = signalKindFromName(a.signal);
         out.pins.push_back(a);
     }
 
