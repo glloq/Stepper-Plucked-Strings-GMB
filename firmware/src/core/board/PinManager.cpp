@@ -4,6 +4,25 @@
 
 namespace gmb {
 
+namespace {
+bool startsWith(const std::string& s, const char* p) {
+    return s.rfind(p, 0) == 0;
+}
+}  // namespace
+
+SignalKind signalKindFromName(const std::string& signal) {
+    if (startsWith(signal, "STEP")) return SignalKind::Step;
+    if (startsWith(signal, "DIR")) return SignalKind::Dir;
+    if (startsWith(signal, "HOME")) return SignalKind::Home;
+    if (startsWith(signal, "LIMIT")) return SignalKind::Limit;
+    if (startsWith(signal, "DIAG")) return SignalKind::Diag;
+    if (startsWith(signal, "ENABLE")) return SignalKind::Enable;
+    if (signal == "SDA") return SignalKind::I2cSda;
+    if (signal == "SCL") return SignalKind::I2cScl;
+    if (startsWith(signal, "SERVO_OE") || signal == "OE") return SignalKind::ServoOe;
+    return SignalKind::Generic;
+}
+
 bool PinManager::isUsed(int8_t gpio, const std::string& exceptSignal) const {
     for (const auto& a : assignments_) {
         if (a.signal != exceptSignal && a.gpio == gpio) return true;

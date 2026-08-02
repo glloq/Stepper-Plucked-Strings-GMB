@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "../board/PinManager.h"
+#include "../instrument/NoteAllocator.h"
 #include "../midi/StringFretSelector.h"
 #include "../motion/HomingController.h"
 #include "../motion/StepperAxis.h"
@@ -48,6 +49,8 @@ struct MidiConfig {
     uint8_t chordWindowMs = 3;   // grouping window (cahier des charges 17.2)
     VelocityCurve velocityCurve = VelocityCurve::Linear;
     bool sustainPedal = true;
+    uint8_t sustainCc = 64;
+    SaturationStrategy saturationStrategy = SaturationStrategy::PriorityLow;
 };
 
 // Where a servo's PWM signal comes from. The system must work with OR without a

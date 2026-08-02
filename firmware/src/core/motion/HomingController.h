@@ -63,6 +63,14 @@ public:
     bool ready() const { return state_ == HomingState::Ready; }
     bool failed() const { return state_ == HomingState::Fault; }
 
+    // Where the axis ends up once homed, expressed relative to the home sensor
+    // (= 0). The integrator uses it to anchor the axis coordinate system so the
+    // home point is 0 mm.
+    double restOffsetMm() const {
+        double dir = cfg_.direction >= 0 ? 1.0 : -1.0;
+        return -dir * cfg_.offsetMm;
+    }
+
 private:
     HomingConfig cfg_;
     HomingState state_ = HomingState::Idle;

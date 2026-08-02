@@ -79,7 +79,7 @@ firmware/                        Cahier des charges §23        Implémenté (co
 │   └── SharedStrummer           grattage partagé              (phase 4, à venir)
 ├── motion/
 │   ├── StepperAxis              géométrie/conversion mm↔pas   core/motion/StepperAxis.{h,cpp}
-│   ├── MotionPlanner            trajectoires                  (adaptateur, à venir)
+│   ├── MotionPlanner            profil trapézoïdal (accel)    core/motion/MotionPlanner.{h,cpp}
 │   └── HomingController         homing non bloquant           core/motion/HomingController.{h,cpp}
 ├── actuators/
 │   ├── ServoManager             PCA9685                       ServoConfig (core/configuration)

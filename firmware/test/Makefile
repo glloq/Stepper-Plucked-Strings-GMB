@@ -19,6 +19,7 @@ CORE_SRC := \
   $(CORE)/gmb/GmbSysExService.cpp \
   $(CORE)/motion/StepperAxis.cpp \
   $(CORE)/motion/HomingController.cpp \
+  $(CORE)/motion/MotionPlanner.cpp \
   $(CORE)/configuration/Profile.cpp \
   $(CORE)/configuration/ProfileValidator.cpp \
   $(CORE)/gmb/Capabilities.cpp \
@@ -36,7 +37,8 @@ TEST_SRC := \
   test_sysex.cpp \
   test_integration.cpp \
   test_midiparser.cpp \
-  test_servos.cpp
+  test_servos.cpp \
+  test_planner.cpp
 
 BIN := run_tests
 

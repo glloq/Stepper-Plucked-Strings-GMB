@@ -1,8 +1,9 @@
-// Ties the MIDI pipeline together (cahier des charges §16/§17, selection spec).
+// Ties the MIDI pipeline together (cahier des charges §16/§17/§18, selection spec).
 //
-// transport -> MidiEvent -> [selection] -> [allocation] -> per-string state
-// machine -> motion/servo commands. Pure C++: the platform layer feeds it MIDI
-// events and reads back the resulting per-string targets.
+// transport -> MidiEvent -> [channel filter] -> [selection] -> [chord grouping +
+// allocation] -> per-string state machine -> motion/servo targets.
+// Pure C++: the platform layer feeds it MIDI events, calls tick() to flush chord
+// groups, and reads back the per-string targets.
 #pragma once
 
 #include <cstdint>
@@ -21,15 +22,19 @@ struct StringTarget {
     int fret = 0;
     double positionMm = 0.0;
     uint32_t commandId = 0;
+    uint8_t velocity = 0;    // raw MIDI velocity
+    double intensity = 0.0;  // shaped 0..1 (velocity curve)
 };
 
 class InstrumentController {
 public:
-    // Build the runtime from an active, validated profile.
     void load(const Profile& p);
 
     // Feed one decoded MIDI event.
     void handleEvent(const MidiEvent& e, uint32_t nowUs);
+
+    // Flush pending chord groups whose window has elapsed. Call every loop.
+    void tick(uint32_t nowUs);
 
     // Emergency stop everything (cahier des charges §21.3).
     void panic();
@@ -38,9 +43,8 @@ public:
     const StringController& string(size_t i) const { return strings_[i]; }
     StringController& string(size_t i) { return strings_[i]; }
     const StringTarget& target(size_t i) const { return targets_[i]; }
-
-    // How many strings are currently holding a note.
     int soundingCount() const;
+    bool pedalDown() const { return pedalDown_; }
 
 private:
     StringFretSelector selector_;
@@ -49,16 +53,39 @@ private:
     std::vector<StepperAxis> axes_;
     std::vector<StringTarget> targets_;
 
+    // MIDI runtime settings pulled from the profile.
+    uint8_t channel_ = 0;
+    bool omni_ = false;
+    uint32_t chordWindowUs_ = 3000;
+    bool sustainEnabled_ = true;
+    uint8_t sustainCc_ = 64;
+    int velocityCurve_ = 0;
+
+    bool pedalDown_ = false;
+
     struct ActiveMap {
         uint8_t channel;
         uint8_t note;
         int stringIndex;
+        bool heldByPedal = false;  // released while the sustain pedal was down
     };
     std::vector<ActiveMap> active_;
 
-    void startNote(int stringIndex, int fret, uint8_t channel, uint8_t note);
+    struct PendingNote {
+        uint8_t channel;
+        uint8_t note;
+        uint8_t velocity;
+        uint32_t atUs;
+    };
+    std::vector<PendingNote> chordBuffer_;  // automatic notes awaiting grouping
+
+    bool accepts(uint8_t channel) const { return omni_ || channel == channel_; }
+    void startNote(int stringIndex, int fret, uint8_t channel, uint8_t note,
+                   uint8_t velocity);
     void stopString(int stringIndex);
-    int popActive(uint8_t channel, uint8_t note);
+    int findActive(uint8_t channel, uint8_t note) const;
+    void releaseNote(uint8_t channel, uint8_t note);
+    void flushChord();
 };
 
 }  // namespace gmb
