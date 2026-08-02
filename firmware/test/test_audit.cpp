@@ -3,7 +3,9 @@
 #include "../src/core/configuration/Profile.h"
 #include "../src/core/configuration/ProfileValidator.h"
 #include "../src/core/instrument/InstrumentController.h"
+#include "../src/core/midi/MidiParser.h"
 #include "../src/core/midi/StringFretSelector.h"
+#include "../src/core/motion/StepperAxis.h"
 
 using namespace gmb;
 
@@ -131,6 +133,67 @@ TEST(explicit_replacement_on_same_string) {
     // Note Off for the current note releases it.
     ic.handleEvent(noteOff(0, 71, 0), 0);
     CHECK(!ic.target(2).active);
+}
+
+// --- P0: direction inversion is applied in ONE layer only ---
+// mm<->steps must be sign-preserving regardless of invertDirection (the driver
+// DIR pin owns inversion), so position and velocity modes agree.
+TEST(mm_to_steps_is_not_inverted) {
+    AxisConfig cfg;
+    cfg.transmission = Transmission::BeltGt2;
+    cfg.stepsPerRevolution = 200; cfg.microsteps = 16;
+    cfg.pulleyTeeth = 20; cfg.beltPitchMm = 2.0;  // 80 steps/mm
+    cfg.invertDirection = true;
+    StepperAxis axis(cfg);
+    CHECK_EQ(axis.mmToSteps(10.0), 800);   // positive, not -800
+    CHECK_NEAR(axis.stepsToMm(800), 10.0, 1e-9);
+}
+
+// --- P1: a disabled axis never plays, even via explicit CC selection ---
+TEST(disabled_axis_never_plays) {
+    Profile p = uke();
+    p.strings[0].enabled = false;
+    p.selector.mode = SelectionMode::Explicit;
+    InstrumentController ic;
+    ic.load(p);
+    ic.handleEvent(cc(0, 20, 1, 0), 0);   // string 1 -> physical index 0 (disabled)
+    ic.handleEvent(cc(0, 21, 0, 0), 0);   // fret 0 -> note 67
+    ic.handleEvent(noteOn(0, 67, 100, 0), 0);
+    CHECK(!ic.target(0).active);          // refused
+    CHECK_EQ(ic.soundingCount(), 0);
+}
+
+// --- P1: the selector is cleared on profile load / panic ---
+TEST(selector_reset_clears_pending) {
+    StringFretSelector sel;
+    SelectorConfig cfg; cfg.mode = SelectionMode::Explicit;
+    cfg.string.maximum = 4; cfg.fret.maximum = 12;
+    sel.configure(cfg);
+    InstrumentView v; v.stringCount = 4; v.openNotes = {67, 60, 64, 69};
+    v.maxFretPerString = {12, 12, 12, 12};
+    sel.setInstrument(v);
+    sel.onControlChange(cc(0, 20, 3, 0));
+    sel.onControlChange(cc(0, 21, 5, 0));
+    CHECK(sel.pending().size() > 0);
+    sel.reset();
+    CHECK_EQ((int)sel.pending().size(), 0);
+}
+
+// --- P1: SysEx parser ignores real-time bytes and bounds the buffer ---
+TEST(sysex_parser_ignores_realtime_and_bounds) {
+    MidiParser p;
+    // A real-time clock byte (0xF8) injected mid-SysEx must not enter the buffer.
+    uint8_t msg[] = {0xF0, 0x7D, 0x00, 0xF8, 0x06, 0x01, 0xF7};
+    p.feed(msg, sizeof(msg), 0);
+    CHECK_EQ((int)p.sysex().size(), 1);
+    CHECK_EQ((int)p.sysex()[0].size(), 6);  // 0xF8 dropped: F0 7D 00 06 01 F7
+    for (uint8_t b : p.sysex()[0]) CHECK(b != 0xF8);
+
+    // An unterminated oversized SysEx is aborted, not buffered without bound.
+    MidiParser q;
+    q.feed(0xF0, 0);
+    for (size_t i = 0; i < MidiParser::kMaxSysExBytes + 100; ++i) q.feed(0x01, 0);
+    CHECK_EQ((int)q.sysex().size(), 0);  // never completed, buffer released
 }
 
 // --- selection spec: fret-then-string CC order ---

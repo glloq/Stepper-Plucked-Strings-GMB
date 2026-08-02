@@ -167,7 +167,7 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
     }
 }
 
-bool ProfileStorage::fromJson(const JsonDocument& doc, Profile& out) {
+bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
     if (doc["instrument"].isNull()) return false;
     out.project = doc["project"] | "Stepper-Plucked-Strings-GMB";
     out.profileVersion = doc["profileVersion"] | 1;
@@ -331,7 +331,7 @@ std::string ProfileStorage::exportJson(const Profile& p, bool /*includeSecrets*/
 bool ProfileStorage::importJson(const std::string& json, Profile& out) const {
     JsonDocument doc;
     if (deserializeJson(doc, json) != DeserializationError::Ok) return false;
-    return fromJson(doc, out);
+    return fromJson(doc.as<JsonVariantConst>(), out);
 }
 
 std::string ProfileStorage::slotPath(int slot) {
@@ -367,7 +367,7 @@ bool ProfileStorage::load(int slot, Profile& out) const {
     File f = LittleFS.open(slotPath(slot).c_str(), "r");
     if (!f) return false;
     JsonDocument doc;
-    bool ok = deserializeJson(doc, f) == DeserializationError::Ok && fromJson(doc, out);
+    bool ok = deserializeJson(doc, f) == DeserializationError::Ok && fromJson(doc.as<JsonVariantConst>(), out);
     f.close();
     return ok;
 }
@@ -388,9 +388,18 @@ bool ProfileStorage::save(int slot, const Profile& p) {
         LittleFS.remove(tmp.c_str());
         return false;
     }
-    LittleFS.remove(finalPath.c_str());
-    if (LittleFS.rename(tmp.c_str(), finalPath.c_str())) return true;
-    LittleFS.remove(tmp.c_str());  // rename failed: don't leave a stray temp
+    // Keep a backup of the existing slot so a failed rename never loses data.
+    std::string bak = finalPath + ".bak";
+    LittleFS.remove(bak.c_str());
+    bool hadOld = LittleFS.exists(finalPath.c_str());
+    if (hadOld) LittleFS.rename(finalPath.c_str(), bak.c_str());
+    if (LittleFS.rename(tmp.c_str(), finalPath.c_str())) {
+        LittleFS.remove(bak.c_str());  // success: drop the backup
+        return true;
+    }
+    // Rename failed: restore the previous profile from the backup.
+    if (hadOld) LittleFS.rename(bak.c_str(), finalPath.c_str());
+    LittleFS.remove(tmp.c_str());
     return false;
 }
 

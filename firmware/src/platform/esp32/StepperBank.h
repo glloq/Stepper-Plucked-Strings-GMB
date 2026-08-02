@@ -41,7 +41,8 @@ public:
     void moveToMmRaw(size_t axis, double mm);
     // Velocity-mode cruise at a signed speed (mm/s), used by homing seeks.
     void setVelocityMm(size_t axis, double mmS);
-    void stop(size_t axis);
+    void stop(size_t axis);          // decelerated stop (normal musical stop)
+    void emergencyStop(size_t axis); // immediate hard stop (LIMIT / E-stop)
     void stopAll();
 
     // Redefine the current physical position as `mm` (homing anchors home = 0).

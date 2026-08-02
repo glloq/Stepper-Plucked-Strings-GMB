@@ -30,7 +30,62 @@ void sendJson(AsyncWebServerRequest* req, JsonDocument& doc, int code = 200) {
     req->send(code, "application/json", out);
 }
 
+const char* midiTypeName(uint8_t type) {
+    switch (type) {
+        case 0x80: return "noteOff";
+        case 0x90: return "noteOn";
+        case 0xA0: return "polyAftertouch";
+        case 0xB0: return "controlChange";
+        case 0xC0: return "programChange";
+        case 0xD0: return "channelAftertouch";
+        case 0xE0: return "pitchBend";
+        default: return "other";
+    }
+}
+
 }  // namespace
+
+// Single status DTO shared by GET /api/status and the /ws/status broadcast so
+// the two never diverge (fixes the frontend/backend status mismatch).
+void WebApi::fillStatus(JsonDocument& doc) {
+    doc["state"] = ctx_.appState ? ctx_.appState() : "boot";
+    JsonObject wifi = doc["wifi"].to<JsonObject>();
+    wifi["mode"] = ctx_.net ? ctx_.net->mode() : "unknown";
+    wifi["ssid"] = ctx_.profile ? ctx_.profile->network.ssid : "";
+    wifi["ip"] = ctx_.net ? ctx_.net->ipAddress() : "";
+    wifi["connected"] = ctx_.net ? ctx_.net->connected() : false;
+    doc["midiSource"] = "wifiUdp";
+    doc["activeProfile"] = ctx_.profile ? ctx_.profile->instrument.name : "";
+    doc["capabilitiesRevision"] =
+        ctx_.sysex ? ctx_.sysex->snapshot().revision : 0;
+    int total = ctx_.instrument ? static_cast<int>(ctx_.instrument->stringCount()) : 0;
+    bool armed = ctx_.safety && ctx_.safety->actuatorsAllowed();
+    doc["stringsTotal"] = total;
+    doc["stringsReady"] = armed ? total : 0;
+    doc["notesPlaying"] = ctx_.instrument ? ctx_.instrument->soundingCount() : 0;
+    doc["safety"] = armed ? "armed" : "safe";
+    JsonArray faults = doc["faults"].to<JsonArray>();
+    if (ctx_.safety)
+        for (const auto& f : ctx_.safety->faults()) {
+            JsonObject o = faults.add<JsonObject>();
+            o["source"] = f.source;
+            o["message"] = f.message;
+            o["atMs"] = f.atMs;
+        }
+    JsonArray strings = doc["strings"].to<JsonArray>();
+    if (ctx_.instrument && ctx_.steppers) {
+        for (size_t i = 0; i < ctx_.instrument->stringCount(); ++i) {
+            JsonObject s = strings.add<JsonObject>();
+            s["index"] = i;
+            s["fret"] = ctx_.instrument->target(i).fret;
+            s["active"] = ctx_.instrument->target(i).active;
+            s["positionMm"] = ctx_.steppers->positionMm(i);
+            s["targetMm"] = ctx_.instrument->target(i).positionMm;
+            s["home"] = ctx_.steppers->homeActive(i);
+            s["limit"] = ctx_.steppers->limitActive(i);
+        }
+    }
+}
 
 void WebApi::begin(const WebContext& ctx, uint16_t port) {
     ctx_ = ctx;
@@ -53,26 +108,17 @@ void WebApi::registerRoutes() {
     // ---- GET /api/status ----
     server_->on("/api/status", HTTP_GET, [this](AsyncWebServerRequest* req) {
         JsonDocument doc;
-        doc["wifi"] = ctx_.net ? ctx_.net->mode() : "unknown";
-        doc["ip"] = ctx_.net ? ctx_.net->ipAddress() : "";
-        doc["profile"] = ctx_.profile ? ctx_.profile->instrument.name : "";
-        doc["safety"] = ctx_.safety && ctx_.safety->actuatorsAllowed() ? "armed" : "safe";
-        int ready = ctx_.instrument ? static_cast<int>(ctx_.instrument->stringCount()) : 0;
-        doc["stringsReady"] = ready;
-        doc["notesPlaying"] = ctx_.instrument ? ctx_.instrument->soundingCount() : 0;
-        JsonArray strings = doc["strings"].to<JsonArray>();
-        if (ctx_.instrument && ctx_.steppers) {
-            for (size_t i = 0; i < ctx_.instrument->stringCount(); ++i) {
-                JsonObject s = strings.add<JsonObject>();
-                s["index"] = i;
-                s["fret"] = ctx_.instrument->target(i).fret;
-                s["active"] = ctx_.instrument->target(i).active;
-                s["positionMm"] = ctx_.steppers->positionMm(i);
-                s["targetMm"] = ctx_.instrument->target(i).positionMm;
-                s["home"] = ctx_.steppers->homeActive(i);
-            }
-        }
+        fillStatus(doc);
         sendJson(req, doc);
+    });
+
+    // ---- POST /api/reset (recover from panic / E-stop, then re-home) ----
+    server_->on("/api/reset", HTTP_POST, [this](AsyncWebServerRequest* req) {
+        bool ok = ctx_.onReset && ctx_.onReset();
+        JsonDocument doc;
+        doc["ok"] = ok;
+        if (!ok) doc["error"] = "reset refused (E-stop/LIMIT active or invalid config)";
+        sendJson(req, doc, ok ? 200 : 409);
     });
 
     // ---- GET /api/board/{id} ----
@@ -275,6 +321,26 @@ void WebApi::registerRoutes() {
     loadProfile->setMethod(HTTP_POST);
     server_->addHandler(loadProfile);
 
+    // ---- POST /api/profiles/read (read a slot WITHOUT activating it) ----
+    // Used by copy / rename / set-startup so an admin action never moves a motor.
+    auto* readProfile = new AsyncCallbackJsonWebHandler(
+        "/api/profiles/read", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            int slot = body["slot"] | -1;
+            Profile p;
+            if (slot < 0 || !ctx_.storage || !ctx_.storage->load(slot, p)) {
+                JsonDocument err;
+                err["ok"] = false;
+                err["error"] = "slot not found";
+                sendJson(req, err, 404);
+                return;
+            }
+            JsonDocument doc;
+            ProfileStorage::toJson(p, doc);  // returned as-is, not activated
+            sendJson(req, doc);
+        });
+    readProfile->setMethod(HTTP_POST);
+    server_->addHandler(readProfile);
+
     // ---- POST /api/profiles/delete ----
     auto* deleteProfile = new AsyncCallbackJsonWebHandler(
         "/api/profiles/delete", [this](AsyncWebServerRequest* req, JsonVariant& body) {
@@ -347,9 +413,14 @@ void WebApi::registerRoutes() {
                 sendJson(req, doc, 409);
                 return;
             }
-            std::string sta = body["stationPassword"] | "";
-            std::string ap = body["apPassword"] | "";
-            ctx_.onSetWifi(sta, ap);
+            // Only overwrite a password that was actually provided (an absent or
+            // empty field leaves the stored secret unchanged).
+            bool hasSta = !body["stationPassword"].isNull() &&
+                          std::string(body["stationPassword"] | "").size() > 0;
+            bool hasAp = !body["apPassword"].isNull() &&
+                         std::string(body["apPassword"] | "").size() > 0;
+            ctx_.onSetWifi(hasSta, body["stationPassword"] | "", hasAp,
+                           body["apPassword"] | "");
             doc["ok"] = true;
             doc["note"] = "stored; reboot to apply";
             sendJson(req, doc);
@@ -382,11 +453,24 @@ void WebApi::registerRoutes() {
 void WebApi::broadcastStatus() {
     if (statusWs_.count() == 0) return;
     JsonDocument doc;
-    doc["notesPlaying"] = ctx_.instrument ? ctx_.instrument->soundingCount() : 0;
-    doc["safety"] = ctx_.safety && ctx_.safety->actuatorsAllowed() ? "armed" : "safe";
+    fillStatus(doc);  // same DTO as GET /api/status
     String out;
     serializeJson(doc, out);
     statusWs_.textAll(out);
+}
+
+void WebApi::broadcastMidi(const MidiEvent& e) {
+    if (midiWs_.count() == 0) return;
+    JsonDocument doc;
+    doc["timestampUs"] = e.timestampUs;
+    doc["source"] = "wifiUdp";
+    doc["channel"] = e.channel;
+    doc["type"] = midiTypeName(e.type);
+    doc["data1"] = e.data1;
+    doc["data2"] = e.data2;
+    String out;
+    serializeJson(doc, out);
+    midiWs_.textAll(out);
 }
 
 #else  // non-Arduino: no-op so the file is analysable off-target.

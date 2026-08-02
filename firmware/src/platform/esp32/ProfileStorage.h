@@ -22,8 +22,10 @@ public:
     bool begin();  // mount LittleFS
 
     // Serialise / parse a single profile <-> JSON (no secrets by default).
+    // fromJson accepts a JsonDocument, JsonObjectConst or the JsonVariant handed
+    // to AsyncCallbackJsonWebHandler (avoids the ArduinoJson 7 ambiguity).
     static void toJson(const Profile& p, JsonDocument& doc);
-    static bool fromJson(const JsonDocument& doc, Profile& out);
+    static bool fromJson(JsonVariantConst doc, Profile& out);
 
     std::string exportJson(const Profile& p, bool includeSecrets = false) const;
     bool importJson(const std::string& json, Profile& out) const;

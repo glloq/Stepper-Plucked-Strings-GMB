@@ -17,6 +17,13 @@ HomingCommand HomingController::fail(HomingFault f) {
     return {MoveKind::Stop, 0.0, 0.0};
 }
 
+bool HomingController::stopped(double currentPosMm) {
+    if (std::fabs(currentPosMm - lastPosMm_) < 0.02) ++stableTicks_;
+    else stableTicks_ = 0;
+    lastPosMm_ = currentPosMm;
+    return stableTicks_ >= 2;
+}
+
 HomingCommand HomingController::update(uint32_t nowMs, bool rawSensor,
                                        double currentPosMm) {
     const bool sensor = active(rawSensor);
@@ -39,12 +46,26 @@ HomingCommand HomingController::update(uint32_t nowMs, bool rawSensor,
             if (std::fabs(currentPosMm - startPosMm_) > cfg_.maxSearchMm)
                 return fail(HomingFault::MaxDistanceExceeded);
             if (sensor) {
+                // Brake to a standstill BEFORE commanding the reverse move: a
+                // reversing target issued while still moving can be ignored by
+                // the hardware step engine.
                 triggerPosMm_ = currentPosMm;
+                stableTicks_ = 0;
+                lastPosMm_ = currentPosMm;
+                state_ = HomingState::BrakeFast;
+                return {MoveKind::Stop, 0.0, 0.0};
+            }
+            return {MoveKind::MoveVelocity, cfg_.fastSpeedMmS * dir, 0.0};
+        }
+
+        case HomingState::BrakeFast: {
+            if (timedOut(nowMs)) return fail(HomingFault::Timeout);
+            if (stopped(currentPosMm)) {
                 backoffTargetMm_ = currentPosMm - dir * cfg_.backoffMm;
                 state_ = HomingState::Backoff;
                 return {MoveKind::MoveTo, 0.0, backoffTargetMm_};
             }
-            return {MoveKind::MoveVelocity, cfg_.fastSpeedMmS * dir, 0.0};
+            return {MoveKind::Stop, 0.0, 0.0};
         }
 
         case HomingState::Backoff: {
@@ -64,10 +85,22 @@ HomingCommand HomingController::update(uint32_t nowMs, bool rawSensor,
                 return fail(HomingFault::SensorNeverReached);
             if (sensor) {
                 triggerPosMm_ = currentPosMm;
-                state_ = HomingState::SetZero;
+                stableTicks_ = 0;
+                lastPosMm_ = currentPosMm;
+                state_ = HomingState::BrakeSlow;
                 return {MoveKind::Stop, 0.0, 0.0};
             }
             return {MoveKind::MoveVelocity, cfg_.slowSpeedMmS * dir, 0.0};
+        }
+
+        case HomingState::BrakeSlow: {
+            if (timedOut(nowMs)) return fail(HomingFault::Timeout);
+            if (stopped(currentPosMm)) {
+                triggerPosMm_ = currentPosMm;
+                state_ = HomingState::SetZero;
+                return {MoveKind::Stop, 0.0, 0.0};
+            }
+            return {MoveKind::Stop, 0.0, 0.0};
         }
 
         case HomingState::SetZero:

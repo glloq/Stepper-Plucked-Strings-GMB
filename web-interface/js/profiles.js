@@ -85,13 +85,10 @@
     return free ? free.slot : -1;
   }
 
-  // Load a slot and return its profile (the firmware returns it as the newly
-  // active profile — there is no read-only slot endpoint).
+  // Read a slot's profile WITHOUT activating it (no homing / motor movement),
+  // so copy / rename / set-startup are safe administrative actions.
   function fetchSlotProfile(slot) {
-    return GMB.api.loadProfileSlot(slot).then(function (res) {
-      if (res && res.ok === false) throw new Error('slot ' + slot + ' is empty');
-      return GMB.api.getProfile();
-    });
+    return GMB.api.readProfileSlot(slot);
   }
 
   function saveDraftToSlot(slot, startup) {

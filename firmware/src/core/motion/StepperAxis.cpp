@@ -24,18 +24,17 @@ double StepperAxis::stepsPerMm() const {
     }
 }
 
+// NOTE: direction inversion is applied in exactly ONE place — the driver DIR
+// pin polarity (StepperBank::setDirectionPin). mm<->steps stays a pure, sign-
+// preserving mechanical conversion so position and velocity modes agree.
 long StepperAxis::mmToSteps(double mm) const {
-    double steps = mm * stepsPerMm();
-    if (cfg_.invertDirection) steps = -steps;
-    return std::lround(steps);
+    return std::lround(mm * stepsPerMm());
 }
 
 double StepperAxis::stepsToMm(long steps) const {
     double spm = stepsPerMm();
     if (spm == 0.0) return 0.0;
-    double mm = static_cast<double>(steps) / spm;
-    if (cfg_.invertDirection) mm = -mm;
-    return mm;
+    return static_cast<double>(steps) / spm;
 }
 
 double StepperAxis::fretPositionMm(int fret) const {

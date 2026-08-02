@@ -23,14 +23,26 @@ void MidiParser::feed(const uint8_t* data, size_t len, uint32_t nowUs) {
 }
 
 void MidiParser::feed(uint8_t b, uint32_t nowUs) {
+    // System real-time messages (0xF8..0xFF) may interleave anywhere, including
+    // inside a SysEx; ignore them here so they never corrupt the SysEx buffer.
+    if (b >= 0xF8) return;
+
     // SysEx handling.
     if (inSysex_) {
-        sysbuf_.push_back(b);
         if (b == 0xF7) {
+            sysbuf_.push_back(b);
             sysex_.push_back(sysbuf_);
             sysbuf_.clear();
             inSysex_ = false;
+            return;
         }
+        // Bound the buffer so a truncated / malicious stream cannot exhaust RAM.
+        if (sysbuf_.size() >= kMaxSysExBytes) {
+            sysbuf_.clear();
+            inSysex_ = false;  // abort this SysEx; wait for the next 0xF0
+            return;
+        }
+        sysbuf_.push_back(b);
         return;
     }
     if (b == 0xF0) {

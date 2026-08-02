@@ -688,6 +688,7 @@
       });
     },
     // POST /api/profiles/load -> { ok } (404 if the slot is empty).
+    // NOTE: this ACTIVATES the slot and triggers a re-home on the firmware.
     loadProfileSlot: function (slot) {
       return this._call('/api/profiles/load', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slot: slot })
@@ -697,6 +698,23 @@
         MOCK.profile = deepCopy(stored);
         return { ok: true };
       });
+    },
+    // POST /api/profiles/read -> the slot's profile JSON, WITHOUT activating it
+    // (no homing / no actuator movement). Used by copy / rename / set-startup.
+    readProfileSlot: function (slot) {
+      return this._call('/api/profiles/read', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slot: slot })
+      }, function () {
+        var stored = MOCK.slots[slot];
+        if (!stored) throw Object.assign(new Error('HTTP 404'), { httpStatus: 404 });
+        return deepCopy(stored);
+      });
+    },
+    // POST /api/reset -> recover from a panic / E-stop, then re-home.
+    resetSystem: function () {
+      return this._call('/api/reset', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+      }, function () { return { ok: true }; });
     },
     // POST /api/profiles/delete -> { ok }.
     deleteProfileSlot: function (slot) {

@@ -14,6 +14,7 @@ void InstrumentController::load(const Profile& p) {
 
     selector_.configure(p.selector);
     selector_.setInstrument(p.instrumentView());
+    selector_.reset();  // no stale CC selections carry across a profile change
 
     channel_ = p.midi.globalChannel;
     omni_ = p.midi.omni;
@@ -32,7 +33,8 @@ void InstrumentController::load(const Profile& p) {
 
         axes_.emplace_back(s);
         StringController c;
-        c.enable();
+        if (s.enabled) c.enable();  // a disabled axis stays Disabled: no notes,
+                                    // even from an explicit CC selection
         strings_.push_back(c);
         targets_.push_back(StringTarget{});
     }
@@ -198,6 +200,7 @@ void InstrumentController::panic() {
     active_.clear();
     chordBuffer_.clear();
     pedalDown_ = false;
+    selector_.reset();  // clear pending/active CC selections on panic
 }
 
 }  // namespace gmb
