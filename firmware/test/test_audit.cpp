@@ -90,6 +90,33 @@ TEST(validator_rejects_cc_collisions) {
     CHECK(!ProfileValidator::isActivatable(s));
 }
 
+TEST(validator_rejects_midi_transpose_out_of_range) {
+    Profile p = uke();
+    p.midi.transpose = 60;  // > 48
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
+TEST(validator_rejects_non_permutation_mapping) {
+    Profile p = uke();
+    p.selector.string.mapping = {0, 0, 2, 3};  // axis 0 twice, axis 1 unreachable
+    CHECK(!ProfileValidator::isActivatable(p));
+    p.selector.string.mapping = {3, 2, 1, 0};  // a real permutation is fine
+    CHECK(ProfileValidator::isActivatable(p));
+}
+
+TEST(validator_rejects_out_of_range_enum) {
+    Profile p = uke();
+    p.midi.saturationStrategy = static_cast<SaturationStrategy>(99);
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
+TEST(validator_rejects_fret_beyond_travel) {
+    Profile p = uke();
+    // Shrink the travel so the highest fret no longer fits.
+    p.strings[0].maxPositionMm = p.strings[0].minPositionMm + 1.0;
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
 TEST(validator_rejects_invalid_transmission_params) {
     // Belt with zero teeth -> reject (would silently fall back to custom ratio).
     Profile belt = uke();

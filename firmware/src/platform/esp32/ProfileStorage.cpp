@@ -351,13 +351,29 @@ bool ProfileStorage::begin() {
         if (!LittleFS.begin(true)) return false;  // last resort: format
     }
     if (!LittleFS.exists("/profiles")) LittleFS.mkdir("/profiles");
-    // Recover from an interrupted save: if a slot is missing but its .bak
-    // survived, restore it (the crash happened between remove and rename).
+    // A slot file is "healthy" only if it deserialises to a valid Profile.
+    auto healthy = [](const std::string& path) -> bool {
+        File f = LittleFS.open(path.c_str(), "r");
+        if (!f) return false;
+        JsonDocument doc;
+        bool ok = deserializeJson(doc, f) == DeserializationError::Ok;
+        Profile check;
+        ok = ok && fromJson(doc.as<JsonVariantConst>(), check);
+        f.close();
+        return ok;
+    };
+    // Recover from an interrupted save: restore the .bak when the final file is
+    // MISSING, or present but CORRUPT (truncated / invalid JSON), as long as the
+    // .bak itself is healthy (audit P1-4).
     for (int i = 0; i < kMaxProfiles; ++i) {
         std::string path = slotPath(i);
         std::string bak = path + ".bak";
-        if (!LittleFS.exists(path.c_str()) && LittleFS.exists(bak.c_str()))
+        if (!LittleFS.exists(bak.c_str())) continue;
+        bool finalOk = LittleFS.exists(path.c_str()) && healthy(path);
+        if (!finalOk && healthy(bak)) {
+            LittleFS.remove(path.c_str());
             LittleFS.rename(bak.c_str(), path.c_str());
+        }
     }
     return true;
 }

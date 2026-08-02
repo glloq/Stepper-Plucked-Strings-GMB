@@ -164,8 +164,7 @@ public:
     void reset() {
         pending_.clear();
         active_.clear();
-        lastValidString_ = -1;
-        lastValidFret_ = -1;
+        for (auto& lv : lastValid_) lv = LastValidSelection{};
         nextInstanceId_ = 1;
         justCompleted_.clear();
     }
@@ -185,8 +184,15 @@ private:
     std::vector<PendingStringSelection> pending_;
     std::vector<ActiveNote> active_;
     uint32_t nextInstanceId_ = 1;
-    int lastValidString_ = -1;
-    int lastValidFret_ = -1;
+    // Last fully-validated string+fret PAIR, remembered PER channel key so the
+    // LastValid policy on channel 2 never reuses a value seen on channel 1, and
+    // the string/fret always come from the same validated selection (audit P1-5).
+    struct LastValidSelection {
+        bool valid = false;
+        uint8_t stringIndex = 0;
+        uint8_t fret = 0;
+    };
+    LastValidSelection lastValid_[16];
     std::vector<CompletedSelection> justCompleted_;
 
     uint8_t channelKey(uint8_t ch) const { return cfg_.perMidiChannel ? ch : 0; }

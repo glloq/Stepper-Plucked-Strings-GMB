@@ -105,10 +105,12 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
                 break;
         }
 
-        // Ensure the calculated span physically fits.
+        // Ensure the calculated span physically fits. A highest fret beyond the
+        // travel is a hard error: clampToLimits() would otherwise silently play a
+        // different position than the requested fret (audit P1-8).
         double lastFret = gmb::fretPositionMm(a.scaleLengthMm, a.maxFret);
         if (lastFret > a.maxPositionMm - a.minPositionMm + 0.001) {
-            warn(t + ".travel", "Highest fret position exceeds the configured travel");
+            err(t + ".travel", "Highest fret position exceeds the configured travel");
         }
 
         // Calibrated fret table must be monotonic and inside the travel.
@@ -143,9 +145,12 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
                 err(t + ".homing.offset", "Homing offset exceeds the axis travel");
             if (h.backoffMm > travel)
                 err(t + ".homing.backoff", "Homing back-off exceeds the axis travel");
-            if (h.maxSearchMm > travel + 1e-6 && travel > 0.0)
+            // maxSearch is a seek-distance SAFETY limit, legitimately a bit larger
+            // than the travel so home is reachable from anywhere — a warning, not
+            // an error (a huge value is still worth flagging).
+            if (h.maxSearchMm > 2.0 * travel + 1e-6 && travel > 0.0)
                 warn(t + ".homing.maxSearch",
-                     "Homing max search distance exceeds the axis travel");
+                     "Homing max search distance is far larger than the axis travel");
             // Seek speeds must not exceed the axis speed limit, and the slow seek
             // should be slower than the fast seek.
             if (h.fastSpeedMmS > a.maxSpeedMmS)
@@ -153,7 +158,7 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
             if (h.slowSpeedMmS > a.maxSpeedMmS)
                 err(t + ".homing.slowSpeed", "Homing slow speed exceeds the axis max speed");
             if (h.slowSpeedMmS > h.fastSpeedMmS)
-                warn(t + ".homing.slowSpeed", "Homing slow speed is faster than the fast speed");
+                err(t + ".homing.slowSpeed", "Homing slow speed is faster than the fast speed");
         }
     }
 
@@ -306,14 +311,25 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
         err("selector.string.range", "String CC minimum must be <= maximum");
     if (s.fret.minimum > s.fret.maximum)
         err("selector.fret.range", "Fret CC minimum must be <= maximum");
-    // Custom string mapping, when present, must be one entry per string and each
-    // must reference a valid axis.
+    // Custom string mapping, when present, must be one entry per string, each
+    // referencing a valid axis, AND a permutation (no axis used twice / skipped) —
+    // otherwise a CC value would target a duplicate string while another becomes
+    // unreachable (audit P1-11).
     if (!s.string.mapping.empty()) {
         if (s.string.mapping.size() != p.strings.size())
             err("selector.string.mapping", "Mapping must have one entry per string");
-        for (int8_t m : s.string.mapping)
-            if (m < 0 || m >= static_cast<int>(p.strings.size()))
+        std::vector<bool> seen(p.strings.size(), false);
+        for (int8_t m : s.string.mapping) {
+            if (m < 0 || m >= static_cast<int>(p.strings.size())) {
                 err("selector.string.mapping", "Mapping references a non-existent axis");
+            } else if (seen[m]) {
+                err("selector.string.mapping",
+                    "Mapping must be a permutation (axis " + std::to_string(m) +
+                        " is used more than once)");
+            } else {
+                seen[m] = true;
+            }
+        }
     }
 
     // MIDI ranges.
@@ -323,6 +339,23 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
         err("instrument.capo", "Capo must be 0..24");
     if (p.instrument.transpose < -48 || p.instrument.transpose > 48)
         err("instrument.transpose", "Transpose must be within +/-48 semitones");
+    if (p.midi.transpose < -48 || p.midi.transpose > 48)
+        err("midi.transpose", "MIDI transpose must be within +/-48 semitones");
+    // Enum-backed fields must be within their defined range: a JSON import does a
+    // static_cast, so an out-of-range value would reach a switch and hit an
+    // unintended default (audit P1-10).
+    auto enumOk = [&](int v, int maxInclusive, const std::string& field) {
+        if (v < 0 || v > maxInclusive) err(field, "Value is out of range");
+    };
+    enumOk(static_cast<int>(p.instrument.pluckMode), 2, "instrument.pluckMode");
+    enumOk(static_cast<int>(p.midi.velocityCurve), 4, "midi.velocityCurve");
+    enumOk(static_cast<int>(p.midi.saturationStrategy), 5, "midi.saturationStrategy");
+    enumOk(static_cast<int>(p.selector.mode), 2, "selector.mode");
+    enumOk(static_cast<int>(p.selector.notePositionPolicy), 2, "selector.notePositionPolicy");
+    enumOk(static_cast<int>(p.selector.fret.invalidValuePolicy), 3, "selector.fret.invalidValuePolicy");
+    enumOk(static_cast<int>(p.selector.missingSelectionPolicy), 3, "selector.missingSelectionPolicy");
+    enumOk(static_cast<int>(p.selector.expiredSelectionPolicy), 3, "selector.expiredSelectionPolicy");
+
     // Homing back-off must be non-negative.
     for (size_t i = 0; i < p.homing.size(); ++i)
         if (p.homing[i].backoffMm < 0.0)

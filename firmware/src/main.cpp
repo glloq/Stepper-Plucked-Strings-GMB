@@ -16,6 +16,7 @@
 #include <freertos/semphr.h>
 
 #include <atomic>
+#include <cmath>
 #include <vector>
 
 #include "core/configuration/Profile.h"
@@ -421,7 +422,10 @@ void neutraliseAll() {
 
 void doPanic() {
     neutraliseAll();
-    g_safety.panic("web/CC panic", millis());
+    // A hardware E-stop outranks a software panic: never downgrade a latched
+    // EmergencyStop to Panic (audit P1-17). The machine is already neutralised.
+    if (g_safety.state() != SafetyState::EmergencyStop)
+        g_safety.panic("web/CC panic", millis());
 }
 
 // Hardware E-stop: latches the distinct EmergencyStop state (not Panic).
@@ -619,8 +623,10 @@ void tickString(size_t i, uint32_t nowMs) {
     // says it is well away from home is a position/reference fault (lost steps,
     // drift, stuck/inverted sensor) — fault rather than trust a bad coordinate.
     // Positions legitimately near home (open string / low frets) are not faulted.
+    // Home is anchored to 0 mm, so the ABSOLUTE distance from 0 is the mismatch
+    // (the axis coordinate can run negative depending on the homing direction).
     static constexpr double kHomeMismatchMm = 10.0;
-    if (g_steppers.homeActive(i) && g_steppers.positionMm(i) > kHomeMismatchMm) {
+    if (g_steppers.homeActive(i) && std::fabs(g_steppers.positionMm(i)) > kHomeMismatchMm) {
         faultRuntimeAxis(i, "HOME asserted away from home (position drift)", nowMs);
         return;
     }

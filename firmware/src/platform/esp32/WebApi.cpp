@@ -81,6 +81,16 @@ bool fingerDown(StringState s, bool openString) {
     }
 }
 
+const char* safetyStateName(SafetyState s) {
+    switch (s) {
+        case SafetyState::PowerOnSafe:   return "powerOnSafe";
+        case SafetyState::Armed:         return "armed";
+        case SafetyState::Panic:         return "panic";
+        case SafetyState::EmergencyStop: return "emergencyStop";
+        default:                         return "safe";
+    }
+}
+
 const char* midiTypeName(uint8_t type) {
     switch (type) {
         case 0x80: return "noteOff";
@@ -116,7 +126,10 @@ void WebApi::fillStatus(JsonDocument& doc) {
     // run reports the true count.
     doc["stringsReady"] = ctx_.readyStrings ? ctx_.readyStrings() : (armed ? total : 0);
     doc["notesPlaying"] = ctx_.instrument ? ctx_.instrument->soundingCount() : 0;
-    doc["safety"] = armed ? "armed" : "safe";
+    // Full safety state (powerOnSafe / armed / panic / emergencyStop), not just
+    // armed/safe, so the UI can tell a latched panic or E-stop from plain boot.
+    doc["safety"] = ctx_.safety ? safetyStateName(ctx_.safety->state())
+                                : (armed ? "armed" : "safe");
     doc["authConfigured"] = ctx_.authConfigured ? ctx_.authConfigured() : false;
     // The AP is "open" when it is active and NOT WPA2-secured (real password
     // check, not merely whether the auth callback exists).
@@ -133,7 +146,9 @@ void WebApi::fillStatus(JsonDocument& doc) {
     JsonArray strings = doc["strings"].to<JsonArray>();
     if (ctx_.instrument && ctx_.steppers) {
         int8_t capo = ctx_.profile ? ctx_.profile->instrument.capo : 0;
-        int8_t transpose = ctx_.profile ? ctx_.profile->midi.transpose : 0;
+        // Both transposes, matching the selector/allocator (audit P1-15).
+        int transpose = ctx_.profile ? (ctx_.profile->instrument.transpose +
+                                        ctx_.profile->midi.transpose) : 0;
         for (size_t i = 0; i < ctx_.instrument->stringCount(); ++i) {
             const StringController& sc = ctx_.instrument->string(i);
             const StringTarget& tgt = ctx_.instrument->target(i);

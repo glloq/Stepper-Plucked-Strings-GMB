@@ -19,6 +19,15 @@ void MidiWifi::poll(uint32_t nowUs) {
     while (packet > 0 && handled < kMaxPacketsPerTick) {
         IPAddress remoteIp = udp_.remoteIP();
         uint16_t remotePort = udp_.remotePort();
+        // Reject an oversized datagram ENTIRELY: reading only the first
+        // sizeof(buf_) bytes would parse a truncated message (a Note Off past the
+        // buffer would be lost, leaving a note stuck on). Flush and skip it.
+        if (packet > static_cast<int>(sizeof(buf_))) {
+            udp_.flush();
+            ++handled;
+            packet = udp_.parsePacket();
+            continue;
+        }
         int n = udp_.read(buf_, sizeof(buf_));
         if (n > 0) {
             // Each UDP datagram is self-contained: drop any running status or

@@ -51,6 +51,31 @@ TEST(explicit_cc_selects_string_and_fret) {
     CHECK_EQ((int)r.fret, 5);
 }
 
+// LastValid is per-channel: a valid selection on channel 0 must not be reused as
+// the LastValid fallback for channel 1 (audit P1-5).
+TEST(last_valid_is_per_channel) {
+    StringFretSelector sel;
+    SelectorConfig cfg;
+    cfg.mode = SelectionMode::Explicit;
+    cfg.perMidiChannel = true;
+    cfg.string.maximum = 4;
+    cfg.fret.maximum = 12;
+    cfg.missingSelectionPolicy = InvalidValuePolicy::LastValid;
+    sel.configure(cfg);
+    sel.setInstrument(makeView4());
+
+    // Channel 0 makes a full valid selection -> sets channel 0's LastValid.
+    sel.onControlChange(cc(0, 20, 3, 0));
+    sel.onControlChange(cc(0, 21, 5, 1));
+    NoteResolution r0 = sel.onNoteOn(noteOn(0, 69, 100, 2), 3);
+    CHECK(r0.source == ResolveSource::Explicit);
+
+    // Channel 1 has NO selection: LastValid must not borrow channel 0's pair, so
+    // it falls back to automatic instead of an explicit channel-0 assignment.
+    NoteResolution r1 = sel.onNoteOn(noteOn(1, 62, 100, 10), 11);
+    CHECK(r1.source == ResolveSource::Automatic);
+}
+
 // Acceptance criteria 11, 12: chord selections stay in a FIFO, not last-wins.
 TEST(chord_selections_are_fifo) {
     StringFretSelector sel;
