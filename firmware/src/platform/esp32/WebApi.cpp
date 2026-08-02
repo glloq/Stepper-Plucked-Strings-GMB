@@ -256,6 +256,37 @@ void WebApi::registerRoutes() {
     saveProfile->setMethod(HTTP_POST);
     server_->addHandler(saveProfile);
 
+    // ---- POST /api/profiles/load (activate a stored slot) ----
+    auto* loadProfile = new AsyncCallbackJsonWebHandler(
+        "/api/profiles/load", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            JsonDocument doc;
+            int slot = body["slot"] | -1;
+            Profile p;
+            if (slot < 0 || !ctx_.storage || !ctx_.storage->load(slot, p)) {
+                doc["ok"] = false;
+                doc["error"] = "slot not found";
+                sendJson(req, doc, 404);
+                return;
+            }
+            bool applied = ctx_.onActivateProfile && ctx_.onActivateProfile(p);
+            doc["ok"] = applied;
+            sendJson(req, doc, applied ? 200 : 422);
+        });
+    loadProfile->setMethod(HTTP_POST);
+    server_->addHandler(loadProfile);
+
+    // ---- POST /api/profiles/delete ----
+    auto* deleteProfile = new AsyncCallbackJsonWebHandler(
+        "/api/profiles/delete", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            JsonDocument doc;
+            int slot = body["slot"] | -1;
+            bool ok = slot >= 0 && ctx_.storage && ctx_.storage->remove(slot);
+            doc["ok"] = ok;
+            sendJson(req, doc, ok ? 200 : 400);
+        });
+    deleteProfile->setMethod(HTTP_POST);
+    server_->addHandler(deleteProfile);
+
     // ---- POST /api/test/note (Note On + scheduled Note Off, Ready only) ----
     auto* testNote = new AsyncCallbackJsonWebHandler(
         "/api/test/note", [this](AsyncWebServerRequest* req, JsonVariant& body) {
