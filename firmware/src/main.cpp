@@ -687,10 +687,16 @@ void loop() {
     }
     wasConnected = nowConnected;
 
-    // Hardware E-stop (active-low), debounced to avoid a spurious trip.
+    // Hardware E-stop (active-low). An E-stop must assert IMMEDIATELY: trip on the
+    // raw press this instant (a false trip only fails safe), and use the debounced
+    // level solely to filter the RELEASE so contact bounce can't un-latch it.
+    // (This remains a software safety, not a substitute for a hardware cut of the
+    // driver ENABLE / motor power.)
     if (g_estopPin >= 0) {
-        bool pressed = !g_estopDeb.update(nowMs, digitalRead(g_estopPin) == HIGH);
-        if (pressed && g_safety.state() != SafetyState::EmergencyStop) {
+        bool rawPressed = digitalRead(g_estopPin) == LOW;
+        bool debouncedPressed = !g_estopDeb.update(nowMs, digitalRead(g_estopPin) == HIGH);
+        if ((rawPressed || debouncedPressed) &&
+            g_safety.state() != SafetyState::EmergencyStop) {
             doEmergencyStop();
         }
     }
