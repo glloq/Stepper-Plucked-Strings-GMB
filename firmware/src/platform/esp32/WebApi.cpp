@@ -32,24 +32,24 @@ void sendJson(AsyncWebServerRequest* req, JsonDocument& doc, int code = 200) {
 
 void WebApi::begin(const WebContext& ctx, uint16_t port) {
     ctx_ = ctx;
-    server_ = AsyncWebServer(port);
+    if (server_ == nullptr) server_ = new AsyncWebServer(port);
     registerRoutes();
 
     statusWs_.onEvent([](AsyncWebSocket*, AsyncWebSocketClient*, AwsEventType,
                          void*, uint8_t*, size_t) {});
     midiWs_.onEvent([](AsyncWebSocket*, AsyncWebSocketClient*, AwsEventType, void*,
                        uint8_t*, size_t) {});
-    server_.addHandler(&statusWs_);
-    server_.addHandler(&midiWs_);
+    server_->addHandler(&statusWs_);
+    server_->addHandler(&midiWs_);
 
-    // Static UI from LittleFS (uploaded from web-interface/).
-    server_.serveStatic("/", LittleFS, "/www/").setDefaultFile("index.html");
-    server_.begin();
+    // Static UI from LittleFS (uploaded from web-interface/ via data/www).
+    server_->serveStatic("/", LittleFS, "/www/").setDefaultFile("index.html");
+    server_->begin();
 }
 
 void WebApi::registerRoutes() {
     // ---- GET /api/status ----
-    server_.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest* req) {
+    server_->on("/api/status", HTTP_GET, [this](AsyncWebServerRequest* req) {
         JsonDocument doc;
         doc["wifi"] = ctx_.net ? ctx_.net->mode() : "unknown";
         doc["ip"] = ctx_.net ? ctx_.net->ipAddress() : "";
@@ -74,7 +74,7 @@ void WebApi::registerRoutes() {
     });
 
     // ---- GET /api/board/{id} ----
-    server_.on("/api/board/esp32-s3-devkitc-1", HTTP_GET,
+    server_->on("/api/board/esp32-s3-devkitc-1", HTTP_GET,
                [](AsyncWebServerRequest* req) {
         const BoardProfile* b = builtinBoardProfile("esp32-s3-devkitc-1");
         JsonDocument doc;
@@ -96,7 +96,7 @@ void WebApi::registerRoutes() {
     });
 
     // ---- POST /api/pins/auto ----
-    server_.on("/api/pins/auto", HTTP_POST, [this](AsyncWebServerRequest* req) {
+    server_->on("/api/pins/auto", HTTP_POST, [this](AsyncWebServerRequest* req) {
         const BoardProfile* b = builtinBoardProfile("esp32-s3-devkitc-1");
         PinManager pm(*b);
         PinRequest r;
@@ -114,7 +114,7 @@ void WebApi::registerRoutes() {
     });
 
     // ---- POST /api/panic ----
-    server_.on("/api/panic", HTTP_POST, [this](AsyncWebServerRequest* req) {
+    server_->on("/api/panic", HTTP_POST, [this](AsyncWebServerRequest* req) {
         if (ctx_.onPanic) ctx_.onPanic();
         JsonDocument doc;
         doc["ok"] = true;
@@ -122,7 +122,7 @@ void WebApi::registerRoutes() {
     });
 
     // ---- GET /api/capabilities ----
-    server_.on("/api/capabilities", HTTP_GET, [this](AsyncWebServerRequest* req) {
+    server_->on("/api/capabilities", HTTP_GET, [this](AsyncWebServerRequest* req) {
         JsonDocument doc;
         if (ctx_.sysex) {
             const CapabilitySnapshot& s = ctx_.sysex->snapshot();
@@ -141,7 +141,7 @@ void WebApi::registerRoutes() {
     });
 
     // ---- GET /api/profile ----
-    server_.on("/api/profile", HTTP_GET, [this](AsyncWebServerRequest* req) {
+    server_->on("/api/profile", HTTP_GET, [this](AsyncWebServerRequest* req) {
         JsonDocument doc;
         if (ctx_.profile) ProfileStorage::toJson(*ctx_.profile, doc);
         sendJson(req, doc);

@@ -73,12 +73,22 @@ sélection corde/frette, accords, homing, machine d'état, SysEx…).
 
 ## Construire le firmware ESP32-S3
 
+Le firmware se construit **au choix avec PlatformIO ou l'IDE Arduino** — même
+code source.
+
+**PlatformIO :**
+
 ```bash
 cd firmware
+./sync_web_data.sh          # copie web-interface/ vers data/www
 pio run                     # build (env esp32-s3-devkitc-1)
-pio run -t uploadfs         # téléverser web-interface/ vers LittleFS (/www)
+pio run -t uploadfs         # téléverser l'interface Web vers LittleFS (/www)
 pio run -t upload           # flasher le firmware
 ```
+
+**IDE Arduino :** ouvrez `firmware/firmware.ino`. Le dossier `src/` est compilé
+récursivement. Voir le guide complet (cartes, bibliothèques, LittleFS) :
+[`docs/ARDUINO_IDE.md`](docs/ARDUINO_IDE.md).
 
 Au premier démarrage, l'ESP32 crée le point d'accès
 `Stepper-Plucked-Strings-GMB` ; connectez-vous et ouvrez son adresse locale

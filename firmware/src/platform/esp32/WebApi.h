@@ -39,7 +39,9 @@ public:
 private:
     WebContext ctx_;
 #if defined(ARDUINO)
-    AsyncWebServer server_{80};
+    // AsyncWebServer is non-copyable, so it is allocated in begin() to honour the
+    // chosen port (it lives for the whole program).
+    AsyncWebServer* server_ = nullptr;
     AsyncWebSocket statusWs_{"/ws/status"};
     AsyncWebSocket midiWs_{"/ws/midi"};
     void registerRoutes();
