@@ -84,7 +84,8 @@ HomingCommand HomingController::update(uint32_t nowMs, bool rawSensor,
         case HomingState::Backoff: {
             if (timedOut(nowMs)) return fail(HomingFault::Timeout);
             bool reached = std::fabs(currentPosMm - backoffTargetMm_) < 0.05;
-            if (reached) {
+            // Wait for a real standstill before reversing into the slow seek.
+            if (reached && !isMoving) {
                 if (sensor) return fail(HomingFault::SensorNotReleased);
                 state_ = HomingState::SeekSlow;
                 return {MoveKind::MoveVelocity, cfg_.slowSpeedMmS * dir, 0.0};
@@ -125,7 +126,9 @@ HomingCommand HomingController::update(uint32_t nowMs, bool rawSensor,
 
         case HomingState::MoveToOffset: {
             if (timedOut(nowMs)) return fail(HomingFault::Timeout);
-            if (std::fabs(currentPosMm - offsetTargetMm_) < 0.05) {
+            // Only declare Ready once the motor has actually stopped, so the
+            // coordinate reference is set on a stationary axis.
+            if (std::fabs(currentPosMm - offsetTargetMm_) < 0.05 && !isMoving) {
                 state_ = HomingState::Ready;
                 return {MoveKind::Stop, 0.0, 0.0};
             }

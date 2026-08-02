@@ -22,6 +22,8 @@ public:
 
     bool connected() const { return connected_; }
     bool accessPointActive() const { return apActive_; }
+    // True only when the AP is up AND protected by a WPA2 password (>= 8 chars).
+    bool accessPointSecured() const { return apActive_ && apPassword_.size() >= 8; }
     std::string ipAddress() const { return ip_; }
     std::string mode() const { return apActive_ ? "accessPoint" : "station"; }
 

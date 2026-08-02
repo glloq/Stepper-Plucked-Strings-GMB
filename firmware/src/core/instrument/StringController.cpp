@@ -69,7 +69,12 @@ void StringController::dampingDone() {
 }
 
 void StringController::panic() {
-    if (state_ == StringState::Disabled) return;
+    // A disabled or faulted axis stays out of service — a panic (CC120/123,
+    // Wi-Fi loss, software panic) must never resurrect it to Idle.
+    if (state_ == StringState::Disabled || state_ == StringState::Fault) {
+        invalidate();
+        return;
+    }
     invalidate();
     state_ = StringState::Idle;
 }

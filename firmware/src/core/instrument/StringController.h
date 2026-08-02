@@ -35,7 +35,11 @@ public:
 
     void enable() { if (state_ == StringState::Disabled) state_ = StringState::Idle; }
     void disable() { state_ = StringState::Disabled; invalidate(); }
-    void setHoming() { state_ = StringState::Homing; }
+    // A disabled or faulted axis must never be dragged into homing.
+    void setHoming() {
+        if (state_ != StringState::Disabled && state_ != StringState::Fault)
+            state_ = StringState::Homing;
+    }
     void homingDone() { if (state_ == StringState::Homing) state_ = StringState::Idle; }
     void fault() { state_ = StringState::Fault; invalidate(); }
 

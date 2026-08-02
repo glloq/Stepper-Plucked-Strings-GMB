@@ -46,9 +46,11 @@ WebApi g_web;
 enum class AppPhase { Boot, Homing, Ready };
 AppPhase g_phase = AppPhase::Boot;
 bool g_degraded = false;  // Ready but with one or more axes disabled by a fault
+uint32_t g_lastSharedStrumMs = 0;  // dedupe the shared strummer within a chord
 
 std::vector<HomingController> g_homing;
 std::vector<bool> g_anchored;
+std::vector<bool> g_axisFaulted;  // runtime fault (homing fail, LIMIT, etc.)
 
 int8_t g_estopPin = -1;
 
@@ -58,7 +60,8 @@ TestNoteOff g_testOff;
 
 // Per-string non-blocking playback scheduler.
 struct StringSched {
-    enum Phase { Idle, MovingToFret, PressingFinger, Settling, Ready } phase = Idle;
+    enum Phase { Idle, ReleasingFinger, MovingToFret, PressingFinger, Settling, Ready }
+        phase = Idle;
     uint32_t phaseStartMs = 0;
     uint32_t commandId = 0;
     int fingerIndex = -1;
@@ -104,9 +107,48 @@ void applyProfile() {
 
     g_homing.assign(g_profile.strings.size(), HomingController{});
     g_anchored.assign(g_profile.strings.size(), false);
+    g_axisFaulted.assign(g_profile.strings.size(), false);
     for (size_t i = 0; i < g_profile.strings.size(); ++i) {
         if (i < g_profile.homing.size()) g_homing[i].configure(g_profile.homing[i]);
     }
+
+    // The E-stop pin belongs to the (possibly new) profile — re-resolve it here
+    // so a profile change updates which pin is monitored.
+    g_estopPin = pinOf("ESTOP");
+    if (g_estopPin >= 0) pinMode(g_estopPin, INPUT_PULLUP);
+}
+
+// Rebuild the capability snapshot from a runtime copy of the profile that
+// excludes every disabled or runtime-faulted axis, and update g_degraded.
+// Returns the number of playable axes.
+int rebuildRuntimeCapabilities() {
+    Profile rp = g_profile;
+    int originallyEnabled = 0, ready = 0;
+    for (size_t i = 0; i < rp.strings.size(); ++i) {
+        if (g_profile.strings[i].enabled) ++originallyEnabled;
+        if (!rp.strings[i].enabled || (i < g_axisFaulted.size() && g_axisFaulted[i]))
+            rp.strings[i].enabled = false;
+        else
+            ++ready;
+    }
+    g_degraded = ready < originallyEnabled;
+    g_profile.capabilitiesRevision++;
+    rp.capabilitiesRevision = g_profile.capabilitiesRevision;
+    g_sysex.rebuild(rp);
+    return ready;
+}
+
+// Central runtime axis-fault path (LIMIT, motor/servo error, homing failure).
+void faultRuntimeAxis(size_t i, const char* reason, uint32_t nowMs) {
+    if (i >= g_instrument.stringCount()) return;
+    g_steppers.emergencyStop(i);
+    g_instrument.faultString(i);
+    if (i < g_sched.size()) g_sched[i] = StringSched{};
+    if (i < g_anchored.size()) g_anchored[i] = false;
+    if (i < g_axisFaulted.size()) g_axisFaulted[i] = true;
+    g_safety.recordFault("axis", std::string(reason) + " on axis " + std::to_string(i),
+                         nowMs);
+    rebuildRuntimeCapabilities();
 }
 
 bool safetyLocked() {
@@ -136,9 +178,13 @@ bool beginHoming(uint32_t nowMs) {
     g_steppers.enableDrivers(true);
     g_servos.outputEnable(true);   // servos hold their rest position (fingers up)
     for (size_t i = 0; i < g_homing.size(); ++i) {
+        g_anchored[i] = false;
+        if (!g_profile.strings[i].enabled) {
+            g_instrument.string(i).disable();  // never home a disabled axis
+            continue;
+        }
         g_instrument.string(i).setHoming();
         g_homing[i].start(nowMs);
-        g_anchored[i] = false;
     }
     g_phase = AppPhase::Homing;
     return true;
@@ -167,10 +213,13 @@ bool doReset(uint32_t nowMs) {
 
 void doHoming(uint32_t nowMs) {
     bool allDone = true;
-    int faulted = 0;
+    int active = 0, faulted = 0;
     for (size_t i = 0; i < g_homing.size(); ++i) {
+        if (!g_profile.strings[i].enabled) continue;  // disabled axes are skipped
+        ++active;
         if (g_homing[i].failed()) {
             g_instrument.faultString(i);  // remove from allocator + selection too
+            g_axisFaulted[i] = true;
             g_steppers.stop(i);
             ++faulted;
             continue;
@@ -194,28 +243,27 @@ void doHoming(uint32_t nowMs) {
             case MoveKind::MoveTo: g_steppers.moveToMmRaw(i, cmd.targetMm); break;
         }
     }
-    if (allDone) {
-        g_phase = AppPhase::Ready;
-        g_safety.arm(true, true);  // profile already validated before homing
-        // Degraded run (cahier des charges §13.2): some axes failed homing.
-        // Announce the reduced polyphony so General-Midi-Boop stops sending notes
-        // the instrument can no longer play, and bump the capabilities revision.
-        g_degraded = faulted > 0;
-        if (g_degraded) {
-            // Recompute the FULL capability snapshot from a reduced runtime copy
-            // of the profile (faulted axes disabled) so the announced range,
-            // discrete notes, string count, tuning, frets and polyphony all
-            // reflect only the axes that actually work.
-            Profile rp = g_profile;
-            for (size_t i = 0; i < g_homing.size() && i < rp.strings.size(); ++i)
-                if (g_homing[i].failed()) rp.strings[i].enabled = false;
-            g_profile.capabilitiesRevision++;
-            rp.capabilitiesRevision = g_profile.capabilitiesRevision;
-            g_sysex.rebuild(rp);
-            g_safety.recordFault("homing",
-                                 std::to_string(faulted) + " axis/axes failed homing "
-                                 "(degraded run)", nowMs);
-        }
+    if (!allDone) return;
+
+    // Refuse to arm with zero working axes: neutralise and stay safely in Boot.
+    if (active - faulted <= 0) {
+        g_steppers.enableDrivers(false);
+        g_servos.neutraliseAll();
+        g_safety.recordFault("homing", "no axis could be homed — not arming", nowMs);
+        g_phase = AppPhase::Boot;
+        return;
+    }
+
+    g_phase = AppPhase::Ready;
+    g_safety.arm(true, true);  // profile already validated before homing
+    if (faulted > 0) {
+        // Announce only the axes that actually work (cahier des charges §13.2).
+        rebuildRuntimeCapabilities();
+        g_safety.recordFault("homing",
+                             std::to_string(faulted) + " axis/axes failed homing "
+                             "(degraded run)", nowMs);
+    } else {
+        g_degraded = false;
     }
 }
 
@@ -247,7 +295,9 @@ void tickString(size_t i, uint32_t nowMs) {
 
     if (!tgt.active) {
         if (sch.phase != StringSched::Idle) {
-            // Note released: lift the finger and pulse the damper.
+            // Note released / cancelled: STOP the carriage (a Note Off during a
+            // move must not let it finish travelling), lift the finger, damp.
+            g_steppers.stop(i);
             int fi = g_servos.fingerIndex(static_cast<int>(i));
             if (fi >= 0) g_servos.release(fi);
             int di = g_servos.damperIndex(static_cast<int>(i));
@@ -259,29 +309,33 @@ void tickString(size_t i, uint32_t nowMs) {
         return;
     }
 
-    if (sch.commandId != tgt.commandId) {
-        // New note: lift the finger BEFORE moving the carriage (cahier §16).
-        sch.commandId = tgt.commandId;
-        sch.fingerIndex = g_servos.fingerIndex(static_cast<int>(i));
-        if (sch.fingerIndex >= 0) g_servos.release(sch.fingerIndex);
-        g_steppers.moveToMm(i, tgt.positionMm);
-        sch.phase = StringSched::MovingToFret;
-        sch.phaseStartMs = nowMs;
-    }
-
-    // A LIMIT switch tripped during a move faults this axis without disturbing
-    // the others (cahier des charges §13.2).
+    // A LIMIT switch tripped faults this axis and removes it from service
+    // (allocator + selection + capabilities), without disturbing the others.
     if (g_steppers.limitActive(i)) {
-        g_steppers.emergencyStop(i);   // immediate hard stop, not a decel
-        sc.fault();
-        g_anchored[i] = false;         // position invalid: require a re-home
-        g_safety.recordFault("limit", "LIMIT tripped on axis " + std::to_string(i),
-                             nowMs);
-        sch.phase = StringSched::Idle;
+        faultRuntimeAxis(i, "LIMIT tripped", nowMs);
         return;
     }
 
+    if (sch.commandId != tgt.commandId) {
+        // New note: lift the finger and WAIT for it to travel up before moving
+        // the carriage, so the finger never drags along the string (§16).
+        sch.commandId = tgt.commandId;
+        sch.fingerIndex = g_servos.fingerIndex(static_cast<int>(i));
+        if (sch.fingerIndex >= 0) g_servos.release(sch.fingerIndex);
+        sch.phase = StringSched::ReleasingFinger;
+        sch.phaseStartMs = nowMs;
+    }
+
     switch (sch.phase) {
+        case StringSched::ReleasingFinger:
+            // Only start moving once the finger has had time to lift.
+            if (sch.fingerIndex < 0 ||
+                nowMs - sch.phaseStartMs >= g_servos.travelMs(sch.fingerIndex)) {
+                g_steppers.moveToMm(i, tgt.positionMm);
+                sch.phase = StringSched::MovingToFret;
+                sch.phaseStartMs = nowMs;
+            }
+            break;
         case StringSched::MovingToFret:
             if (g_steppers.atTarget(i)) {
                 sc.motionReached();
@@ -309,12 +363,24 @@ void tickString(size_t i, uint32_t nowMs) {
             break;
         case StringSched::Ready:
             if (sc.pluckArmed() && sc.executePluck(tgt.commandId)) {
-                // Individual plectrum if present, otherwise the shared strummer
-                // (pluckMode Individual / SharedStrum / Both). Velocity shapes
-                // the strike depth.
+                PluckMode mode = g_profile.instrument.pluckMode;
                 int pi = g_servos.pluckIndex(static_cast<int>(i));
-                if (pi < 0) pi = g_servos.sharedStrumIndex();
-                if (pi >= 0) g_servos.strike(pi, tgt.intensity);
+                bool doIndividual = (mode == PluckMode::Individual ||
+                                     mode == PluckMode::Both) && pi >= 0;
+                // Shared strummer for the shared modes, or as a fallback when a
+                // string has no individual plectrum.
+                bool doShared = (mode == PluckMode::SharedStrum ||
+                                 mode == PluckMode::Both) || pi < 0;
+                if (doIndividual) g_servos.strike(pi, tgt.intensity);
+                if (doShared) {
+                    int si = g_servos.sharedStrumIndex();
+                    // One sweep per chord: dedupe strikes within a short window.
+                    static constexpr uint32_t kStrumDedupeMs = 30;
+                    if (si >= 0 && nowMs - g_lastSharedStrumMs >= kStrumDedupeMs) {
+                        g_servos.strike(si, tgt.intensity);
+                        g_lastSharedStrumMs = nowMs;
+                    }
+                }
             }
             break;
         case StringSched::Idle:
@@ -334,11 +400,7 @@ void setup() {
     }
 
     bool valid = ProfileValidator::isActivatable(g_profile);
-    applyProfile();
-
-    // Optional hardware E-stop input (cahier des charges §21.2).
-    g_estopPin = pinOf("ESTOP");
-    if (g_estopPin >= 0) pinMode(g_estopPin, INPUT_PULLUP);
+    applyProfile();  // also resolves the E-stop pin from the profile
 
     // Wi-Fi secrets live in NVS, never in the exportable profile (§20).
     Preferences prefs;
@@ -415,9 +477,19 @@ void setup() {
         // Refuse to (re)start motion while a panic / E-stop is latched; the user
         // must explicitly reset first (POST /api/reset).
         if (safetyLocked()) return false;
+        // Bring the machine to a full stop BEFORE tearing down the old profile:
+        // stop every stepper, disable the drivers and cut the servos so the old
+        // hardware engine holds no pending motion while structures are rebuilt.
+        g_instrument.panic();
+        g_steppers.stopAll();
+        g_steppers.enableDrivers(false);
+        g_servos.neutraliseAll();
+        for (auto& s : g_sched) s = StringSched{};
+        g_phase = AppPhase::Boot;
+
         g_profile = p;
         g_profile.capabilitiesRevision++;
-        applyProfile();
+        applyProfile();  // re-resolves pins incl. ESTOP, reinitialises hardware
         g_sysex.rebuild(g_profile);
         return beginHoming(millis());  // re-home after a mechanical change (§16)
     };
@@ -443,6 +515,7 @@ void loop() {
     bool nowConnected = g_net.connected() && !g_net.accessPointActive();
     if (wasConnected && !nowConnected && g_phase == AppPhase::Ready) {
         g_instrument.panic();  // flushes queue + releases active notes
+        g_steppers.stopAll();  // and stop any carriage still in motion
         g_safety.recordFault("wifi", "Wi-Fi link lost — pending commands cancelled",
                              nowMs);
     }
@@ -464,17 +537,18 @@ void loop() {
         g_testOff.armed = false;
     }
 
-    // Ingest Wi-Fi MIDI. SysEx is always answered; notes only play once Ready.
+    // Ingest Wi-Fi MIDI (bounded per tick). SysEx is always answered to its own
+    // sender; notes only play once Ready.
     g_midi.poll(nowUs);
-    for (auto& e : g_midi.parser().events()) {
+    for (auto& e : g_midi.events()) {
         g_web.broadcastMidi(e);  // feed the Web MIDI monitor (all phases)
         if (g_phase == AppPhase::Ready) g_instrument.handleEvent(e, nowUs);
     }
-    for (auto& msg : g_midi.parser().sysex()) {
-        auto resp = g_sysex.handleMessage(msg.data(), msg.size(), nowMs);
-        if (!resp.empty()) g_midi.send(resp.data(), resp.size());
+    for (auto& sx : g_midi.sysexPackets()) {
+        auto resp = g_sysex.handleMessage(sx.bytes.data(), sx.bytes.size(), nowMs);
+        if (!resp.empty()) g_midi.reply(sx, resp.data(), resp.size());
     }
-    g_midi.parser().clear();
+    g_midi.clear();
 
     g_instrument.tick(nowUs);   // flush chord groups
     g_servos.update(nowMs);     // scheduled servo returns / rest cut-off

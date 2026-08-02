@@ -12,12 +12,31 @@ void MidiWifi::begin(uint16_t port) {
 
 void MidiWifi::poll(uint32_t nowUs) {
 #if defined(ARDUINO)
+    // Process at most kMaxPacketsPerTick packets this pass so a flood cannot
+    // stall the control loop; the rest wait for the next poll().
     int packet = udp_.parsePacket();
-    while (packet > 0) {
-        lastRemoteIp_ = udp_.remoteIP();
-        lastRemotePort_ = udp_.remotePort();
+    int handled = 0;
+    while (packet > 0 && handled < kMaxPacketsPerTick) {
+        IPAddress remoteIp = udp_.remoteIP();
+        uint16_t remotePort = udp_.remotePort();
         int n = udp_.read(buf_, sizeof(buf_));
-        if (n > 0) parser_.feed(buf_, static_cast<size_t>(n), nowUs);
+        if (n > 0) {
+            parser_.feed(buf_, static_cast<size_t>(n), nowUs);
+            // Move decoded events out (bounded).
+            for (auto& e : parser_.events()) {
+                if (events_.size() < kMaxEventsPerTick) events_.push_back(e);
+            }
+            // Tag each SysEx from THIS packet with THIS sender.
+            for (auto& s : parser_.sysex()) {
+                SysExPacket p;
+                p.bytes = s;
+                p.ip = remoteIp;
+                p.port = remotePort;
+                sysex_.push_back(p);
+            }
+            parser_.clear();
+        }
+        ++handled;
         packet = udp_.parsePacket();
     }
 #else
@@ -25,13 +44,14 @@ void MidiWifi::poll(uint32_t nowUs) {
 #endif
 }
 
-void MidiWifi::send(const uint8_t* data, size_t len) {
+void MidiWifi::reply(const SysExPacket& to, const uint8_t* data, size_t len) {
 #if defined(ARDUINO)
-    if (lastRemotePort_ == 0) return;
-    udp_.beginPacket(lastRemoteIp_, lastRemotePort_);
+    if (to.port == 0) return;
+    udp_.beginPacket(to.ip, to.port);
     udp_.write(data, len);
     udp_.endPacket();
 #else
+    (void)to;
     (void)data;
     (void)len;
 #endif

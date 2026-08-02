@@ -40,6 +40,7 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
         else ++directServos;
     }
     for (size_t i = 0; i < p.strings.size(); ++i) {
+        if (!p.strings[i].enabled) continue;  // a disabled axis needs no pins
         std::string n = std::to_string(i + 1);
         if (!hasPin("STEP" + n)) err("pins.STEP" + n, "STEP pin is required for this axis");
         if (!hasPin("DIR" + n)) err("pins.DIR" + n, "DIR pin is required for this axis");
@@ -193,7 +194,8 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
                           p.instrument.pluckMode == PluckMode::Both;
         if (needIndividual) {
             for (size_t i = 0; i < p.strings.size(); ++i)
-                if (!hasServoRole("pluck", static_cast<int>(i)))
+                if (p.strings[i].enabled &&
+                    !hasServoRole("pluck", static_cast<int>(i)))
                     err("servos.pluck",
                         "String " + std::to_string(i) +
                             " needs a pluck servo for the individual pluck mode");
@@ -218,8 +220,34 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
         err("selector.cc", "String and fret CC numbers must differ");
     if (s.selectionTimeoutMs < 5 || s.selectionTimeoutMs > 2000)
         err("selector.timeout", "Selection timeout must be 5..2000 ms");
-    if (s.queueDepth < 16)
-        err("selector.queueDepth", "Selection queue must hold at least 16 entries");
+    if (s.queueDepth < 16 || s.queueDepth > 256)
+        err("selector.queueDepth", "Selection queue depth must be 16..256");
+    if (s.string.minimum > s.string.maximum)
+        err("selector.string.range", "String CC minimum must be <= maximum");
+    if (s.fret.minimum > s.fret.maximum)
+        err("selector.fret.range", "Fret CC minimum must be <= maximum");
+    // Custom string mapping, when present, must be one entry per string and each
+    // must reference a valid axis.
+    if (!s.string.mapping.empty()) {
+        if (s.string.mapping.size() != p.strings.size())
+            err("selector.string.mapping", "Mapping must have one entry per string");
+        for (int8_t m : s.string.mapping)
+            if (m < 0 || m >= static_cast<int>(p.strings.size()))
+                err("selector.string.mapping", "Mapping references a non-existent axis");
+    }
+
+    // MIDI ranges.
+    if (p.midi.sustainCc > kMaxAssignableCc)
+        err("midi.sustainCc", "Sustain CC must be 0..119");
+    if (p.instrument.capo < 0 || p.instrument.capo > 24)
+        err("instrument.capo", "Capo must be 0..24");
+    if (p.instrument.transpose < -48 || p.instrument.transpose > 48)
+        err("instrument.transpose", "Transpose must be within +/-48 semitones");
+    // Homing back-off must be non-negative.
+    for (size_t i = 0; i < p.homing.size(); ++i)
+        if (p.homing[i].backoffMm < 0.0)
+            err("strings[" + std::to_string(i) + "].homing.backoff",
+                "Homing back-off distance must be >= 0");
 
     // Fret CC max should not exceed the instrument's playable frets.
     uint8_t maxFret = 0;
