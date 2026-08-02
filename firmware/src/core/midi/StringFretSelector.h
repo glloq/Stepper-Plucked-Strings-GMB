@@ -112,6 +112,7 @@ struct CompletedSelection {
     uint8_t midiChannel = 0;
     uint8_t stringIndex = 0;  // physical axis (already mapped, range-checked)
     uint8_t fret = 0;
+    uint32_t expiresAtUs = 0; // same expiry as the pending selection it came from
 };
 
 enum class ResolveSource : uint8_t { Explicit, Automatic, Rejected };

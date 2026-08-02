@@ -50,6 +50,7 @@ public:
   String(int v) : s_(std::to_string(v)) {}
   const char* c_str() const { return s_.c_str(); }
   size_t length() const { return s_.size(); }
+  long toInt() const { return s_.empty() ? 0 : std::stol(s_); }
   bool concat(const char* s) { s_ += (s ? s : ""); return true; }
   bool concat(const String& o) { s_ += o.s_; return true; }
   String operator+(const String& o) const { return String(s_ + o.s_); }

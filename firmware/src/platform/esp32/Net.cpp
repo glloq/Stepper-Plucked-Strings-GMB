@@ -24,18 +24,29 @@ bool Net::begin(const NetworkConfig& cfg, const std::string& stationPassword,
     return true;
 }
 
-void Net::startAccessPoint() {
+void Net::startAccessPoint(bool fallback) {
+    apIsFallback_ = fallback;
 #if defined(ARDUINO)
     WiFi.mode(WIFI_AP);
-    // WPA2 when a password (>= 8 chars) is set, otherwise an open AP.
-    if (apPassword_.size() >= 8) WiFi.softAP(cfg_.apSsid.c_str(), apPassword_.c_str());
-    else WiFi.softAP(cfg_.apSsid.c_str());
-    ip_ = WiFi.softAPIP().toString().c_str();
+    // WPA2 when a password (>= 8 chars) is set, otherwise an open AP. Honour the
+    // softAP() return: a failed AP must NOT be reported as connected.
+    bool ok = (apPassword_.size() >= 8)
+                  ? WiFi.softAP(cfg_.apSsid.c_str(), apPassword_.c_str())
+                  : WiFi.softAP(cfg_.apSsid.c_str());
+    if (ok) {
+        ip_ = WiFi.softAPIP().toString().c_str();
+        apActive_ = true;
+        connected_ = true;
+    } else {
+        ip_ = "";
+        apActive_ = false;
+        connected_ = false;  // AP creation failed — not usable
+    }
 #else
     ip_ = "192.168.4.1";
-#endif
     apActive_ = true;
     connected_ = true;
+#endif
     connecting_ = false;
 }
 
@@ -65,7 +76,8 @@ bool Net::pollStation(uint32_t nowMs) {
     if (nowMs - attemptStartMs_ > 8000) {
         connecting_ = false;
         if (++failures_ >= 3) {
-            startAccessPoint();  // fall back to AP (cahier des charges §8.1)
+            startAccessPoint(true);  // fall back to AP (cahier des charges §8.1)
+            lastStationRetryMs_ = nowMs;
         }
     }
     return false;
@@ -77,7 +89,18 @@ bool Net::pollStation(uint32_t nowMs) {
 
 void Net::tick(uint32_t nowMs) {
 #if defined(ARDUINO)
-    if (apActive_) return;  // AP mode is stable
+    if (apActive_) {
+        // If the AP is only a FALLBACK (a station was configured but unreachable),
+        // periodically retry the station so a transient router outage recovers.
+        // A primary AP-mode profile stays in AP and never retries.
+        if (apIsFallback_ && cfg_.mode == NetworkMode::Station &&
+            !cfg_.ssid.empty() && nowMs - lastStationRetryMs_ >= 60000) {
+            lastStationRetryMs_ = nowMs;
+            failures_ = 0;
+            beginStationAttempt(nowMs);  // drops the AP while trying; re-falls back
+        }
+        return;
+    }
 
     if (connecting_) {
         pollStation(nowMs);

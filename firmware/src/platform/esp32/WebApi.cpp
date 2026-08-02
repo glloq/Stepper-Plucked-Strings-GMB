@@ -214,17 +214,29 @@ void WebApi::registerRoutes() {
         req->send(200, "application/json", String(s.c_str()));
     });
 
+    // ---- GET /api/commands?id=N (result of a 202-accepted command) ----
+    server_->on("/api/commands", HTTP_GET, [this](AsyncWebServerRequest* req) {
+        JsonDocument doc;
+        uint32_t id = 0;
+        if (req->hasParam("id")) id = req->getParam("id")->value().toInt();
+        doc["id"] = id;
+        // queued / succeeded / refused / unknown (unknown = never issued or aged
+        // out of the small result ring).
+        doc["state"] = ctx_.commandState ? ctx_.commandState(id) : "unknown";
+        sendJson(req, doc);
+    });
+
     // ---- POST /api/reset (recover from panic / E-stop, then re-home) ----
     server_->on("/api/reset", HTTP_POST, [this](AsyncWebServerRequest* req) {
         if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized";
                             sendJson(req, d, 401); return; }
-        bool queued = ctx_.onReset && ctx_.onReset();
+        uint32_t cmdId = ctx_.onReset ? ctx_.onReset() : 0;
+        bool queued = cmdId != 0;
         JsonDocument doc;
         doc["ok"] = queued;
         doc["accepted"] = queued;
-        // The reset is executed by loop(); it may still be refused there (E-stop /
-        // LIMIT active). Poll /api/status for the outcome.
-        doc["note"] = queued ? "reset queued; watch /api/status" : "command queue full";
+        doc["commandId"] = cmdId;  // poll GET /api/commands?id=... for the outcome
+        doc["note"] = queued ? "reset queued" : "command queue full";
         sendJson(req, doc, queued ? 202 : 503);
     });
 
@@ -387,11 +399,12 @@ void WebApi::registerRoutes() {
             }
             // Validated above; the actual activation runs in loop() (motor stop,
             // reconfigure, re-home). Report ACCEPTED, not "done".
-            bool queued = ctx_.onActivateProfile && ctx_.onActivateProfile(p);
+            uint32_t cmdId = ctx_.onActivateProfile ? ctx_.onActivateProfile(p) : 0;
+            bool queued = cmdId != 0;
             doc["ok"] = queued;
             doc["accepted"] = queued;
-            doc["note"] = queued ? "activation queued; watch /api/status"
-                                 : "command queue full";
+            doc["commandId"] = cmdId;
+            doc["note"] = queued ? "activation queued" : "command queue full";
             sendJson(req, doc, queued ? 202 : 503);
         });
     putProfile->setMethod(HTTP_PUT);
@@ -455,11 +468,12 @@ void WebApi::registerRoutes() {
                 sendJson(req, doc, 404);
                 return;
             }
-            bool queued = ctx_.onActivateProfile && ctx_.onActivateProfile(p);
+            uint32_t cmdId = ctx_.onActivateProfile ? ctx_.onActivateProfile(p) : 0;
+            bool queued = cmdId != 0;
             doc["ok"] = queued;
             doc["accepted"] = queued;
-            doc["note"] = queued ? "activation queued; watch /api/status"
-                                 : "invalid profile or queue full";
+            doc["commandId"] = cmdId;
+            doc["note"] = queued ? "activation queued" : "invalid profile or queue full";
             sendJson(req, doc, queued ? 202 : 422);
         });
     loadProfile->setMethod(HTTP_POST);
@@ -507,12 +521,14 @@ void WebApi::registerRoutes() {
         "/api/test/note", [this](AsyncWebServerRequest* req, JsonVariant& body) {
             if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
             JsonDocument doc;
-            bool queued = ctx_.onTestNote &&
-                      ctx_.onTestNote(body["channel"] | 0, body["note"] | 60,
-                                      body["velocity"] | 100, body["durationMs"] | 500);
+            uint32_t cmdId = ctx_.onTestNote
+                ? ctx_.onTestNote(body["channel"] | 0, body["note"] | 60,
+                                  body["velocity"] | 100, body["durationMs"] | 500)
+                : 0;
+            bool queued = cmdId != 0;
             doc["ok"] = queued;
             doc["accepted"] = queued;
-            // Played by loop() only if Ready; watch /api/status for the result.
+            doc["commandId"] = cmdId;
             doc["note"] = queued ? "test note queued" : "command queue full";
             sendJson(req, doc, queued ? 202 : 503);
         });
@@ -534,9 +550,11 @@ void WebApi::registerRoutes() {
             // also rejects an invalid / disabled index.
             int idx = body["index"] | -1;
             bool active = body["active"] | true;
-            bool queued = ctx_.onTestServo && ctx_.onTestServo(idx, active);
+            uint32_t cmdId = ctx_.onTestServo ? ctx_.onTestServo(idx, active) : 0;
+            bool queued = cmdId != 0;
             doc["ok"] = queued;
             doc["accepted"] = queued;
+            doc["commandId"] = cmdId;
             doc["note"] = queued ? "servo test queued" : "command queue full";
             sendJson(req, doc, queued ? 202 : 503);
         });
@@ -610,6 +628,19 @@ void WebApi::registerRoutes() {
         });
     setAuth->setMethod(HTTP_POST);
     server_->addHandler(setAuth);
+
+    // ---- POST /api/storage/format (deliberate LittleFS reformat) ----
+    server_->on("/api/storage/format", HTTP_POST, [this](AsyncWebServerRequest* req) {
+        if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized";
+                            sendJson(req, d, 401); return; }
+        bool ok;
+        { WebStorageLock sl(ctx_);  // serialise with other LittleFS operations
+          ok = ctx_.onFormatStorage && ctx_.onFormatStorage(); }
+        JsonDocument doc;
+        doc["ok"] = ok;
+        if (!ok) doc["error"] = "format failed or unavailable";
+        sendJson(req, doc, ok ? 200 : 500);
+    });
 
     // ---- POST /api/sysex/request (run a SysEx buffer through the service) ----
     auto* sysexReq = new AsyncCallbackJsonWebHandler(

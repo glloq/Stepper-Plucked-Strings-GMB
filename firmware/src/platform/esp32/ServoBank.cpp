@@ -220,6 +220,22 @@ void ServoBank::outputEnable(bool on) {
 #endif
 }
 
+bool ServoBank::pcaHealthy() const {
+#if defined(ARDUINO)
+    if (!pcaUsed_) return true;
+    for (int i = 0; i < kMaxPca; ++i) {
+        if (!pcaPresent_[i]) continue;
+        // The PCA9685 base address is 0x40 + board index. A board that has been
+        // unplugged / lost power no longer ACKs its address.
+        Wire.beginTransmission(static_cast<uint8_t>(0x40 + i));
+        if (Wire.endTransmission() != 0) return false;
+    }
+    return true;
+#else
+    return true;
+#endif
+}
+
 void ServoBank::neutraliseAll() {
     // Immediate hard cut: PCA via /OE, direct servos by cutting their PWM now
     // (do not wait for settleMs), regardless of disableAtRest.

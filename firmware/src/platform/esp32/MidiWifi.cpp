@@ -63,10 +63,28 @@ void MidiWifi::reply(const SysExPacket& to, const uint8_t* data, size_t len) {
     udp_.beginPacket(to.ip, to.port);
     udp_.write(data, len);
     udp_.endPacket();
+    // Remember this host so a later unsolicited notification can reach it.
+    lastSenderIp_ = to.ip;
+    lastSenderPort_ = to.port;
 #else
     (void)to;
     (void)data;
     (void)len;
+    lastSenderPort_ = to.port;
+#endif
+}
+
+bool MidiWifi::notifyLastSender(const uint8_t* data, size_t len) {
+    if (lastSenderPort_ == 0) return false;
+#if defined(ARDUINO)
+    udp_.beginPacket(lastSenderIp_, lastSenderPort_);
+    udp_.write(data, len);
+    udp_.endPacket();
+    return true;
+#else
+    (void)data;
+    (void)len;
+    return true;
 #endif
 }
 

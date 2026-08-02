@@ -38,6 +38,22 @@ TEST(fret_position_theory) {
     CHECK_NEAR(axis.fretPositionMm(0), 0.0, 1e-9);
 }
 
+// A non-zero minimum position offsets every theoretical fret so the nut sits at
+// minPositionMm (the open string and low frets no longer collapse onto it).
+TEST(fret_position_includes_min_offset) {
+    AxisConfig cfg;
+    cfg.scaleLengthMm = 650.0;
+    cfg.minPositionMm = 20.0;
+    StepperAxis axis(cfg);
+    CHECK_NEAR(axis.fretPositionMm(0), 20.0, 1e-9);          // nut at the offset
+    CHECK_NEAR(axis.fretPositionMm(12), 20.0 + 325.0, 1e-6); // + half the scale
+    // Calibrated positions stay absolute (no offset added).
+    AxisConfig cal = cfg;
+    cal.calibratedFretMm = {5.0, 40.0};
+    StepperAxis calAxis(cal);
+    CHECK_NEAR(calAxis.fretPositionMm(1), 40.0, 1e-9);
+}
+
 TEST(calibrated_fret_overrides_theory) {
     AxisConfig cfg;
     cfg.scaleLengthMm = 650.0;

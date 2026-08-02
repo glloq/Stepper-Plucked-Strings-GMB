@@ -91,6 +91,7 @@ struct StringSched {
     uint32_t commandId = 0;
     int fingerIndex = -1;
     uint32_t readySinceMs = 0;  // when this string reached Ready (shared-strum sync)
+    uint32_t dampUntilMs = 0;   // don't move until the damper has acted (replace)
 };
 std::vector<StringSched> g_sched;
 
@@ -106,12 +107,43 @@ std::vector<StringSched> g_sched;
 enum class CmdType : uint8_t { Panic, Reset, ActivateProfile, TestNote, TestServo };
 struct AppCommand {
     CmdType type;
+    uint32_t id = 0;             // for result tracking (GET /api/commands)
     Profile* profile = nullptr;  // owned by the command (ActivateProfile)
     uint8_t channel = 0, note = 0, velocity = 0;
     uint16_t durationMs = 0;
     int16_t servoIndex = -1;
     bool servoActive = false;
 };
+
+// Result registry so a 202-accepted command can be followed up by the web UI:
+// GET /api/commands?id=N reports queued / succeeded / refused (audit P1-18).
+std::atomic<uint32_t> g_nextCmdId{1};
+struct CmdResult { uint32_t id = 0; uint8_t state = 0; };  // 0=queued 1=done 2=refused
+constexpr int kCmdResultRing = 16;
+CmdResult g_cmdResults[kCmdResultRing];
+SemaphoreHandle_t g_resultMutex = nullptr;  // guards the tiny result ring
+
+void setCommandResult(uint32_t id, uint8_t state) {
+    if (id == 0) return;
+    if (g_resultMutex) xSemaphoreTake(g_resultMutex, portMAX_DELAY);
+    for (auto& r : g_cmdResults)  // update in place if already present
+        if (r.id == id) { r.state = state; if (g_resultMutex) xSemaphoreGive(g_resultMutex); return; }
+    // else overwrite the oldest slot (ring)
+    static int next = 0;
+    g_cmdResults[next] = {id, state};
+    next = (next + 1) % kCmdResultRing;
+    if (g_resultMutex) xSemaphoreGive(g_resultMutex);
+}
+
+// "queued" / "succeeded" / "refused" / "unknown" for a command id.
+std::string commandStateStr(uint32_t id) {
+    const char* s = "unknown";
+    if (g_resultMutex) xSemaphoreTake(g_resultMutex, portMAX_DELAY);
+    for (const auto& r : g_cmdResults)
+        if (r.id == id) { s = r.state == 0 ? "queued" : r.state == 1 ? "succeeded" : "refused"; break; }
+    if (g_resultMutex) xSemaphoreGive(g_resultMutex);
+    return s;
+}
 QueueHandle_t g_cmdQueue = nullptr;      // holds AppCommand* pointers
 // In-memory runtime state (profile / sysex snapshot / status). loop() takes this
 // only for short in-memory work — NEVER across a LittleFS write — so the safety
@@ -129,15 +161,19 @@ std::atomic<bool> g_panicRequested{false};
 
 // Enqueue a command (called from the AsyncTCP task). Returns false if the queue
 // is full so the caller can report back-pressure instead of silently dropping.
-bool enqueueCommand(const AppCommand& c) {
-    if (!g_cmdQueue) return false;
+// Returns the assigned command id (0 if the queue is full / unavailable).
+uint32_t enqueueCommand(const AppCommand& in) {
+    if (!g_cmdQueue) return 0;
+    AppCommand c = in;
+    c.id = g_nextCmdId.fetch_add(1);
     AppCommand* h = new AppCommand(c);
     if (xQueueSend(g_cmdQueue, &h, 0) != pdTRUE) {
         delete h->profile;  // transfer failed: don't leak the owned profile
         delete h;
-        return false;
+        return 0;
     }
-    return true;
+    setCommandResult(c.id, 0);  // queued
+    return c.id;
 }
 
 // RAII guard for the shared-state mutex (used by loop() around reloads and by the
@@ -227,6 +263,14 @@ int rebuildRuntimeCapabilities() {
     return ready;
 }
 
+// Push a spontaneous "capabilities changed" SysEx (block 8) to the last host that
+// queried us, so General-MIDI-Boop learns of a runtime change without polling.
+void notifyCapabilitiesChanged() {
+    if (!g_midi.hasLastSender()) return;
+    std::vector<uint8_t> msg = g_sysex.notification(0x01);  // bit0 = caps changed
+    if (!msg.empty()) g_midi.notifyLastSender(msg.data(), msg.size());
+}
+
 void neutraliseAll();  // defined below; needed by faultRuntimeAxis
 
 // Central runtime axis-fault path (LIMIT, motor/servo error, homing failure).
@@ -240,6 +284,7 @@ void faultRuntimeAxis(size_t i, const char* reason, uint32_t nowMs) {
     g_safety.recordFault("axis", std::string(reason) + " on axis " + std::to_string(i),
                          nowMs);
     int working = rebuildRuntimeCapabilities();
+    notifyCapabilitiesChanged();  // push block-8 so GMB learns of the change
     // If the last operational axis just failed, the instrument can no longer play
     // anything: neutralise and latch a panic rather than sitting "armed" with zero
     // strings (which would also emit a bogus 0..0 capability range).
@@ -400,6 +445,7 @@ void doHoming(uint32_t nowMs) {
     if (faulted > 0) {
         // Announce only the axes that actually work (cahier des charges §13.2).
         rebuildRuntimeCapabilities();
+        notifyCapabilitiesChanged();
         g_safety.recordFault("homing",
                              std::to_string(faulted) + " axis/axes failed homing "
                              "(degraded run)", nowMs);
@@ -543,19 +589,21 @@ void drainCommands(uint32_t nowMs) {
     AppCommand* c = nullptr;
     for (int n = 0; n < kMaxCommandsPerTick && xQueueReceive(g_cmdQueue, &c, 0) == pdTRUE;
          ++n) {
+        bool ok = true;
         switch (c->type) {
             case CmdType::Panic: doPanic(); purgeCommands(); break;
-            case CmdType::Reset: doReset(nowMs); break;
+            case CmdType::Reset: ok = doReset(nowMs); break;
             case CmdType::ActivateProfile:
-                if (c->profile) doActivateProfile(*c->profile, nowMs);
+                ok = c->profile && doActivateProfile(*c->profile, nowMs);
                 break;
             case CmdType::TestNote:
-                doTestNote(c->channel, c->note, c->velocity, c->durationMs, nowMs);
+                ok = doTestNote(c->channel, c->note, c->velocity, c->durationMs, nowMs);
                 break;
             case CmdType::TestServo:
-                doTestServo(c->servoIndex, c->servoActive);
+                ok = doTestServo(c->servoIndex, c->servoActive);
                 break;
         }
+        setCommandResult(c->id, ok ? 1 : 2);  // succeeded / refused
         delete c->profile;  // owned copy (null for non-profile commands)
         delete c;
     }
@@ -633,11 +681,16 @@ void tickString(size_t i, uint32_t nowMs) {
 
     if (sch.commandId != tgt.commandId) {
         // New note replacing a previous one on this string (e.g. the allocator's
-        // ReplaceOldest): explicitly damp the still-vibrating string before moving
-        // it, so it is not dragged to a new fret and re-plucked while ringing.
+        // ReplaceOldest): explicitly damp the still-vibrating string AND wait for
+        // the damper's travel/settle before the carriage moves, so a ringing
+        // string is not dragged to a new fret and re-plucked (audit P1-7).
+        sch.dampUntilMs = nowMs;
         if (sch.phase != StringSched::Idle && sch.phase != StringSched::WaitStopped) {
             int di = g_servos.damperIndex(static_cast<int>(i));
-            if (di >= 0) g_servos.strike(di);
+            if (di >= 0) {
+                g_servos.strike(di);
+                sch.dampUntilMs = nowMs + g_servos.travelMs(di) + g_servos.settleMs(di);
+            }
         }
         // Lift the finger and WAIT for it to travel up before moving the carriage,
         // so the finger never drags along the string (§16).
@@ -650,11 +703,12 @@ void tickString(size_t i, uint32_t nowMs) {
 
     switch (sch.phase) {
         case StringSched::ReleasingFinger:
-            // Start moving only once the finger has had time to lift AND the
-            // carriage has fully stopped (a new note arriving during a cancel
-            // deceleration must not issue a moveTo into a moving motor).
+            // Start moving only once the finger has lifted, the damper (if any) has
+            // acted, AND the carriage has fully stopped (a new note arriving during
+            // a cancel deceleration must not issue a moveTo into a moving motor).
             if ((sch.fingerIndex < 0 ||
                  nowMs - sch.phaseStartMs >= g_servos.travelMs(sch.fingerIndex)) &&
+                static_cast<int32_t>(nowMs - sch.dampUntilMs) >= 0 &&
                 g_steppers.atTarget(i)) {
                 g_steppers.moveToMm(i, tgt.positionMm);
                 sch.phase = StringSched::MovingToFret;
@@ -742,8 +796,15 @@ void setup() {
     g_cmdQueue = xQueueCreate(16, sizeof(AppCommand*));
     g_stateMutex = xSemaphoreCreateMutex();
     g_storageMutex = xSemaphoreCreateMutex();
+    g_resultMutex = xSemaphoreCreateMutex();
 
     g_storage.begin();
+    if (g_storage.degraded()) {
+        // A previously-initialised filesystem that won't mount: don't auto-wipe.
+        g_safety.recordFault("storage",
+            "LittleFS unmountable — profiles unavailable; POST /api/storage/format "
+            "to reformat", millis());
+    }
     // Never configure GPIO (STEP/DIR/HOME/LIMIT/ENABLE/I²C/PCA/LEDC) from a
     // profile that fails semantic validation: fall back to the safe default so a
     // corrupt or malicious stored profile can't drive the pins at boot (§21.1).
@@ -790,18 +851,22 @@ void setup() {
     // /api/panic can truthfully report success.
     ctx.onPanic = []() { g_panicRequested.store(true); };
     ctx.onTestNote = [](uint8_t channel, uint8_t note, uint8_t vel,
-                        uint16_t durationMs) -> bool {
+                        uint16_t durationMs) -> uint32_t {
         AppCommand c{CmdType::TestNote};
         c.channel = channel; c.note = note; c.velocity = vel;
         c.durationMs = durationMs;
         return enqueueCommand(c);
     };
-    ctx.onTestServo = [](int index, bool active) -> bool {
+    ctx.onTestServo = [](int index, bool active) -> uint32_t {
         AppCommand c{CmdType::TestServo};
         c.servoIndex = static_cast<int16_t>(index);
         c.servoActive = active;
         return enqueueCommand(c);
     };
+    ctx.commandState = [](uint32_t id) -> std::string { return commandStateStr(id); };
+    // Storage reformat runs in the web task under the storage lock (loop() never
+    // touches LittleFS, so this can't stall the safety loop).
+    ctx.onFormatStorage = []() -> bool { return g_storage.format(); };
     // Read-only web handlers hold this around their reads so a reload in loop()
     // is never observed half-applied.
     ctx.lockState = []() { if (g_stateMutex) xSemaphoreTake(g_stateMutex, portMAX_DELAY); };
@@ -847,15 +912,15 @@ void setup() {
             if (g_anchored[i] && !g_homing[i].failed()) ++n;
         return n;
     };
-    ctx.onActivateProfile = [](const Profile& p) -> bool {
+    ctx.onActivateProfile = [](const Profile& p) -> uint32_t {
         // Validate synchronously (pure, safe off the main loop) so an invalid
         // profile is rejected immediately; enqueue the actual apply for loop().
-        if (!ProfileValidator::isActivatable(p)) return false;
+        if (!ProfileValidator::isActivatable(p)) return 0u;
         AppCommand c{CmdType::ActivateProfile};
         c.profile = new Profile(p);  // ownership transfers to the queued command
         return enqueueCommand(c);
     };
-    ctx.onReset = []() -> bool { return enqueueCommand(AppCommand{CmdType::Reset}); };
+    ctx.onReset = []() -> uint32_t { return enqueueCommand(AppCommand{CmdType::Reset}); };
     g_web.begin(ctx, 80);
 
     // Home every axis before allowing play; unhomed axes never move for notes.
@@ -939,6 +1004,17 @@ void loop() {
 
     g_instrument.tick(nowUs);   // flush chord groups
     g_servos.update(nowMs);     // scheduled servo returns / rest cut-off
+
+    // Runtime PCA9685 health: a board lost AFTER arming (unplugged / brown-out)
+    // means no finger/pluck can act — panic rather than keep "playing" blind.
+    static uint32_t lastPcaCheckMs = 0;
+    if (g_phase == AppPhase::Ready && nowMs - lastPcaCheckMs >= 500) {
+        lastPcaCheckMs = nowMs;
+        if (!g_servos.pcaHealthy()) {
+            g_safety.recordFault("servo", "PCA9685 stopped responding on I2C", nowMs);
+            doPanic();
+        }
+    }
 
     if (g_phase == AppPhase::Homing) {
         doHoming(nowMs);

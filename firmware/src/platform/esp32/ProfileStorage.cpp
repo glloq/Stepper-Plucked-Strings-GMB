@@ -4,6 +4,7 @@
 
 #if defined(ARDUINO)
 #include <LittleFS.h>
+#include <Preferences.h>
 #endif
 
 namespace gmb {
@@ -344,11 +345,29 @@ std::string ProfileStorage::slotPath(int slot) {
 
 #if defined(ARDUINO)
 bool ProfileStorage::begin() {
-    // Try to mount WITHOUT auto-formatting first: a transient mount failure must
-    // not silently wipe every stored profile. Only format if a clean mount is
-    // genuinely impossible (first boot / corrupted FS), which is unavoidable.
-    if (!LittleFS.begin(false)) {
-        if (!LittleFS.begin(true)) return false;  // last resort: format
+    // Try to mount WITHOUT auto-formatting first. A previously-initialised
+    // filesystem that now fails to mount is treated as CORRUPT, not first-boot:
+    // going degraded (no auto-format) protects the stored profiles from being
+    // silently wiped by a transient error (audit P1-3). An NVS marker tells the
+    // two cases apart.
+    degraded_ = false;
+    Preferences prefs;
+    prefs.begin("gmb", false);
+    bool everInitialised = prefs.getBool("fsinit", false);
+    if (LittleFS.begin(false)) {
+        if (!everInitialised) prefs.putBool("fsinit", true);
+        prefs.end();
+    } else if (!everInitialised) {
+        // Genuine first boot (or never formatted): formatting is expected.
+        prefs.putBool("fsinit", true);
+        prefs.end();
+        if (!LittleFS.begin(true)) return false;
+    } else {
+        // Known filesystem that won't mount -> corrupt. Stay degraded; require an
+        // explicit format() to recover (never auto-wipe the user's profiles).
+        prefs.end();
+        degraded_ = true;
+        return false;
     }
     if (!LittleFS.exists("/profiles")) LittleFS.mkdir("/profiles");
     // A slot file is "healthy" only if it deserialises to a valid Profile.
@@ -375,6 +394,19 @@ bool ProfileStorage::begin() {
             LittleFS.rename(bak.c_str(), path.c_str());
         }
     }
+    return true;
+}
+
+bool ProfileStorage::format() {
+    // Deliberate wipe-and-reformat (recovery from a corrupt filesystem).
+    LittleFS.end();
+    if (!LittleFS.begin(true)) return false;
+    if (!LittleFS.exists("/profiles")) LittleFS.mkdir("/profiles");
+    Preferences prefs;
+    prefs.begin("gmb", false);
+    prefs.putBool("fsinit", true);
+    prefs.end();
+    degraded_ = false;
     return true;
 }
 
@@ -477,6 +509,7 @@ void ProfileStorage::setStartupSlot(int slot) {
 #else
 // Non-Arduino stubs so the file is analysable off-target.
 bool ProfileStorage::begin() { return false; }
+bool ProfileStorage::format() { return false; }
 std::vector<std::string> ProfileStorage::list() const { return {}; }
 bool ProfileStorage::load(int, Profile&) const { return false; }
 bool ProfileStorage::save(int, const Profile&) { return false; }
