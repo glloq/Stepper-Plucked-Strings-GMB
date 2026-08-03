@@ -47,6 +47,9 @@ public:
     // state machine, mark it faulted in the allocator, drop its target and any
     // active note. It can no longer be chosen automatically OR by explicit CC.
     void faultString(size_t index);
+    // Undo a runtime fault so the axis can be re-homed and played again (explicit
+    // reset). Clears the StringController fault and the allocator fault flag.
+    void recoverString(size_t index);
 
     size_t stringCount() const { return strings_.size(); }
     const StringController& string(size_t i) const { return strings_[i]; }
@@ -101,15 +104,20 @@ private:
     std::vector<uint32_t> preparedId_;     // per string, 0 = none
     std::vector<uint32_t> preparedExpiryUs_; // per string, when the prepare expires
     uint32_t nextStrumGroup_ = 1;          // monotonic chord/strum group id
+    uint32_t explicitGroup_ = 0;           // current explicit-chord strum group
+    uint32_t explicitGroupAtUs_ = 0;       // when the explicit group opened
 
     bool accepts(uint8_t channel) const { return omni_ || channel == channel_; }
+    // Explicit notes arriving within the chord window share ONE strum group so the
+    // shared strummer sweeps them as a single chord (audit P0-5).
+    uint32_t explicitStrumGroup(uint32_t nowUs);
     void prepareString(int stringIndex, int fret, uint32_t expiresAtUs);
     // Trigger a previously prepared string for this Note On. Returns false if the
     // string was not prepared for this fret (the caller then starts a fresh note).
     bool triggerPreparedNote(int stringIndex, int fret, uint8_t channel,
-                             uint8_t note, uint8_t velocity);
+                             uint8_t note, uint8_t velocity, uint32_t strumGroup);
     void startNote(int stringIndex, int fret, uint8_t channel, uint8_t note,
-                   uint8_t velocity);
+                   uint8_t velocity, uint32_t strumGroup);
     void stopString(int stringIndex);
     int findActive(uint8_t channel, uint8_t note) const;
     void removeActiveByString(int stringIndex);

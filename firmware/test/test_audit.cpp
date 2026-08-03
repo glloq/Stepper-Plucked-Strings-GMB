@@ -90,6 +90,14 @@ TEST(validator_rejects_cc_collisions) {
     CHECK(!ProfileValidator::isActivatable(s));
 }
 
+TEST(validator_rejects_insane_steps_per_mm) {
+    Profile p = uke();
+    // A huge microstepping x teeth combination pushes steps/mm out of range.
+    p.strings[0].transmission = Transmission::Custom;
+    p.strings[0].customStepsPerMm = 500000.0;  // absurd
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
 TEST(validator_rejects_midi_transpose_out_of_range) {
     Profile p = uke();
     p.midi.transpose = 60;  // > 48
@@ -303,6 +311,32 @@ TEST(faulted_string_removed_from_allocation) {
     ic.tick(5000);
     CHECK(!ic.target(0).active);
     CHECK_EQ(ic.soundingCount(), 3);
+}
+
+// recoverString undoes a runtime fault so the axis can play again (reset path).
+TEST(recover_string_restores_a_faulted_axis) {
+    InstrumentController ic;
+    ic.load(uke());
+    ic.faultString(2);                       // string 2 out of service
+    CHECK(ic.string(2).state() == StringState::Fault);
+    ic.recoverString(2);                     // reset recovery
+    CHECK(ic.string(2).state() == StringState::Idle);
+    // It can now be homed again (Fault would have refused setHoming).
+    ic.string(2).setHoming();
+    CHECK(ic.string(2).state() == StringState::Homing);
+    ic.string(2).homingDone();
+    // And it is choosable again: an explicit note on string 2 plays.
+    Profile p = uke();
+    p.selector.mode = SelectionMode::Explicit;
+    p.selector.prepareOnCompleteSelection = false;
+    InstrumentController ic2;
+    ic2.load(p);
+    ic2.faultString(2);
+    ic2.recoverString(2);
+    ic2.handleEvent(cc(0, 20, 3, 0), 0);     // string index 2
+    ic2.handleEvent(cc(0, 21, 5, 0), 0);
+    ic2.handleEvent(noteOn(0, 69, 100, 0), 0);
+    CHECK(ic2.target(2).active);
 }
 
 // --- P0: degraded capabilities exclude the faulted axis entirely ---

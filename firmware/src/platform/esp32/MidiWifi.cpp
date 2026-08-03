@@ -21,9 +21,10 @@ void MidiWifi::poll(uint32_t nowUs) {
         uint16_t remotePort = udp_.remotePort();
         // Reject an oversized datagram ENTIRELY: reading only the first
         // sizeof(buf_) bytes would parse a truncated message (a Note Off past the
-        // buffer would be lost, leaving a note stuck on). Flush and skip it.
+        // buffer would be lost, leaving a note stuck on). Discard and skip it.
         if (packet > static_cast<int>(sizeof(buf_))) {
-            udp_.flush();
+            udp_.clear();  // discard the current datagram (flush() is deprecated)
+            ++droppedPackets_;
             ++handled;
             packet = udp_.parsePacket();
             continue;
@@ -35,9 +36,11 @@ void MidiWifi::poll(uint32_t nowUs) {
             // continue/terminate another sender's message (shared-parser fix).
             parser_.resetStream();
             parser_.feed(buf_, static_cast<size_t>(n), nowUs);
-            // Move decoded events out (bounded).
+            // Move decoded events out (bounded). Count anything dropped so a
+            // sustained overflow is visible rather than silent.
             for (auto& e : parser_.events()) {
                 if (events_.size() < kMaxEventsPerTick) events_.push_back(e);
+                else ++droppedEvents_;
             }
             // Tag each SysEx from THIS packet with THIS sender.
             for (auto& s : parser_.sysex()) {

@@ -48,20 +48,17 @@ Net g_net;
 MidiWifi g_midi;
 WebApi g_web;
 
-enum class AppPhase { Boot, Homing, Ready };
+enum class AppPhase { Boot, Reconfiguring, Homing, Ready };
 AppPhase g_phase = AppPhase::Boot;
 bool g_degraded = false;  // Ready but with one or more axes disabled by a fault
-uint32_t g_lastSharedStrumMs = 0;  // dedupe the shared strummer within a chord
+uint32_t g_lastSharedStrumMs = 0;    // time of the last shared-strum sweep
+uint32_t g_lastStrumGroupFired = 0;  // strum group already swept (one sweep/group)
 
 // Pre-homing finger-lift: homing must not move a carriage while a finger is still
 // pressed on the string. beginHoming() commands every finger to rest and waits
 // until this deadline before the seek starts.
 bool g_homingStarted = false;
 uint32_t g_homeReleaseUntilMs = 0;
-
-// Musical move watchdog: if a carriage does not reach its fret within this window
-// the axis is faulted (covers a refused/stalled step-engine command).
-constexpr uint32_t kMoveTimeoutMs = 4000;
 
 // Two-phase profile activation: the OLD profile's fingers are driven to rest and
 // allowed to lift BEFORE the old servo config is destroyed, so a profile that
@@ -92,7 +89,26 @@ struct StringSched {
     int fingerIndex = -1;
     uint32_t readySinceMs = 0;  // when this string reached Ready (shared-strum sync)
     uint32_t dampUntilMs = 0;   // don't move until the damper has acted (replace)
+    uint32_t moveDeadlineMs = 0;  // fault the axis if the move isn't done by then
 };
+
+// Estimate a trapezoidal/triangular move time (ms) for a distance at a given max
+// speed (mm/s) and acceleration (mm/s^2). Used to set a move watchdog that scales
+// with the profile instead of a fixed 4 s (audit P1-1).
+uint32_t estimateMoveMs(double distanceMm, double vMaxMmS, double aMmS2) {
+    distanceMm = std::fabs(distanceMm);
+    if (distanceMm < 1e-6) return 0;
+    if (vMaxMmS < 1e-6 || aMmS2 < 1e-6) return 0;  // caller applies a floor anyway
+    double tAccel = vMaxMmS / aMmS2;              // time to reach cruise
+    double dAccel = vMaxMmS * vMaxMmS / aMmS2;    // distance for accel + decel
+    double t;
+    if (distanceMm >= dAccel) {
+        t = 2.0 * tAccel + (distanceMm - dAccel) / vMaxMmS;  // trapezoid
+    } else {
+        t = 2.0 * std::sqrt(distanceMm / aMmS2);             // triangle
+    }
+    return static_cast<uint32_t>(t * 1000.0);
+}
 std::vector<StringSched> g_sched;
 
 // ---- Web -> loop() command queue (P0: no mechanical state off the main loop) --
@@ -158,6 +174,10 @@ SemaphoreHandle_t g_storageMutex = nullptr;
 // sets this flag (lock-free, no allocation) and loop() honours it FIRST, before
 // draining anything else. Separate from the FreeRTOS queue on purpose.
 std::atomic<bool> g_panicRequested{false};
+
+// RAM cache of "an admin token is configured" so the 100 ms status rebuild never
+// opens NVS (audit P1-10). Seeded at setup, updated on /api/auth.
+bool g_authConfiguredCache = false;
 
 // Enqueue a command (called from the AsyncTCP task). Returns false if the queue
 // is full so the caller can report back-pressure instead of silently dropping.
@@ -234,6 +254,13 @@ void applyProfile() {
     for (size_t i = 0; i < g_profile.strings.size(); ++i) {
         if (i < g_profile.homing.size()) g_homing[i].configure(g_profile.homing[i]);
     }
+
+    // NOTE (audit P1-7): the network stack (Net) is deliberately NOT restarted
+    // here. Applying a new SSID / mode mid-session would drop the very connection
+    // used to configure the device; Wi-Fi and static-IP changes therefore take
+    // effect on the next reboot (the /api/wifi route already reports this). The
+    // status DTO exposes both the active mode (Net) and the profile's configured
+    // SSID so the UI can prompt a reboot when they differ.
 
     // The E-stop pin belongs to the (possibly new) profile — re-resolve it here
     // so a profile change updates which pin is monitored.
@@ -370,6 +397,14 @@ bool doReset(uint32_t nowMs) {
         return false;
     g_safety.reset();                 // Panic/EStop -> PowerOnSafe
     g_safety.clearFaults();
+    // Recover runtime-faulted axes so a reset can actually bring them back: clear
+    // the fault flag AND the StringController fault, then re-home (audit P0-3).
+    for (size_t i = 0; i < g_axisFaulted.size(); ++i) {
+        if (g_axisFaulted[i]) {
+            g_axisFaulted[i] = false;
+            g_instrument.recoverString(i);  // Fault -> Idle, un-fault the allocator
+        }
+    }
     return beginHoming(nowMs);         // mandatory re-home before playing again
 }
 
@@ -460,6 +495,8 @@ void neutraliseAll() {
     g_steppers.enableDrivers(false);
     g_servos.neutraliseAll();
     for (auto& s : g_sched) s = StringSched{};
+    g_testOffs.clear();  // drop scheduled test Note Offs so a stale one can't stop
+                         // a future note with the same channel/number (audit P1-4)
     // A panic / E-stop supersedes any deferred profile activation.
     delete g_pendingProfile;
     g_pendingProfile = nullptr;
@@ -496,7 +533,13 @@ bool doActivateProfile(const Profile& p, uint32_t nowMs) {
     g_steppers.stopAll();
     g_steppers.enableDrivers(false);
     for (auto& s : g_sched) s = StringSched{};
-    g_phase = AppPhase::Boot;
+    g_testOffs.clear();  // a profile change cancels any pending test Note Offs
+    // Immediately demote from Armed to PowerOnSafe and enter Reconfiguring so no
+    // test servo / test note / MIDI can drive the (about-to-be-torn-down) hardware
+    // during the release+rebuild window (audit P0-2). Only a panic/E-stop or the
+    // internal neutralisation may act until homing re-arms.
+    g_safety.reset();
+    g_phase = AppPhase::Reconfiguring;
 
     // Drive every current servo to rest (fingers up) before the old config is
     // destroyed, and wait for the slowest to travel + settle.
@@ -528,13 +571,19 @@ void servicePendingActivation(uint32_t nowMs) {
     }
     delete g_pendingProfile;
     g_pendingProfile = nullptr;
-    beginHoming(nowMs);  // re-home after a mechanical change (§16)
+    // Re-home after the mechanical change (§16). If it cannot start (attach fault,
+    // invalid config), stay safely in Boot/PowerOnSafe rather than stuck armed.
+    if (!beginHoming(nowMs)) g_phase = AppPhase::Boot;
 }
 
 // Web test note: only when Ready, and only if we can guarantee its Note Off.
 bool doTestNote(uint8_t channel, uint8_t note, uint8_t vel, uint16_t durationMs,
                 uint32_t nowMs) {
     if (g_phase != AppPhase::Ready) return false;
+    // Reject out-of-range MIDI values: a 4-bit channel and 7-bit note/velocity.
+    // (Defence at the source; the selector also masks the channel.)
+    if (channel > 15 || note > 127 || vel > 127) return false;
+    if (durationMs > 10000) durationMs = 10000;  // cap a runaway hold
     // Never emit a Note On we cannot later release: refuse if the deferred
     // Note-Off queue is full (would otherwise leave the note stuck on).
     if (g_testOffs.size() >= 16) return false;
@@ -632,6 +681,31 @@ bool sharedGroupPositioned(uint32_t group) {
     return true;
 }
 
+// Per-axis endstop safety scan, run for EVERY axis each tick BEFORE any musical
+// logic and regardless of whether a note is active — so a carriage still
+// decelerating after a Note Off (or drifting while idle) is caught. Returns true
+// if the axis just faulted (caller should skip its musical tick).
+bool tickAxisSafety(size_t i, uint32_t nowMs) {
+    if (i < g_axisFaulted.size() && g_axisFaulted[i]) return false;  // already out
+    // A LIMIT switch tripped removes this axis from service (allocator + selection
+    // + capabilities) without disturbing the others.
+    if (g_steppers.limitActive(i)) {
+        faultRuntimeAxis(i, "LIMIT tripped", nowMs);
+        return true;
+    }
+    // HOME asserting while the carriage position says it is well away from home is
+    // a position/reference fault (lost steps, drift, stuck/inverted sensor). Home
+    // is anchored to 0 mm, so the ABSOLUTE distance is the mismatch (the axis
+    // coordinate can run negative depending on the homing direction). Positions
+    // legitimately near home (open string / low frets) are not faulted.
+    static constexpr double kHomeMismatchMm = 10.0;
+    if (g_steppers.homeActive(i) && std::fabs(g_steppers.positionMm(i)) > kHomeMismatchMm) {
+        faultRuntimeAxis(i, "HOME asserted away from home (position drift)", nowMs);
+        return true;
+    }
+    return false;
+}
+
 // Drive one string's mechanical sequence toward a plucked note.
 void tickString(size_t i, uint32_t nowMs) {
     StringController& sc = g_instrument.string(i);
@@ -658,24 +732,6 @@ void tickString(size_t i, uint32_t nowMs) {
             sch.phase = StringSched::Idle;
             sch.commandId = 0;
         }
-        return;
-    }
-
-    // A LIMIT switch tripped faults this axis and removes it from service
-    // (allocator + selection + capabilities), without disturbing the others.
-    if (g_steppers.limitActive(i)) {
-        faultRuntimeAxis(i, "LIMIT tripped", nowMs);
-        return;
-    }
-    // HOME is also a physical extremity. Asserting it while the carriage position
-    // says it is well away from home is a position/reference fault (lost steps,
-    // drift, stuck/inverted sensor) — fault rather than trust a bad coordinate.
-    // Positions legitimately near home (open string / low frets) are not faulted.
-    // Home is anchored to 0 mm, so the ABSOLUTE distance from 0 is the mismatch
-    // (the axis coordinate can run negative depending on the homing direction).
-    static constexpr double kHomeMismatchMm = 10.0;
-    if (g_steppers.homeActive(i) && std::fabs(g_steppers.positionMm(i)) > kHomeMismatchMm) {
-        faultRuntimeAxis(i, "HOME asserted away from home (position drift)", nowMs);
         return;
     }
 
@@ -710,9 +766,15 @@ void tickString(size_t i, uint32_t nowMs) {
                  nowMs - sch.phaseStartMs >= g_servos.travelMs(sch.fingerIndex)) &&
                 static_cast<int32_t>(nowMs - sch.dampUntilMs) >= 0 &&
                 g_steppers.atTarget(i)) {
+                double dist = tgt.positionMm - g_steppers.positionMm(i);
+                const AxisConfig& ac = g_profile.strings[i];
+                uint32_t est = estimateMoveMs(dist, ac.maxSpeedMmS, ac.maxAccelMmS2);
+                // Generous margin (3x + 500 ms floor) so only a genuine stall/refusal
+                // faults the axis, but a slow-but-valid profile is never mis-flagged.
                 g_steppers.moveToMm(i, tgt.positionMm);
                 sch.phase = StringSched::MovingToFret;
                 sch.phaseStartMs = nowMs;
+                sch.moveDeadlineMs = nowMs + 500u + 3u * est;
             }
             break;
         case StringSched::MovingToFret:
@@ -723,15 +785,19 @@ void tickString(size_t i, uint32_t nowMs) {
                 if (sc.openString() || sch.fingerIndex < 0) {
                     sch.phase = StringSched::Ready;  // no finger press for open string
                     sch.readySinceMs = nowMs;
+                } else if (!g_servos.press(sch.fingerIndex)) {
+                    // The finger servo could not be driven (LEDC re-attach / PCA
+                    // failure): fault the axis rather than play a wrong pitch with a
+                    // finger that never pressed (audit P1-5).
+                    faultRuntimeAxis(i, "finger servo write failed", nowMs);
                 } else {
-                    g_servos.press(sch.fingerIndex);
                     sch.phase = StringSched::PressingFinger;
                     sch.phaseStartMs = nowMs;
                 }
-            } else if (nowMs - sch.phaseStartMs >= kMoveTimeoutMs) {
-                // The move never completed (command refused by the step engine, a
-                // stall, or a stop far from target): fault the axis instead of
-                // waiting forever in MovingToFret.
+            } else if (static_cast<int32_t>(nowMs - sch.moveDeadlineMs) >= 0) {
+                // The move never completed within its estimated budget (command
+                // refused by the step engine, a stall, or a stop far from target):
+                // fault the axis instead of waiting forever in MovingToFret.
                 faultRuntimeAxis(i, "move did not reach target (timeout)", nowMs);
             }
             break;
@@ -770,10 +836,14 @@ void tickString(size_t i, uint32_t nowMs) {
             if (doIndividual) g_servos.strike(pi, tgt.intensity);
             if (doShared) {
                 int si = g_servos.sharedStrumIndex();
-                // One sweep per chord: dedupe strikes within a short window.
-                static constexpr uint32_t kStrumDedupeMs = 30;
-                if (si >= 0 && nowMs - g_lastSharedStrumMs >= kStrumDedupeMs) {
+                // Exactly one sweep PER GROUP: keyed on the chord's strum group, not
+                // a global time window. A late member of the same group can't fire a
+                // second sweep, and a genuinely different chord fires even within a
+                // few ms of the previous one (audit P0-5).
+                if (si >= 0 && tgt.strumGroup != 0 &&
+                    tgt.strumGroup != g_lastStrumGroupFired) {
                     g_servos.strike(si, tgt.intensity);
+                    g_lastStrumGroupFired = tgt.strumGroup;
                     g_lastSharedStrumMs = nowMs;
                 }
             }
@@ -895,15 +965,18 @@ void setup() {
     ctx.onSetAdminToken = [](const std::string& t) {
         Preferences p; p.begin("gmb", false);
         p.putString("admintoken", String(t.c_str())); p.end();
+        g_authConfiguredCache = !t.empty();  // keep the RAM cache in step
     };
-    ctx.authConfigured = []() -> bool {
-        Preferences p; p.begin("gmb", true);
-        String stored = p.getString("admintoken", ""); p.end();
-        return stored.length() > 0;
-    };
+    // Cached in RAM: the status DTO is rebuilt every 100 ms and must NOT open NVS
+    // that often. Seeded once here; refreshed only when the token is set (P1-10).
+    { Preferences p; p.begin("gmb", true);
+      g_authConfiguredCache = p.getString("admintoken", "").length() > 0; p.end(); }
+    ctx.authConfigured = []() -> bool { return g_authConfiguredCache; };
     ctx.appState = []() -> std::string {
         if (g_phase == AppPhase::Ready) return g_degraded ? "readyDegraded" : "ready";
-        return g_phase == AppPhase::Homing ? "homing" : "boot";
+        if (g_phase == AppPhase::Homing) return "homing";
+        if (g_phase == AppPhase::Reconfiguring) return "reconfiguring";
+        return "boot";
     };
     ctx.readyStrings = []() -> int {
         if (g_phase != AppPhase::Ready) return 0;
@@ -1020,7 +1093,11 @@ void loop() {
         doHoming(nowMs);
         g_steppers.tick(nowUs);
     } else if (g_phase == AppPhase::Ready && g_safety.actuatorsAllowed()) {
-        for (size_t i = 0; i < g_instrument.stringCount(); ++i) tickString(i, nowMs);
+        // Endstop safety for EVERY axis first (active or not), then the musical
+        // logic for the axes that did not just fault.
+        for (size_t i = 0; i < g_instrument.stringCount(); ++i) {
+            if (!tickAxisSafety(i, nowMs)) tickString(i, nowMs);
+        }
         g_steppers.tick(nowUs);
     }
 

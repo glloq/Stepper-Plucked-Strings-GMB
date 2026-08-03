@@ -196,7 +196,12 @@ private:
     LastValidSelection lastValid_[16];
     std::vector<CompletedSelection> justCompleted_;
 
-    uint8_t channelKey(uint8_t ch) const { return cfg_.perMidiChannel ? ch : 0; }
+    // Masked to 0..15: a MIDI channel is 4-bit, and this indexes lastValid_[16].
+    // Masking here is a defence in depth against a caller that passes a raw value
+    // out of range (e.g. an unvalidated web test note) — audit P0-6.
+    uint8_t channelKey(uint8_t ch) const {
+        return cfg_.perMidiChannel ? static_cast<uint8_t>(ch & 0x0F) : 0;
+    }
     // Record a newly-complete selection for anticipated pre-positioning, if the
     // feature is on and the selection is in range.
     void noteMaybePrepare(const PendingStringSelection& s);

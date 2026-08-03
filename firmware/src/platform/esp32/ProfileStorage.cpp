@@ -17,11 +17,17 @@ const char* transmissionName(Transmission t) {
         default: return "custom";
     }
 }
-Transmission transmissionFrom(const char* s) {
-    std::string v = s ? s : "";
-    if (v == "screw") return Transmission::Screw;
-    if (v == "custom") return Transmission::Custom;
-    return Transmission::BeltGt2;
+Transmission transmissionFrom(JsonVariantConst v, bool* ok) {
+    if (v.is<const char*>()) {
+        std::string s = v.as<const char*>();
+        if (s == "beltGt2") return Transmission::BeltGt2;
+        if (s == "screw") return Transmission::Screw;
+        if (s == "custom") return Transmission::Custom;
+        *ok = false; return Transmission::BeltGt2;  // unknown -> reject the profile
+    }
+    if (v.is<int>()) { int i = v.as<int>(); if (i < 0 || i > 2) *ok = false;
+                       return static_cast<Transmission>(i < 0 ? 0 : i > 2 ? 0 : i); }
+    return Transmission::BeltGt2;  // absent: default allowed
 }
 const char* modeName(SelectionMode m) {
     switch (m) {
@@ -35,6 +41,126 @@ SelectionMode modeFrom(const char* s) {
     if (v == "automatic") return SelectionMode::Automatic;
     if (v == "explicit") return SelectionMode::Explicit;
     return SelectionMode::Hybrid;
+}
+
+// ---- String <-> enum for the fields the web interface writes as strings ----
+// The canonical on-disk / on-wire form is the STRING name (matching the web UI
+// and the shipped example profiles). Parsing also accepts a legacy NUMBER for
+// backward compatibility. An unknown STRING sets *ok=false so the whole profile
+// is rejected rather than silently mapped to a default (audit P0-1 / P0-7).
+
+const char* velocityCurveName(VelocityCurve c) {
+    switch (c) {
+        case VelocityCurve::Linear: return "linear";
+        case VelocityCurve::Soft: return "soft";
+        case VelocityCurve::Hard: return "hard";
+        case VelocityCurve::Exponential: return "exponential";
+        default: return "custom";
+    }
+}
+VelocityCurve velocityCurveFrom(JsonVariantConst v, bool* ok) {
+    if (v.is<const char*>()) {
+        std::string s = v.as<const char*>();
+        if (s == "linear") return VelocityCurve::Linear;
+        if (s == "soft") return VelocityCurve::Soft;
+        if (s == "hard") return VelocityCurve::Hard;
+        if (s == "exponential") return VelocityCurve::Exponential;
+        if (s == "custom") return VelocityCurve::Custom;
+        *ok = false; return VelocityCurve::Linear;
+    }
+    if (v.is<int>()) { int i = v.as<int>(); if (i < 0 || i > 4) *ok = false;
+                       return static_cast<VelocityCurve>(i < 0 ? 0 : i > 4 ? 4 : i); }
+    return VelocityCurve::Linear;  // absent: default allowed
+}
+
+const char* saturationName(SaturationStrategy s) {
+    switch (s) {
+        case SaturationStrategy::IgnoreExtra: return "ignoreExtra";
+        case SaturationStrategy::PriorityLow: return "priorityLow";
+        case SaturationStrategy::PriorityHigh: return "priorityHigh";
+        case SaturationStrategy::PriorityFirst: return "priorityFirst";
+        case SaturationStrategy::ReplaceOldest: return "replaceOldest";
+        default: return "monophonic";
+    }
+}
+SaturationStrategy saturationFrom(JsonVariantConst v, bool* ok) {
+    if (v.is<const char*>()) {
+        std::string s = v.as<const char*>();
+        if (s == "ignoreExtra") return SaturationStrategy::IgnoreExtra;
+        if (s == "priorityLow") return SaturationStrategy::PriorityLow;
+        if (s == "priorityHigh") return SaturationStrategy::PriorityHigh;
+        if (s == "priorityFirst") return SaturationStrategy::PriorityFirst;
+        if (s == "replaceOldest") return SaturationStrategy::ReplaceOldest;
+        if (s == "monophonic") return SaturationStrategy::Monophonic;
+        *ok = false; return SaturationStrategy::PriorityLow;
+    }
+    if (v.is<int>()) { int i = v.as<int>(); if (i < 0 || i > 5) *ok = false;
+                       return static_cast<SaturationStrategy>(i < 0 ? 1 : i > 5 ? 1 : i); }
+    return SaturationStrategy::PriorityLow;
+}
+
+const char* notePolicyName(NotePositionPolicy p) {
+    switch (p) {
+        case NotePositionPolicy::CcPriorityWithWarning: return "ccPriorityWithWarning";
+        case NotePositionPolicy::NotePriority: return "notePriority";
+        default: return "strict";
+    }
+}
+NotePositionPolicy notePolicyFrom(JsonVariantConst v, bool* ok) {
+    if (v.is<const char*>()) {
+        std::string s = v.as<const char*>();
+        if (s == "ccPriorityWithWarning") return NotePositionPolicy::CcPriorityWithWarning;
+        if (s == "notePriority") return NotePositionPolicy::NotePriority;
+        if (s == "strict") return NotePositionPolicy::Strict;
+        *ok = false; return NotePositionPolicy::CcPriorityWithWarning;
+    }
+    if (v.is<int>()) { int i = v.as<int>(); if (i < 0 || i > 2) *ok = false;
+                       return static_cast<NotePositionPolicy>(i < 0 ? 0 : i > 2 ? 0 : i); }
+    return NotePositionPolicy::CcPriorityWithWarning;
+}
+
+// The missing/expired selection policy is an InvalidValuePolicy, but the web only
+// exposes {automaticAllocation, reject} and names the fallback "automaticAllocation".
+const char* selectionPolicyName(InvalidValuePolicy p) {
+    return p == InvalidValuePolicy::Reject ? "reject" : "automaticAllocation";
+}
+InvalidValuePolicy selectionPolicyFrom(JsonVariantConst v, bool* ok) {
+    if (v.is<const char*>()) {
+        std::string s = v.as<const char*>();
+        if (s == "reject") return InvalidValuePolicy::Reject;
+        if (s == "automaticAllocation" || s == "automaticFallback")
+            return InvalidValuePolicy::AutomaticFallback;
+        if (s == "lastValid") return InvalidValuePolicy::LastValid;
+        if (s == "clamp") return InvalidValuePolicy::Clamp;
+        *ok = false; return InvalidValuePolicy::AutomaticFallback;
+    }
+    if (v.is<int>()) { int i = v.as<int>(); if (i < 0 || i > 3) *ok = false;
+                       return static_cast<InvalidValuePolicy>(i < 0 ? 2 : i > 3 ? 2 : i); }
+    return InvalidValuePolicy::AutomaticFallback;
+}
+
+// The fret invalid-value policy exposes all four InvalidValuePolicy values.
+const char* fretPolicyName(InvalidValuePolicy p) {
+    switch (p) {
+        case InvalidValuePolicy::Reject: return "reject";
+        case InvalidValuePolicy::Clamp: return "clamp";
+        case InvalidValuePolicy::LastValid: return "lastValid";
+        default: return "automaticFallback";
+    }
+}
+InvalidValuePolicy fretPolicyFrom(JsonVariantConst v, bool* ok) {
+    if (v.is<const char*>()) {
+        std::string s = v.as<const char*>();
+        if (s == "reject") return InvalidValuePolicy::Reject;
+        if (s == "clamp") return InvalidValuePolicy::Clamp;
+        if (s == "automaticFallback" || s == "automaticAllocation")
+            return InvalidValuePolicy::AutomaticFallback;
+        if (s == "lastValid") return InvalidValuePolicy::LastValid;
+        *ok = false; return InvalidValuePolicy::AutomaticFallback;
+    }
+    if (v.is<int>()) { int i = v.as<int>(); if (i < 0 || i > 3) *ok = false;
+                       return static_cast<InvalidValuePolicy>(i < 0 ? 2 : i > 3 ? 2 : i); }
+    return InvalidValuePolicy::AutomaticFallback;
 }
 }  // namespace
 
@@ -83,8 +209,8 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
     mi["chordWindowMs"] = p.midi.chordWindowMs;
     mi["sustainPedal"] = p.midi.sustainPedal;
     mi["sustainCc"] = p.midi.sustainCc;
-    mi["velocityCurve"] = static_cast<int>(p.midi.velocityCurve);
-    mi["saturationStrategy"] = static_cast<int>(p.midi.saturationStrategy);
+    mi["velocityCurve"] = velocityCurveName(p.midi.velocityCurve);
+    mi["saturationStrategy"] = saturationName(p.midi.saturationStrategy);
 
     JsonObject sf = doc["stringFretSelection"].to<JsonObject>();
     sf["enabled"] = p.selector.enabled;
@@ -93,9 +219,11 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
     sf["selectionTimeoutMs"] = p.selector.selectionTimeoutMs;
     sf["prepareOnCompleteSelection"] = p.selector.prepareOnCompleteSelection;
     sf["queueDepth"] = p.selector.queueDepth;
-    sf["notePositionPolicy"] = static_cast<int>(p.selector.notePositionPolicy);
-    sf["missingSelectionPolicy"] = static_cast<int>(p.selector.missingSelectionPolicy);
-    sf["expiredSelectionPolicy"] = static_cast<int>(p.selector.expiredSelectionPolicy);
+    // Policies live under `validation` as string names, matching the web UI.
+    JsonObject val = sf["validation"].to<JsonObject>();
+    val["notePositionPolicy"] = notePolicyName(p.selector.notePositionPolicy);
+    val["missingSelectionPolicy"] = selectionPolicyName(p.selector.missingSelectionPolicy);
+    val["expiredSelectionPolicy"] = selectionPolicyName(p.selector.expiredSelectionPolicy);
     JsonObject ss = sf["string"].to<JsonObject>();
     ss["ccNumber"] = p.selector.string.ccNumber;
     ss["minimum"] = p.selector.string.minimum;
@@ -111,7 +239,7 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
     fr["minimum"] = p.selector.fret.minimum;
     fr["maximum"] = p.selector.fret.maximum;
     fr["offset"] = p.selector.fret.offset;
-    fr["invalidValuePolicy"] = static_cast<int>(p.selector.fret.invalidValuePolicy);
+    fr["invalidValuePolicy"] = fretPolicyName(p.selector.fret.invalidValuePolicy);
 
     JsonArray strings = doc["strings"].to<JsonArray>();
     for (size_t i = 0; i < p.strings.size(); ++i) {
@@ -173,6 +301,7 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
 
 bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
     if (doc["instrument"].isNull()) return false;
+    bool enumsOk = true;  // set false by any unknown enum string -> reject profile
     out.project = doc["project"] | "Stepper-Plucked-Strings-GMB";
     out.profileVersion = doc["profileVersion"] | 1;
     out.capabilitiesRevision = doc["capabilitiesRevision"] | 1;
@@ -223,9 +352,8 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
     out.midi.chordWindowMs = mi["chordWindowMs"] | 3;
     out.midi.sustainPedal = mi["sustainPedal"] | true;
     out.midi.sustainCc = mi["sustainCc"] | 64;
-    out.midi.velocityCurve = static_cast<VelocityCurve>(mi["velocityCurve"] | 0);
-    out.midi.saturationStrategy =
-        static_cast<SaturationStrategy>(mi["saturationStrategy"] | 1);  // PriorityLow
+    out.midi.velocityCurve = velocityCurveFrom(mi["velocityCurve"], &enumsOk);
+    out.midi.saturationStrategy = saturationFrom(mi["saturationStrategy"], &enumsOk);
 
     JsonObjectConst sf = doc["stringFretSelection"];
     out.selector.enabled = sf["enabled"] | true;
@@ -234,12 +362,18 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
     out.selector.selectionTimeoutMs = sf["selectionTimeoutMs"] | 100;
     out.selector.prepareOnCompleteSelection = sf["prepareOnCompleteSelection"] | true;
     out.selector.queueDepth = sf["queueDepth"] | 32;
-    out.selector.notePositionPolicy =
-        static_cast<NotePositionPolicy>(sf["notePositionPolicy"] | 0);
-    out.selector.missingSelectionPolicy =
-        static_cast<InvalidValuePolicy>(sf["missingSelectionPolicy"] | 2);  // AutomaticFallback
-    out.selector.expiredSelectionPolicy =
-        static_cast<InvalidValuePolicy>(sf["expiredSelectionPolicy"] | 2);
+    // Policies live under `validation` (web format); fall back to the legacy flat
+    // location so old firmware-exported profiles still load.
+    JsonObjectConst val = sf["validation"];
+    JsonVariantConst npp = !val["notePositionPolicy"].isNull() ? val["notePositionPolicy"]
+                                                               : sf["notePositionPolicy"];
+    JsonVariantConst msp = !val["missingSelectionPolicy"].isNull() ? val["missingSelectionPolicy"]
+                                                                   : sf["missingSelectionPolicy"];
+    JsonVariantConst esp = !val["expiredSelectionPolicy"].isNull() ? val["expiredSelectionPolicy"]
+                                                                   : sf["expiredSelectionPolicy"];
+    out.selector.notePositionPolicy = notePolicyFrom(npp, &enumsOk);
+    out.selector.missingSelectionPolicy = selectionPolicyFrom(msp, &enumsOk);
+    out.selector.expiredSelectionPolicy = selectionPolicyFrom(esp, &enumsOk);
     JsonObjectConst ss = sf["string"];
     out.selector.string.ccNumber = ss["ccNumber"] | 20;
     out.selector.string.minimum = ss["minimum"] | 1;
@@ -257,8 +391,7 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
     out.selector.fret.minimum = fr["minimum"] | 0;
     out.selector.fret.maximum = fr["maximum"] | 12;
     out.selector.fret.offset = fr["offset"] | 0;
-    out.selector.fret.invalidValuePolicy =
-        static_cast<InvalidValuePolicy>(fr["invalidValuePolicy"] | 2);  // AutomaticFallback
+    out.selector.fret.invalidValuePolicy = fretPolicyFrom(fr["invalidValuePolicy"], &enumsOk);
 
     out.strings.clear();
     out.homing.clear();
@@ -268,7 +401,7 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
         a.openNote = o["openNote"] | 40;
         a.maxFret = o["maxFret"] | 12;
         a.scaleLengthMm = o["scaleLengthMm"] | 330.0;
-        a.transmission = transmissionFrom(o["transmission"] | "beltGt2");
+        a.transmission = transmissionFrom(o["transmission"], &enumsOk);
         a.stepsPerRevolution = o["stepsPerRevolution"] | 200;
         a.microsteps = o["microsteps"] | 16;
         a.pulleyTeeth = o["pulleyTeeth"] | 20;
@@ -320,7 +453,9 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
         s.disableAtRest = o["disableAtRest"] | true;
         out.servos.push_back(s);
     }
-    return true;
+    // Reject the whole profile if any enum string was unknown (never silently map
+    // an unrecognised value to a default — audit P0-1 / P0-7).
+    return enumsOk;
 }
 
 std::string ProfileStorage::exportJson(const Profile& p, bool /*includeSecrets*/) const {

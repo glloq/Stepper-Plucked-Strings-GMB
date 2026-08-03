@@ -42,6 +42,9 @@ public:
     }
     void homingDone() { if (state_ == StringState::Homing) state_ = StringState::Idle; }
     void fault() { state_ = StringState::Fault; invalidate(); }
+    // Clear a runtime fault so the axis can be re-homed on an explicit reset. A
+    // Disabled axis stays disabled (audit P0-3).
+    void clearFault() { if (state_ == StringState::Fault) { state_ = StringState::Idle; invalidate(); } }
 
     // Begin a new note. Returns the fresh command id. Cancels any prior pending
     // action by advancing the command id. The pluck is armed automatically once
