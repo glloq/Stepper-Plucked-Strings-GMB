@@ -163,8 +163,34 @@ struct ServoConfig {
     uint16_t travelMs;            // travel time
     uint16_t settleMs;            // settle time
     bool disableAtRest;           // disable at rest
+
+    // Strum / pluck stroke shaping (per servo).
+    uint16_t engageDelayMs;       // strumLift: pause after the lift is down, before the stroke
+    bool     alternateDirection;  // alternate down/up stroke on successive strikes
+    uint16_t activeAltUs;         // up-stroke active pulse (0 = mirror activeUs about restUs)
+    uint16_t strokeMs;            // stroke engage time before return (0 = use travelMs)
+    uint16_t minStrikeUs;         // guaranteed minimum strike depth (0 = velocity-only)
 };
 ```
+
+### 4.0a Strum / pluck stroke shaping
+
+For the strike roles (`pluck`, `strum`, `sharedStrum`) MIDI velocity scales the
+depth between `restUs` and `activeUs`. Five extra fields control the *gesture*:
+
+* **`alternateDirection` + `activeAltUs`** — successive strokes rake the string
+  in opposite directions (down, up, down…). The up-stroke drives to `activeAltUs`,
+  or, when that is `0`, to the mirror of `activeUs` about `restUs`. Applies both to
+  a per-string striker and to the shared strummer (each servo keeps its own
+  stroke parity, reset on neutralise / profile activation).
+* **`strokeMs`** — how long the stroke stays engaged before it returns to rest,
+  i.e. the stroke's *speed*, independent of `travelMs` (which remains the return /
+  settle base). `0` keeps the legacy behaviour (`travelMs`).
+* **`minStrikeUs`** — a floor on the strike depth toward the active side so a
+  soft (low-velocity) note still catches the string. `0` disables it.
+* **`engageDelayMs`** — on a `strumLift` servo, an extra pause after the lift has
+  lowered the strum servo onto the string, before the stroke fires. Lets the
+  string/lift settle so the attack is clean.
 
 ### 4.0 Signal source: PCA9685 or direct GPIO
 

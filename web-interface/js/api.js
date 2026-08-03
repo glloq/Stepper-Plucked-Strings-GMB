@@ -166,6 +166,7 @@
   // ---------------------------------------------------------------------------
   function ukuleleString(openNote) {
     return {
+      enabled: true,
       openNote: openNote, maxFret: 12, scaleLengthMm: 330,
       transmission: 'beltGt2', stepsPerRevolution: 200, microsteps: 16,
       pulleyTeeth: 20, beltPitchMm: 2, leadPerRevolutionMm: 8, customStepsPerMm: 80,
@@ -197,14 +198,22 @@
       inverted: !!opts.inverted,
       travelMs: opts.travelMs || 120,
       settleMs: opts.settleMs || 30,
-      disableAtRest: opts.disableAtRest !== false
+      disableAtRest: opts.disableAtRest !== false,
+      // Strum / pluck stroke shaping (matches firmware ServoConfig).
+      engageDelayMs: opts.engageDelayMs || 0,
+      alternateDirection: !!opts.alternateDirection,
+      activeAltUs: opts.activeAltUs || 0,
+      strokeMs: opts.strokeMs || 0,
+      minStrikeUs: opts.minStrikeUs || 0
     };
   }
   GMB.servoDefaults = servo;
 
-  // Theoretical fret position (spec 14.2): scale·(1−2^(−fret/12)).
+  // Theoretical fret position (spec 14.2): minPositionMm + scale·(1−2^(−fret/12)).
+  // The nut sits at minPositionMm, matching firmware StepperAxis::fretPositionMm
+  // so Auto-fill agrees with the firmware when minPositionMm != 0.
   GMB.fretTheoreticalMm = function (s, fret) {
-    return (s.scaleLengthMm || 0) * (1 - Math.pow(2, -fret / 12));
+    return (s.minPositionMm || 0) + (s.scaleLengthMm || 0) * (1 - Math.pow(2, -fret / 12));
   };
 
   function sampleProfile() {
@@ -232,7 +241,8 @@
       },
       midi: {
         globalChannel: 0, omni: false, transpose: 0, chordWindowMs: 3,
-        velocityCurve: 'linear', sustainPedal: true
+        velocityCurve: 'linear', sustainPedal: true, sustainCc: 64,
+        saturationStrategy: 'priorityLow'
       },
       stringFretSelection: {
         enabled: true, mode: 'hybrid', preset: 'general-midi-boop', perMidiChannel: true,

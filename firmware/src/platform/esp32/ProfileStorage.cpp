@@ -296,6 +296,11 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
         o["travelMs"] = s.travelMs;
         o["settleMs"] = s.settleMs;
         o["disableAtRest"] = s.disableAtRest;
+        o["engageDelayMs"] = s.engageDelayMs;
+        o["alternateDirection"] = s.alternateDirection;
+        o["activeAltUs"] = s.activeAltUs;
+        o["strokeMs"] = s.strokeMs;
+        o["minStrikeUs"] = s.minStrikeUs;
     }
 }
 
@@ -451,6 +456,11 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
         s.travelMs = o["travelMs"] | 120;
         s.settleMs = o["settleMs"] | 30;
         s.disableAtRest = o["disableAtRest"] | true;
+        s.engageDelayMs = o["engageDelayMs"] | 0;
+        s.alternateDirection = o["alternateDirection"] | false;
+        s.activeAltUs = o["activeAltUs"] | 0;
+        s.strokeMs = o["strokeMs"] | 0;
+        s.minStrikeUs = o["minStrikeUs"] | 0;
         out.servos.push_back(s);
     }
     // Reject the whole profile if any enum string was unknown (never silently map

@@ -88,6 +88,25 @@ struct ServoConfig {
     uint16_t travelMs = 120;
     uint16_t settleMs = 30;
     bool disableAtRest = true;
+
+    // Strum / pluck stroke shaping.
+    //   engageDelayMs      : for a strumLift, extra pause after the lift is down,
+    //                        before the strum stroke fires (0 = none).
+    //   alternateDirection : alternate the stroke endpoint on successive strikes
+    //                        (down-stroke, up-stroke, down-stroke…).
+    //   activeAltUs        : the up-stroke active pulse (0 = mirror activeUs about
+    //                        restUs). Only used when alternateDirection is set.
+    //   strokeMs           : time the stroke stays engaged before it returns to
+    //                        rest (0 = use travelMs). Lets the stroke "speed" be
+    //                        set independently of the return/settle timing.
+    //   minStrikeUs        : guaranteed minimum strike depth toward the active side
+    //                        so a low-velocity note still catches the string
+    //                        (0 = disabled, depth follows velocity only).
+    uint16_t engageDelayMs = 0;
+    bool alternateDirection = false;
+    uint16_t activeAltUs = 0;
+    uint16_t strokeMs = 0;
+    uint16_t minStrikeUs = 0;
 };
 
 struct Profile {

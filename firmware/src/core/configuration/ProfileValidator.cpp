@@ -238,6 +238,14 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
                 err(tag + ".restUs", "Rest pulse is outside the servo's min/max range");
             if (s.activeUs < s.pulseMinUs || s.activeUs > s.pulseMaxUs)
                 err(tag + ".activeUs", "Active pulse is outside the servo's min/max range");
+            if (s.activeAltUs != 0 &&
+                (s.activeAltUs < s.pulseMinUs || s.activeAltUs > s.pulseMaxUs))
+                err(tag + ".activeAltUs",
+                    "Alternate active pulse is outside the servo's min/max range");
+            if (s.minStrikeUs != 0 &&
+                (s.minStrikeUs < s.pulseMinUs || s.minStrikeUs > s.pulseMaxUs))
+                err(tag + ".minStrikeUs",
+                    "Minimum strike pulse is outside the servo's min/max range");
 
             if (s.source == ServoSource::Pca) {
                 if (s.pcaBoard > 3)

@@ -880,8 +880,10 @@ void tickString(size_t i, uint32_t nowMs) {
             break;
         }
         case StringSched::StrumLiftDown:
-            // Wait for the lift to lower the strum servo onto the string, then strum.
-            if (nowMs - sch.phaseStartMs >= g_servos.travelMs(sch.liftIndex)) {
+            // Wait for the lift to lower the strum servo onto the string, plus the
+            // configurable engage delay, then strum.
+            if (nowMs - sch.phaseStartMs >=
+                g_servos.travelMs(sch.liftIndex) + g_servos.engageDelayMs(sch.liftIndex)) {
                 g_servos.strike(sch.strikeIndex, tgt.intensity);
                 sch.phase = StringSched::StrumLiftHold;
                 sch.phaseStartMs = nowMs;

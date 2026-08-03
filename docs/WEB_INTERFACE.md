@@ -30,15 +30,19 @@ of detailed parameters, JSON import/export.
 
 | Step | Title | Content |
 | ----- | ----- | ------- |
-| 1 | **Identification** | name, description, number of strings, instrument type, proposed tuning, maximum number of frets |
-| 2 | **Board selection** | ESP32 model, revision, Flash, PSRAM, variant → determines available/reserved/recommended GPIOs (`esp32-s3-devkitc-1` profile) |
+| 1 | **Identification** | name, description, number of strings, instrument type, proposed tuning, max frets (applied to all strings), **plucking mode** (individual / shared strummer / both), **capo** |
+| 2 | **Board selection** | ESP32 model → available/reserved/recommended GPIOs (`esp32-s3-devkitc-1` profile); plus a **Network** panel: Wi-Fi mode (AP/station), SSID, hostname, AP name |
 | 3 | **Automatic assignment** | "Assign pins automatically" button (number of strings, interfaces, board, future USB, diagnostic port, I²C, sensors) |
-| 4 | **Mechanical configuration** | per string: open note, max frets, vibrating length, transmission, steps/revolution, microstepping, travel/revolution, inversion, max speed/acceleration, rest position |
-| 5 | **Homing** | per axis: sensor enabled, GPIO, NO/NC, active level, direction, fast/slow speeds, back-off, offset, timeout, max distance |
-| 6 | **Servo calibration** | per servo: PCA9685 channel, rest, active, limits, inversion, travel/settling time, disable at rest |
-| 7 | **Note calibration** | automatic fret computation **or** manual calibration of each position |
+| 4 | **Mechanical configuration** | per string: axis enabled, vibrating length, transmission, motor wiring polarity (invert direction), **max speed & acceleration** (now in the simplified view), and Advanced geometry; **Copy mechanics to all strings** |
+| 5 | **Homing** | per axis: HOME GPIO, active level, homing search direction, **zero offset / rest position (FDC)**; Advanced adds speeds, back-off, timeout, LIMIT GPIO & level; **Home all axes now** and **Copy homing to all** |
+| 6 | **Servo calibration** | per servo: source/channel, rest, active, travel/settle, disable at rest; **strum/stroke motion** for strike roles — alternate stroke direction (+ up-stroke pulse), stroke time, minimum strike depth; **engage delay** for a strum lift; a **Test strike** pulse |
+| 7 | **Note calibration** | automatic fret computation **or** manual calibration — move the axis and **Capture position** records the live motor position; **Copy scale + calibration to all** |
 | 8 | **Test** | test each motor, sensor, finger, pick, note, string, a chord, the emergency stop |
 | 9 | **Validation** | "Valid configuration" or a precise list of problems; no actuator is enabled until the critical errors are fixed |
+
+The per-string steps (4–7) show **one string at a time** via a string-tab strip,
+so a 6-string instrument stays navigable. General MIDI parameters (sustain CC,
+chord **saturation strategy**, velocity curve…) live on the **MIDI** page.
 
 The step-by-step detail is in [`FIRST_CONFIGURATION.md`](FIRST_CONFIGURATION.md).
 The computations for steps 4–7 are in [`CALIBRATION.md`](CALIBRATION.md).

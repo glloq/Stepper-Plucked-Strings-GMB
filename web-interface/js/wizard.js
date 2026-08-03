@@ -17,7 +17,57 @@
   ];
   var step = 0;
   var board = null;              // board profile (for GPIO capability filtering)
-  var motorPos = {};            // per-string mock motor position (fret editor)
+  var motorPos = {};            // per-string live motor position (fret editor)
+  var activeStr = 0;            // per-string steps show ONE string at a time
+  var statusConn = null;        // live /ws/status subscription (motor readback)
+
+  // Tab strip to pick which string the per-string steps (Mechanics, Homing,
+  // Servos, Notes) show — one string at a time keeps long instruments navigable
+  // and stops full-step re-renders from throwing away the scroll position.
+  function stringTabs() {
+    var n = GMB.state.profile.instrument.stringCount;
+    if (activeStr >= n) activeStr = n - 1;
+    if (activeStr < 0) activeStr = 0;
+    var tabs = [];
+    for (var i = 0; i < n; i++) {
+      (function (idx) {
+        tabs.push(h('button.strtab' + (idx === activeStr ? '.active' : ''),
+          { onclick: function () { activeStr = idx; drawStep(); } },
+          'String ' + (idx + 1)));
+      })(i);
+    }
+    return h('div.strtabs', tabs);
+  }
+
+  // Copy one string's settings to every other string (uniform mechanics are the
+  // common case; per-string wiring like servos/pins is intentionally NOT copied).
+  function copyMechToAll(src) {
+    var keys = ['scaleLengthMm', 'transmission', 'stepsPerRevolution', 'microsteps',
+      'pulleyTeeth', 'beltPitchMm', 'leadPerRevolutionMm', 'customStepsPerMm',
+      'invertDirection', 'minPositionMm', 'maxPositionMm', 'maxSpeedMmS', 'maxAccelMmS2', 'enabled'];
+    GMB.state.profile.strings.forEach(function (st) {
+      if (st === src) return;
+      keys.forEach(function (k) { if (src[k] !== undefined) st[k] = src[k]; });
+    });
+    GMB.markDirty(); drawStep(); GMB.toast('Mechanics copied to all strings.', 'ok');
+  }
+  function copyHomingToAll(src) {
+    GMB.state.profile.strings.forEach(function (st) {
+      if (st !== src) st.homing = GMB.deepCopy(src.homing);
+    });
+    GMB.markDirty(); drawStep(); GMB.toast('Homing copied to all strings.', 'ok');
+  }
+  function copyFretsToAll(src) {
+    GMB.state.profile.strings.forEach(function (st) {
+      if (st === src) return;
+      st.scaleLengthMm = src.scaleLengthMm;
+      st.calibratedFretMm = (src.calibratedFretMm || []).slice();
+    });
+    GMB.markDirty(); drawStep(); GMB.toast('Scale + fret calibration copied to all strings.', 'ok');
+  }
+  function copyToAllBtn(label, fn, src) {
+    return GMB.button(label, function () { fn(src); }, 'ghost');
+  }
 
   var TUNINGS = {
     ukulele: { notes: [67, 60, 64, 69], maxFret: 12 },       // G C E A
@@ -30,6 +80,11 @@
   var TYPE_ID = { ukulele: 0x04, guitar: 0x04, bass: 0x05, mandolin: 0x04, banjo: 0x04 };
 
   function render(host) {
+    // Subscribe once to live status so the Notes step can read the real motor
+    // position for fret capture. Closed in reset().
+    if (!statusConn && GMB.api && GMB.api.connectStatus) {
+      statusConn = GMB.api.connectStatus(function (st) { onWizardStatus(st); });
+    }
     // The Homing/Servos steps filter free GPIOs, so make sure the board profile
     // is loaded (mirrors pins.js). Cached after the first fetch.
     if (!board) {
@@ -85,7 +140,22 @@
       GMB.field('Number of strings (1–6)', GMB.input(inst, 'stringCount', {
         type: 'number', min: 1, max: 6, onChange: function (v) { setStringCount(v); }
       })),
-      GMB.field('Max frets', GMB.input(strings0(), 'maxFret', { type: 'number', min: 0, max: 30 })),
+      GMB.field('Max frets (all strings)', GMB.input(strings0(), 'maxFret', {
+        type: 'number', min: 0, max: 30,
+        onChange: function (v) {
+          var mf = Number(v);
+          GMB.state.profile.strings.forEach(function (st) { st.maxFret = mf; });
+          GMB.markDirty();
+        }
+      }), 'Applied to every string; fine-tune per string in the Notes step.'),
+      GMB.field('Plucking mode', GMB.input(inst, 'pluckMode', {
+        type: 'select', options: [
+          { value: 'individual', label: 'Individual pluck (one plucker per string)' },
+          { value: 'sharedStrum', label: 'Shared strummer' },
+          { value: 'both', label: 'Both' }]
+      }), 'How strings are excited; drives the servo roles you need.'),
+      GMB.field('Capo (fret)', GMB.input(inst, 'capo', { type: 'number', min: 0, max: 12 }),
+        'Global capo: raises every open string by this many frets.'),
       GMB.field('GM program', GMB.input(inst, 'gmProgram', { type: 'number', min: 0, max: 127 }))
     ]));
     body.appendChild(h('p.muted', 'A suggested tuning is applied when you pick a type; every value stays editable in the Notes step.'));
@@ -125,6 +195,7 @@
 
   function defaultString() {
     return {
+      enabled: true,
       openNote: 60, maxFret: 12, scaleLengthMm: 330, transmission: 'beltGt2',
       stepsPerRevolution: 200, microsteps: 16, pulleyTeeth: 20, beltPitchMm: 2,
       leadPerRevolutionMm: 8, customStepsPerMm: 80, invertDirection: false,
@@ -154,6 +225,30 @@
         h('li', 'GPIO43/44 are the programming/diagnostic UART; GPIO48 is the on-board RGB LED.')
       ])
     ]));
+
+    // ---- Network / Wi-Fi -----------------------------------------------------
+    var net = p.network;
+    var station = net.mode === 'station';
+    var netFields = [
+      GMB.field('Wi-Fi mode', GMB.input(net, 'mode', {
+        type: 'select', options: [
+          { value: 'accessPoint', label: 'Access point (hosts its own network)' },
+          { value: 'station', label: 'Station (joins your Wi-Fi)' }],
+        onChange: function () { drawStep(); }
+      })),
+      GMB.field('Hostname (mDNS)', GMB.input(net, 'hostname'))
+    ];
+    if (station) {
+      netFields.push(GMB.field('Network SSID', GMB.input(net, 'ssid'), 'The Wi-Fi network to join.'));
+      netFields.push(GMB.field('Static IP', GMB.input(net, 'staticIp', { type: 'checkbox' })));
+    } else {
+      netFields.push(GMB.field('Access-point name', GMB.input(net, 'apSsid'), 'SSID the instrument broadcasts.'));
+    }
+    body.appendChild(h('div.card', [
+      h('h3', 'Network'),
+      h('p.muted', 'The Wi-Fi password is set separately (never stored in the exported profile).'),
+      h('div.form-grid', netFields)
+    ]));
   }
 
   // ---- Step 3: Automatic pins ----------------------------------------------
@@ -180,39 +275,48 @@
   // ---- Step 4: Mechanics ----------------------------------------------------
   function stepMechanics(body) {
     body.appendChild(h('h3', 'Mechanics per string'));
-    GMB.state.profile.strings.forEach(function (s, i) {
-      var spm = stepsPerMm(s);
-      var basic = [
-        GMB.field('Scale length (mm)', GMB.input(s, 'scaleLengthMm', { type: 'number', onChange: function () { drawStep(); } })),
-        GMB.field('Transmission', GMB.input(s, 'transmission', {
-          type: 'select', options: [{ value: 'beltGt2', label: 'GT2 belt' }, { value: 'screw', label: 'Screw' }, { value: 'custom', label: 'Custom' }],
-          onChange: function () { drawStep(); }
-        })),
-        GMB.field('Invert direction', GMB.input(s, 'invertDirection', { type: 'checkbox' }))
+    body.appendChild(stringTabs());
+    var i = activeStr, s = GMB.state.profile.strings[i];
+    if (!s) return;
+    var spm = stepsPerMm(s);
+    if (s.enabled === undefined) s.enabled = true;
+    // Motion (speed/accel/direction) is now in the simplified view: the user
+    // wants it easy to set per string. Only fine geometry stays Advanced.
+    var basic = [
+      GMB.field('Axis enabled', GMB.input(s, 'enabled', { type: 'checkbox', onChange: function () { drawStep(); } }),
+        'Uncheck to skip a broken axis without losing its tuning/pins.'),
+      GMB.field('Scale length (mm)', GMB.input(s, 'scaleLengthMm', { type: 'number', onChange: function () { drawStep(); } })),
+      GMB.field('Transmission', GMB.input(s, 'transmission', {
+        type: 'select', options: [{ value: 'beltGt2', label: 'GT2 belt' }, { value: 'screw', label: 'Screw' }, { value: 'custom', label: 'Custom' }],
+        onChange: function () { drawStep(); }
+      })),
+      GMB.field('Motor wiring polarity (invert direction)', GMB.input(s, 'invertDirection', { type: 'checkbox' }),
+        'Flip if the carriage moves away from HOME during homing.'),
+      GMB.field('Max speed (mm/s)', GMB.input(s, 'maxSpeedMmS', { type: 'number' })),
+      GMB.field('Max acceleration (mm/s²)', GMB.input(s, 'maxAccelMmS2', { type: 'number' }),
+        'Motion is trapezoidal (FastAccelStepper) — this is the accel magnitude.')
+    ];
+    var adv = [];
+    if (GMB.isAdvanced()) {
+      adv = [
+        GMB.field('Steps / revolution', GMB.input(s, 'stepsPerRevolution', { type: 'number', onChange: function () { drawStep(); } })),
+        GMB.field('Microsteps', GMB.input(s, 'microsteps', { type: 'number', onChange: function () { drawStep(); } })),
+        s.transmission === 'screw'
+          ? GMB.field('Lead / rev (mm)', GMB.input(s, 'leadPerRevolutionMm', { type: 'number', onChange: function () { drawStep(); } }))
+          : (s.transmission === 'custom'
+            ? GMB.field('Custom steps/mm', GMB.input(s, 'customStepsPerMm', { type: 'number', onChange: function () { drawStep(); } }))
+            : [GMB.field('Pulley teeth', GMB.input(s, 'pulleyTeeth', { type: 'number', onChange: function () { drawStep(); } })),
+               GMB.field('Belt pitch (mm)', GMB.input(s, 'beltPitchMm', { type: 'number', onChange: function () { drawStep(); } }))]),
+        GMB.field('Min position (mm)', GMB.input(s, 'minPositionMm', { type: 'number', onChange: function () { drawStep(); } })),
+        GMB.field('Max position (mm)', GMB.input(s, 'maxPositionMm', { type: 'number' }))
       ];
-      var adv = [];
-      if (GMB.isAdvanced()) {
-        adv = [
-          GMB.field('Steps / revolution', GMB.input(s, 'stepsPerRevolution', { type: 'number', onChange: function () { drawStep(); } })),
-          GMB.field('Microsteps', GMB.input(s, 'microsteps', { type: 'number', onChange: function () { drawStep(); } })),
-          s.transmission === 'screw'
-            ? GMB.field('Lead / rev (mm)', GMB.input(s, 'leadPerRevolutionMm', { type: 'number', onChange: function () { drawStep(); } }))
-            : (s.transmission === 'custom'
-              ? GMB.field('Custom steps/mm', GMB.input(s, 'customStepsPerMm', { type: 'number', onChange: function () { drawStep(); } }))
-              : [GMB.field('Pulley teeth', GMB.input(s, 'pulleyTeeth', { type: 'number', onChange: function () { drawStep(); } })),
-                 GMB.field('Belt pitch (mm)', GMB.input(s, 'beltPitchMm', { type: 'number', onChange: function () { drawStep(); } }))]),
-          GMB.field('Max speed (mm/s)', GMB.input(s, 'maxSpeedMmS', { type: 'number' })),
-          GMB.field('Max accel (mm/s²)', GMB.input(s, 'maxAccelMmS2', { type: 'number' })),
-          GMB.field('Min position (mm)', GMB.input(s, 'minPositionMm', { type: 'number' })),
-          GMB.field('Max position (mm)', GMB.input(s, 'maxPositionMm', { type: 'number' }))
-        ];
-      }
-      body.appendChild(h('div.substring', [
-        h('div.substring-head', [h('strong', 'String ' + (i + 1)), h('span.pill.mini', GMB.noteName(s.openNote)),
-          h('span.muted', 'steps/mm = ' + spm.toFixed(2))]),
-        h('div.form-grid', basic.concat(adv))
-      ]));
-    });
+    }
+    body.appendChild(h('div.substring', [
+      h('div.substring-head', [h('strong', 'String ' + (i + 1)), h('span.pill.mini', GMB.noteName(s.openNote)),
+        h('span.muted', 'steps/mm = ' + spm.toFixed(2))]),
+      h('div.form-grid', basic.concat(adv)),
+      h('div.toolbar', [copyToAllBtn('Copy mechanics to all strings', copyMechToAll, s)])
+    ]));
   }
 
   // Assisted steps/mm (spec 12.1) — mirrors StepperAxis::stepsPerMm.
@@ -290,54 +394,65 @@
   function stepHoming(body) {
     body.appendChild(h('h3', 'Homing & endstops per string'));
     body.appendChild(h('p.muted', 'Each string homes on its own HOME switch. Pick the GPIO and the homing behaviour; a LIMIT switch is optional (Advanced).'));
-    GMB.state.profile.strings.forEach(function (s, i) {
-      var hm = s.homing;
-      var homeSignal = 'HOME' + (i + 1), limitSignal = 'LIMIT' + (i + 1);
-      var homeGpio = pinSignalGpio(homeSignal), limitGpio = pinSignalGpio(limitSignal);
-      var fields = [
-        GMB.field('HOME sensor GPIO',
-          gpioSelect('home', homeGpio, usedGpios({ exceptSignal: homeSignal }),
-            function (g) { setPinSignal(homeSignal, 'home', g); drawStep(); }),
-          'Endstop that defines the zero.'),
-        GMB.field('Sensor active level', GMB.input(hm, 'sensorActiveHigh', {
-          type: 'select', options: [{ value: true, label: 'Active high' }, { value: false, label: 'Active low' }],
+    body.appendChild(stringTabs());
+    var i = activeStr, s = GMB.state.profile.strings[i];
+    if (!s) return;
+    var hm = s.homing;
+    var homeSignal = 'HOME' + (i + 1), limitSignal = 'LIMIT' + (i + 1);
+    var homeGpio = pinSignalGpio(homeSignal), limitGpio = pinSignalGpio(limitSignal);
+    var fields = [
+      GMB.field('HOME sensor GPIO',
+        gpioSelect('home', homeGpio, usedGpios({ exceptSignal: homeSignal }),
+          function (g) { setPinSignal(homeSignal, 'home', g); drawStep(); }),
+        'Endstop that defines the zero (FDC).'),
+      GMB.field('Sensor active level', GMB.input(hm, 'sensorActiveHigh', {
+        type: 'select', options: [{ value: true, label: 'Active high' }, { value: false, label: 'Active low' }],
+        coerce: function (v) { return v === 'true' || v === true; }
+      })),
+      GMB.field('Homing search direction', GMB.input(hm, 'direction', {
+        type: 'select', options: [{ value: -1, label: 'Toward − (home)' }, { value: 1, label: 'Toward +' }],
+        coerce: Number
+      }), 'Which way the carriage moves to find HOME.'),
+      GMB.field('Zero offset / rest position (mm)', GMB.input(hm, 'offsetMm', { type: 'number' }),
+        'Where the axis rests past the HOME sensor (the FDC position).')
+    ];
+    if (GMB.isAdvanced()) {
+      fields = fields.concat([
+        GMB.field('Fast speed (mm/s)', GMB.input(hm, 'fastSpeedMmS', { type: 'number' })),
+        GMB.field('Slow speed (mm/s)', GMB.input(hm, 'slowSpeedMmS', { type: 'number' })),
+        GMB.field('Backoff (mm)', GMB.input(hm, 'backoffMm', { type: 'number' })),
+        GMB.field('Timeout (ms)', GMB.input(hm, 'timeoutMs', { type: 'number' })),
+        GMB.field('Max search (mm)', GMB.input(hm, 'maxSearchMm', { type: 'number' })),
+        GMB.field('LIMIT switch GPIO (optional)',
+          gpioSelect('limit', limitGpio, usedGpios({ exceptSignal: limitSignal }),
+            function (g) { setPinSignal(limitSignal, 'limit', g); drawStep(); }),
+          'Optional end-of-travel safety switch.'),
+        GMB.field('LIMIT active level', GMB.input(hm, 'limitActiveHigh', {
+          type: 'select', options: [{ value: false, label: 'Active low' }, { value: true, label: 'Active high' }],
           coerce: function (v) { return v === 'true' || v === true; }
-        })),
-        GMB.field('Direction', GMB.input(hm, 'direction', {
-          type: 'select', options: [{ value: -1, label: 'Toward − (home)' }, { value: 1, label: 'Toward +' }],
-          coerce: Number
         }))
-      ];
-      if (GMB.isAdvanced()) {
-        fields = fields.concat([
-          GMB.field('Fast speed (mm/s)', GMB.input(hm, 'fastSpeedMmS', { type: 'number' })),
-          GMB.field('Slow speed (mm/s)', GMB.input(hm, 'slowSpeedMmS', { type: 'number' })),
-          GMB.field('Backoff (mm)', GMB.input(hm, 'backoffMm', { type: 'number' })),
-          GMB.field('Offset after zero (mm)', GMB.input(hm, 'offsetMm', { type: 'number' })),
-          GMB.field('Timeout (ms)', GMB.input(hm, 'timeoutMs', { type: 'number' })),
-          GMB.field('Max search (mm)', GMB.input(hm, 'maxSearchMm', { type: 'number' })),
-          GMB.field('LIMIT switch GPIO (optional)',
-            gpioSelect('limit', limitGpio, usedGpios({ exceptSignal: limitSignal }),
-              function (g) { setPinSignal(limitSignal, 'limit', g); drawStep(); }),
-            'Optional end-of-travel safety switch.')
-        ]);
-      }
-      var readout = h('div.endstop-readout', h('span.muted', 'Press “Test endstop” to read the live level.'));
-      body.appendChild(h('div.substring', [
-        h('div.substring-head', [h('strong', 'String ' + (i + 1) + ' homing'),
-          h('span.pill.mini', GMB.noteName(s.openNote)),
-          homeGpio < 0 ? h('span.pill.mini.error', 'no HOME pin') : h('span.pill.mini.ok', 'HOME GPIO' + homeGpio)]),
-        h('div.form-grid', fields),
-        h('div.toolbar', [GMB.button('Test endstop', function () { testEndstop(i, s, readout); }, 'ghost')]),
-        readout
-      ]));
-    });
-    body.appendChild(h('div.toolbar', [GMB.button('Start homing (test all axes)', function () {
-      GMB.api.testNote({ channel: 0, note: 60, velocity: 1, durationMs: 200 })
-        .then(function (res) {
-          if (res && res.ok === false) { GMB.toast(res.error || 'Instrument not ready.', 'warn'); return; }
-          GMB.toast('Homing command sent to all axes.', 'ok');
-        }).catch(function (e) { testErr('Homing test failed', e); });
+      ]);
+    }
+    var readout = h('div.endstop-readout', h('span.muted', 'Press “Test endstop” to read the live level.'));
+    body.appendChild(h('div.substring', [
+      h('div.substring-head', [h('strong', 'String ' + (i + 1) + ' homing'),
+        h('span.pill.mini', GMB.noteName(s.openNote)),
+        homeGpio < 0 ? h('span.pill.mini.error', 'no HOME pin') : h('span.pill.mini.ok', 'HOME GPIO' + homeGpio)]),
+      h('div.form-grid', fields),
+      h('div.toolbar.wrap', [
+        GMB.button('Test endstop', function () { testEndstop(i, s, readout); }, 'ghost'),
+        copyToAllBtn('Copy homing to all strings', copyHomingToAll, s)
+      ]),
+      readout
+    ]));
+    body.appendChild(h('div.toolbar', [GMB.button('Home all axes now', function () {
+      GMB.api.resetSystem().then(function (res) {
+        if (res && res.ok === false) {
+          GMB.toast('Homing refused: ' + (res.error || 'E-stop/LIMIT active or invalid config') + '.', 'warn');
+        } else {
+          GMB.toast('Homing started on all axes.', 'ok');
+        }
+      }).catch(function (e) { testErr('Homing failed', e); });
     }, 'primary')]));
   }
 
@@ -373,8 +488,8 @@
     body.appendChild(h('h3', 'Servos per string'));
     body.appendChild(h('p.muted', 'Add the servos each string uses. Every servo is driven either by a PCA9685 channel or directly from a free ESP32 GPIO — mix them freely, or use no PCA at all.'));
     body.appendChild(channelMap());
-    var p = GMB.state.profile;
-    for (var i = 0; i < p.instrument.stringCount; i++) body.appendChild(stringServoSection(i));
+    body.appendChild(stringTabs());
+    body.appendChild(stringServoSection(activeStr));
     if (GMB.isAdvanced()) body.appendChild(sharedServoSection());
   }
 
@@ -525,6 +640,25 @@
       GMB.field('Rest (µs)', GMB.input(sv, 'restUs', { type: 'number' })),
       GMB.field('Active (µs)', GMB.input(sv, 'activeUs', { type: 'number' }))
     ]);
+    // Strum / stroke motion — shown for the roles that actually strike a string.
+    var role = sv.function;
+    var isStriker = role === 'strum' || role === 'pluck' || role === 'sharedStrum';
+    if (role === 'strumLift') {
+      fields.push(GMB.field('Engage delay (ms)', GMB.input(sv, 'engageDelayMs', { type: 'number', min: 0 }),
+        'Extra pause after the lift is down, before the strum stroke fires.'));
+    }
+    if (isStriker) {
+      fields.push(GMB.field('Alternate stroke direction', GMB.input(sv, 'alternateDirection', {
+        type: 'checkbox', onChange: function () { drawStep(); } }),
+        'Down-stroke, up-stroke, down-stroke… on successive strokes.'));
+      if (sv.alternateDirection) {
+        fields.push(GMB.field('Up-stroke active (µs, 0 = mirror rest)', GMB.input(sv, 'activeAltUs', { type: 'number', min: 0 })));
+      }
+      fields.push(GMB.field('Stroke time (ms, 0 = use travel)', GMB.input(sv, 'strokeMs', { type: 'number', min: 0 }),
+        'How long the stroke stays engaged (its speed), independent of the return.'));
+      fields.push(GMB.field('Min strike depth (µs, 0 = off)', GMB.input(sv, 'minStrikeUs', { type: 'number', min: 0 }),
+        'Guaranteed depth toward the string so soft notes still catch it.'));
+    }
     if (GMB.isAdvanced()) {
       fields = fields.concat([
         GMB.field('Function', GMB.input(sv, 'function', {
@@ -545,6 +679,10 @@
       h('div.toolbar', [
         GMB.button('Test rest', function () { testServo(sv, 'rest'); }, 'ghost'),
         GMB.button('Test active', function () { testServo(sv, 'active'); }, 'ghost'),
+        isStriker ? GMB.button('Test strike', function () {
+          testServo(sv, 'active');
+          setTimeout(function () { testServo(sv, 'rest'); }, 250);
+        }, 'ghost') : null,
         h('span.spacer'),
         GMB.button('Remove', function () { removeServo(sv); }, 'danger-ghost')
       ])
@@ -554,22 +692,35 @@
   // ---- Step 7: Notes / fret position editor --------------------------------
   function stepNotes(body) {
     body.appendChild(h('h3', 'Fret positions per string'));
-    body.appendChild(h('p.muted', 'Auto-fill the theoretical positions, then fine-tune any fret by hand. A calibrated value always overrides theory in the firmware.'));
-    GMB.state.profile.strings.forEach(function (s, i) {
-      var mp = motorPos[i] !== undefined ? motorPos[i] : 0;
-      body.appendChild(h('div.substring', [
-        h('div.substring-head', [h('strong', 'String ' + (i + 1)),
-          GMB.field('Open note (MIDI)', GMB.input(s, 'openNote', { type: 'number', min: 0, max: 127, onChange: function () { drawStep(); } })),
-          GMB.field('Max frets', GMB.input(s, 'maxFret', { type: 'number', min: 0, max: 30, onChange: function () { drawStep(); } })),
-          h('span.pill.mini', GMB.noteName(s.openNote)),
-          h('span.motor-pos', 'Motor: ' + mp.toFixed(2) + ' mm')]),
-        h('div.toolbar.wrap', [
-          GMB.button('Auto-fill (theoretical)', function () { autoFill(s); }, 'primary'),
-          GMB.button('Clear calibration', function () { s.calibratedFretMm = []; GMB.markDirty(); drawStep(); }, 'ghost')
-        ]),
-        fretEditor(s, i)
-      ]));
+    body.appendChild(h('p.muted', 'Auto-fill the theoretical positions, then fine-tune any fret by hand. Move the axis to the real fret and use “Capture position” to record the live motor position. A calibrated value always overrides theory in the firmware.'));
+    body.appendChild(stringTabs());
+    var i = activeStr, s = GMB.state.profile.strings[i];
+    if (!s) return;
+    var mp = motorPos[i] !== undefined ? motorPos[i] : 0;
+    body.appendChild(h('div.substring', [
+      h('div.substring-head', [h('strong', 'String ' + (i + 1)),
+        GMB.field('Open note (MIDI)', GMB.input(s, 'openNote', { type: 'number', min: 0, max: 127, onChange: function () { drawStep(); } })),
+        GMB.field('Max frets', GMB.input(s, 'maxFret', { type: 'number', min: 0, max: 30, onChange: function () { drawStep(); } })),
+        h('span.pill.mini', GMB.noteName(s.openNote)),
+        h('span.motor-pos', { id: 'motor-pos-live' }, 'Motor: ' + mp.toFixed(2) + ' mm')]),
+      h('div.toolbar.wrap', [
+        GMB.button('Auto-fill (theoretical)', function () { autoFill(s); }, 'primary'),
+        GMB.button('Clear calibration', function () { s.calibratedFretMm = []; GMB.markDirty(); drawStep(); }, 'ghost'),
+        copyToAllBtn('Copy scale + calibration to all', copyFretsToAll, s)
+      ]),
+      fretEditor(s, i)
+    ]));
+  }
+
+  // Live per-axis motor position from /ws/status, so “Capture position” records
+  // the real position instead of a mock (audit: manual calibration was circular).
+  function onWizardStatus(st) {
+    if (!st || !st.strings) return;
+    st.strings.forEach(function (row) {
+      if (row && row.index !== undefined && row.positionMm !== undefined) motorPos[row.index] = row.positionMm;
     });
+    var live = document.getElementById('motor-pos-live');
+    if (live && motorPos[activeStr] !== undefined) live.textContent = 'Motor: ' + Number(motorPos[activeStr]).toFixed(2) + ' mm';
   }
 
   function autoFill(s) {
@@ -614,7 +765,7 @@
       ]),
       h('td', h('div.fret-actions', [
         GMB.button('Go to this fret', function () { jogToFret(s, i, f, theo); }, 'ghost'),
-        GMB.button('Save position', function () { saveFret(s, i, f); }, 'primary')
+        GMB.button('Capture position', function () { saveFret(s, i, f); }, 'primary')
       ]))
     ]);
   }
@@ -715,5 +866,12 @@
     return out;
   };
 
-  GMB.views.wizard = { render: render, reset: function () { step = 0; } };
+  GMB.views.wizard = {
+    render: render,
+    reset: function () {
+      step = 0;
+      activeStr = 0;
+      if (statusConn) { statusConn.close(); statusConn = null; }
+    }
+  };
 })(window);

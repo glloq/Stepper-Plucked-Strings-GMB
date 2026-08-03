@@ -36,7 +36,19 @@
           // so offering it would silently behave like 'linear' (audit P1-12).
           type: 'select', options: ['linear', 'soft', 'hard', 'exponential']
         })),
-        GMB.field('Sustain pedal (CC64)', GMB.input(p.midi, 'sustainPedal', { type: 'checkbox' }))
+        GMB.field('Sustain pedal', GMB.input(p.midi, 'sustainPedal', { type: 'checkbox', onChange: function () { GMB.render(); } })),
+        p.midi.sustainPedal
+          ? GMB.field('Sustain CC number', GMB.input(p.midi, 'sustainCc', { type: 'number', min: 0, max: 119 }), 'Default 64 (sustain pedal).')
+          : null,
+        GMB.field('Chord saturation strategy', GMB.input(p.midi, 'saturationStrategy', {
+          type: 'select', options: [
+            { value: 'priorityLow', label: 'Keep lowest notes' },
+            { value: 'priorityHigh', label: 'Keep highest notes' },
+            { value: 'priorityFirst', label: 'Keep first-arriving' },
+            { value: 'replaceOldest', label: 'Replace oldest' },
+            { value: 'ignoreExtra', label: 'Ignore extra notes' },
+            { value: 'monophonic', label: 'Monophonic (one note)' }]
+        }), 'What happens when more notes arrive than there are strings.')
       ])
     ]));
 

@@ -84,6 +84,10 @@ public:
     uint16_t settleMs(int index) const {
         return (index >= 0 && index < (int)servos_.size()) ? servos_[index].settleMs : 0;
     }
+    // Extra pause after a strum lift is down before the stroke fires (strumLift).
+    uint16_t engageDelayMs(int index) const {
+        return (index >= 0 && index < (int)servos_.size()) ? servos_[index].engageDelayMs : 0;
+    }
 
 private:
     enum class Mode : uint8_t { Rest, Active, Striking };
@@ -92,6 +96,7 @@ private:
         uint32_t returnAtMs = 0;  // when a strike returns to rest
         uint32_t restAtMs = 0;    // when a resting servo may cut its PWM
         bool pwmOff = false;
+        bool strokeParity = false;  // toggles per strike for alternateDirection
     };
     std::vector<Rt> rt_;
 

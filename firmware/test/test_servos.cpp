@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 #include "../src/core/configuration/Profile.h"
 #include "../src/core/configuration/ProfileValidator.h"
+#include "../src/core/configuration/ServoStroke.h"
 #include "../src/core/motion/StepperAxis.h"
 
 using namespace gmb;
@@ -141,6 +142,83 @@ TEST(strum_lift_without_striker_rejected) {
     lift.channel = 13;
     p.servos.push_back(lift);
     CHECK(!ProfileValidator::isActivatable(p));
+}
+
+// --- Strum stroke shaping (servoStrikeTargetUs) ---------------------------
+
+static ServoConfig strumServo() {
+    ServoConfig s;
+    s.function = "strum";
+    s.pulseMinUs = 500;
+    s.pulseMaxUs = 2500;
+    s.restUs = 1000;
+    s.activeUs = 1800;
+    return s;
+}
+
+// Velocity scales the strike depth linearly between rest and active.
+TEST(strike_depth_follows_velocity) {
+    ServoConfig s = strumServo();
+    CHECK_EQ((int)servoStrikeTargetUs(s, 0.0, false), 1000);   // rest
+    CHECK_EQ((int)servoStrikeTargetUs(s, 1.0, false), 1800);   // active
+    CHECK_EQ((int)servoStrikeTargetUs(s, 0.5, false), 1400);   // midpoint
+}
+
+// minStrikeUs guarantees a floor depth so soft notes still catch the string.
+TEST(min_strike_depth_floor) {
+    ServoConfig s = strumServo();
+    s.minStrikeUs = 1300;
+    CHECK_EQ((int)servoStrikeTargetUs(s, 0.0, false), 1300);   // floored up
+    CHECK_EQ((int)servoStrikeTargetUs(s, 1.0, false), 1800);   // full still reaches active
+}
+
+// Alternate direction: the up-stroke uses activeAltUs when provided.
+TEST(alternate_stroke_uses_alt_endpoint) {
+    ServoConfig s = strumServo();
+    s.alternateDirection = true;
+    s.activeAltUs = 600;
+    CHECK_EQ((int)servoStrikeTargetUs(s, 1.0, false), 1800);   // down-stroke
+    CHECK_EQ((int)servoStrikeTargetUs(s, 1.0, true), 600);     // up-stroke
+}
+
+// activeAltUs == 0 mirrors the active pulse about rest for a symmetric up-stroke.
+TEST(alternate_stroke_mirrors_when_alt_zero) {
+    ServoConfig s = strumServo();
+    s.alternateDirection = true;   // activeAltUs stays 0
+    // mirror of 1800 about rest 1000 = 2*1000 - 1800 = 200, clamped to pulseMin 500.
+    CHECK_EQ((int)servoStrikeTargetUs(s, 1.0, true), 500);
+}
+
+// An out-of-window alternate/min pulse is rejected by validation.
+TEST(strum_alt_pulse_out_of_range_rejected) {
+    Profile p = uke();
+    ServoConfig strum = strumServo();
+    strum.enabled = true;
+    strum.stringIndex = 0;
+    strum.source = ServoSource::Pca;
+    strum.pcaBoard = 0;
+    strum.channel = 12;
+    strum.activeAltUs = 3000;  // > pulseMaxUs
+    p.servos.push_back(strum);
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
+// A valid strum with alternation + floor + custom stroke time validates.
+TEST(strum_stroke_fields_valid) {
+    Profile p = uke();
+    ServoConfig strum = strumServo();
+    strum.enabled = true;
+    strum.stringIndex = 0;
+    strum.source = ServoSource::Pca;
+    strum.pcaBoard = 0;
+    strum.channel = 12;
+    strum.alternateDirection = true;
+    strum.activeAltUs = 700;
+    strum.minStrikeUs = 1200;
+    strum.strokeMs = 40;
+    strum.engageDelayMs = 15;
+    p.servos.push_back(strum);
+    CHECK(ProfileValidator::isActivatable(p));
 }
 
 // Adjustable per-fret positions: the calibrated table overrides theory and is
