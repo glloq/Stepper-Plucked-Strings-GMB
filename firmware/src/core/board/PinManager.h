@@ -1,4 +1,4 @@
-// Pin assignment engine + validator (cahier des charges 11.3 / 11.5 / 11.6).
+// Pin assignment engine + validator (spec 11.3 / 11.5 / 11.6).
 #pragma once
 
 #include <string>
@@ -27,7 +27,7 @@ struct PinError {
     std::string conflictWith;  // signal already using the pin, if any
 };
 
-// Inputs that drive automatic assignment (cahier des charges, step 3).
+// Inputs that drive automatic assignment (spec, step 3).
 struct PinRequest {
     int stringCount = 1;
     bool useI2cServos = true;   // PCA9685 present

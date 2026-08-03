@@ -1,266 +1,268 @@
 # Architecture — Stepper-Plucked-Strings-GMB
 
-> Document de référence : [`CAHIER_DES_CHARGES.md`](CAHIER_DES_CHARGES.md) (source : `cahier des charges.md` §23, §24).
-> Documents liés : [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md) · [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) · [`WEB_INTERFACE.md`](WEB_INTERFACE.md) · [`CALIBRATION.md`](CALIBRATION.md) · [`SAFETY.md`](SAFETY.md)
+> Reference document: [`SPEC_INDEX.md`](SPEC_INDEX.md) (source: `SPECIFICATION.md` §23, §24).
+> Related documents: [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md) · [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) · [`WEB_INTERFACE.md`](WEB_INTERFACE.md) · [`CALIBRATION.md`](CALIBRATION.md) · [`SAFETY.md`](SAFETY.md)
 
-Ce document décrit l'organisation logicielle du firmware, la façon dont les
-modules du cahier des charges (§23) correspondent au code réellement implémenté
-dans `firmware/src/core/*`, le flux de données de bout en bout, la génération du
-snapshot de capacités, la stratégie « cœur pur + adaptateurs de plateforme +
-tests natifs », et les phases de développement (§24).
+This document describes the software organization of the firmware, how the
+modules from the specification (§23) map to the code actually implemented
+in `firmware/src/core/*`, the end-to-end data flow, the generation of the
+capabilities snapshot, the "pure core + platform adapters + native tests"
+strategy, and the development phases (§24).
 
 ---
 
-## 1. Stratégie : cœur pur, adaptateurs de plateforme, tests natifs
+## 1. Strategy: pure core, platform adapters, native tests
 
-Le cœur algorithmique du firmware est écrit en **C++17 pur**, sans aucune
-dépendance Arduino ou ESP-IDF. Cette contrainte est explicite dans le code :
+The algorithmic core of the firmware is written in **pure C++17**, without any
+Arduino or ESP-IDF dependency. This constraint is explicit in the code:
 
 ```cpp
 // Types.h — This header is pure C++17 with no Arduino / ESP-IDF dependency so
 // that the whole algorithmic core can be unit-tested natively on a host with g++.
 ```
 
-Conséquences :
+Consequences:
 
-* **Cœur pur** (`firmware/src/core/`) — logique métier testable sur PC : profils
-  de cartes, gestion des broches, sélection corde/frette, allocation des notes,
-  machine d'état par corde, géométrie moteur, homing, capacités/SysEx GMB,
-  sécurité. Aucun accès direct au matériel.
-* **Adaptateurs de plateforme** (`firmware/src/platform/esp32/`) —
-  implémentations concrètes qui branchent le cœur sur le matériel ESP32-S3 :
-  `StepperBank` génère les pas via le **moteur matériel FastAccelStepper**
-  (RMT/MCPWM + timer), donc **hors de `loop()`** — le `MotionPlanner` du cœur
-  reste le modèle trapézoïdal de référence testé sur PC ; `ServoBank` pilote le
-  PCA9685 **et** les servos en GPIO direct (LEDC 14 bits) ; `Net` (Wi-Fi non
-  bloquant), `WebApi` (REST + WebSocket), `MidiWifi` (transport), `ProfileStorage`
-  (LittleFS + NVS pour les secrets). Ces couches consomment le cœur sans le
-  modifier.
-* **Tests natifs** (`firmware/test/`) — 86 tests unitaires compilés et exécutés
-  avec `g++ -std=c++17` via `firmware/test/Makefile`, couvrant les 8 modules du
-  cœur (`test_board`, `test_selector`, `test_allocator`, `test_motion`,
+* **Pure core** (`firmware/src/core/`) — business logic testable on a PC: board
+  profiles, pin management, string/fret selection, note allocation, per-string
+  state machine, motor geometry, homing, GMB capabilities/SysEx, safety. No
+  direct hardware access.
+* **Platform adapters** (`firmware/src/platform/esp32/`) — concrete
+  implementations that connect the core to the ESP32-S3 hardware:
+  `StepperBank` generates the steps via the **FastAccelStepper hardware engine**
+  (RMT/MCPWM + timer), thus **outside `loop()`** — the core's `MotionPlanner`
+  remains the reference trapezoidal model tested on a PC; `ServoBank` drives the
+  PCA9685 **and** the servos on direct GPIO (14-bit LEDC); `Net` (non-blocking
+  Wi-Fi), `WebApi` (REST + WebSocket), `MidiWifi` (transport), `ProfileStorage`
+  (LittleFS + NVS for secrets). These layers consume the core without modifying
+  it.
+* **Native tests** (`firmware/test/`) — 86 unit tests compiled and run
+  with `g++ -std=c++17` via `firmware/test/Makefile`, covering the 8 modules of
+  the core (`test_board`, `test_selector`, `test_allocator`, `test_motion`,
   `test_string_fsm`, `test_profile`, `test_sysex`, + `test_main`).
 
 ```bash
-cd firmware/test && make        # compile le cœur + les tests, puis les exécute
+cd firmware/test && make        # compile the core + the tests, then run them
 ```
 
-Cette séparation garantit qu'un nouveau transport MIDI ou une nouvelle carte
-n'affecte pas le contrôleur des cordes, l'allocateur, la gestion des mouvements
-ni les profils mécaniques (cahier des charges §8.3).
+This separation guarantees that a new MIDI transport or a new board does not
+affect the string controller, the allocator, the motion management, or the
+mechanical profiles (specification §8.3).
 
 ---
 
-## 2. Arborescence cible (§23) et correspondance avec le code
+## 2. Target tree (§23) and correspondence with the code
 
-Le cahier des charges §23 décrit l'arborescence **cible** complète. Le tableau
-ci-dessous met en regard cette arborescence avec les modules **effectivement
-implémentés** dans `firmware/src/core/`.
+Specification §23 describes the complete **target** tree. The table below
+places that tree side by side with the modules **actually implemented** in
+`firmware/src/core/`.
 
 ```text
-firmware/                        Cahier des charges §23        Implémenté (core/)
+firmware/                        Specification §23             Implemented (core/)
 ├── application/
-│   ├── Application              orchestration                 (adaptateur, à venir)
-│   ├── Scheduler                planification non bloquante    (adaptateur, à venir)
-│   └── EventBus                 bus d'événements               (adaptateur, à venir)
+│   ├── Application              orchestration                 (adapter, upcoming)
+│   ├── Scheduler                non-blocking scheduling        (adapter, upcoming)
+│   └── EventBus                 event bus                      (adapter, upcoming)
 ├── board/
-│   ├── BoardProfile             profils de cartes             core/board/BoardProfile.{h,cpp}
-│   ├── PinManager               attribution des broches       core/board/PinManager.{h,cpp}
-│   └── PinValidator             validation des conflits       PinManager::validate() (fusionné)
+│   ├── BoardProfile             board profiles                core/board/BoardProfile.{h,cpp}
+│   ├── PinManager               pin assignment                core/board/PinManager.{h,cpp}
+│   └── PinValidator             conflict validation           PinManager::validate() (merged)
 ├── communication/
-│   ├── WifiManager              Wi-Fi AP/station              (adaptateur, à venir)
-│   ├── MidiTransport            transport MIDI                (adaptateur, à venir)
-│   ├── WebSocketMidi            MIDI sur WebSocket            (adaptateur, à venir)
+│   ├── WifiManager              Wi-Fi AP/station              (adapter, upcoming)
+│   ├── MidiTransport            MIDI transport                (adapter, upcoming)
+│   ├── WebSocketMidi            MIDI over WebSocket           (adapter, upcoming)
 │   └── FutureTransports         BLE/USB/DIN…                  MidiSource enum (core/midi)
 ├── midi/
-│   ├── MidiParser               parsing octets → MidiEvent    core/midi/MidiEvent.h
-│   ├── MidiRouter               routage                       (adaptateur, à venir)
-│   └── MidiEventQueue           file d'événements             (adaptateur, à venir)
-│   └── (sélection corde/frette) tablature CC20/CC21           core/midi/StringFretSelector.{h,cpp}
+│   ├── MidiParser               parsing bytes → MidiEvent     core/midi/MidiEvent.h
+│   ├── MidiRouter               routing                       (adapter, upcoming)
+│   └── MidiEventQueue           event queue                   (adapter, upcoming)
+│   └── (string/fret selection)  CC20/CC21 tablature           core/midi/StringFretSelector.{h,cpp}
 ├── instrument/
-│   ├── InstrumentController     orchestration instrument      (adaptateur, à venir)
-│   ├── StringController         machine d'état par corde      core/instrument/StringController.{h,cpp}
-│   ├── NoteAllocator            allocation des notes          core/instrument/NoteAllocator.{h,cpp}
-│   └── SharedStrummer           grattage partagé              (phase 4, à venir)
+│   ├── InstrumentController     instrument orchestration      (adapter, upcoming)
+│   ├── StringController         per-string state machine      core/instrument/StringController.{h,cpp}
+│   ├── NoteAllocator            note allocation               core/instrument/NoteAllocator.{h,cpp}
+│   └── SharedStrummer           shared strumming              (phase 4, upcoming)
 ├── motion/
-│   ├── StepperAxis              géométrie/conversion mm↔pas   core/motion/StepperAxis.{h,cpp}
-│   ├── MotionPlanner            profil trapézoïdal (accel)    core/motion/MotionPlanner.{h,cpp}
-│   └── HomingController         homing non bloquant           core/motion/HomingController.{h,cpp}
+│   ├── StepperAxis              geometry/conversion mm↔steps  core/motion/StepperAxis.{h,cpp}
+│   ├── MotionPlanner            trapezoidal profile (accel)   core/motion/MotionPlanner.{h,cpp}
+│   └── HomingController         non-blocking homing           core/motion/HomingController.{h,cpp}
 ├── actuators/
 │   ├── ServoManager             PCA9685                       ServoConfig (core/configuration)
-│   ├── FingerActuator           servo de doigt                ServoConfig function="finger"
-│   ├── PluckActuator            servo de pincement            ServoConfig function="pluck"
-│   └── DamperActuator           étouffoir                     ServoConfig function="damper"
+│   ├── FingerActuator           finger servo                  ServoConfig function="finger"
+│   ├── PluckActuator            pluck servo                   ServoConfig function="pluck"
+│   └── DamperActuator           damper                        ServoConfig function="damper"
 ├── configuration/
-│   ├── Profile                  profil (source de vérité)     core/configuration/Profile.{h,cpp}
+│   ├── Profile                  profile (source of truth)     core/configuration/Profile.{h,cpp}
 │   ├── ProfileValidator         validation                    core/configuration/ProfileValidator.{h,cpp}
-│   └── ProfileStorage           persistance NVS               (adaptateur, à venir)
+│   └── ProfileStorage           NVS persistence               (adapter, upcoming)
 ├── safety/
-│   ├── SafetyManager            états sûrs / panic / E-stop   core/safety/SafetyManager.{h,cpp}
-│   └── FaultManager             journal des défauts           SafetyManager::faults() (fusionné)
+│   ├── SafetyManager            safe states / panic / E-stop  core/safety/SafetyManager.{h,cpp}
+│   └── FaultManager             fault log                     SafetyManager::faults() (merged)
 ├── diagnostics/
-│   ├── Logger                   journalisation                (adaptateur, à venir)
-│   └── DiagnosticService        diagnostics                   (adaptateur, à venir)
-├── gmb/                         (protocole SysEx GMB, §ci-dessous)
-│   ├── Capabilities             snapshot de capacités         core/gmb/Capabilities.{h,cpp}
-│   └── GmbSysEx                 encodeur/décodeur SysEx       core/gmb/GmbSysEx.{h,cpp}
+│   ├── Logger                   logging                       (adapter, upcoming)
+│   └── DiagnosticService        diagnostics                   (adapter, upcoming)
+├── gmb/                         (GMB SysEx protocol, §below)
+│   ├── Capabilities             capabilities snapshot         core/gmb/Capabilities.{h,cpp}
+│   └── GmbSysEx                 SysEx encoder/decoder         core/gmb/GmbSysEx.{h,cpp}
 └── web/
-    ├── WebServer                serveur HTTP                  (adaptateur, à venir)
-    ├── RestApi                  API REST                      (adaptateur, cf. WEB_INTERFACE.md)
-    └── WebSocketStatus          statut temps réel             (adaptateur, à venir)
+    ├── WebServer                HTTP server                   (adapter, upcoming)
+    ├── RestApi                  REST API                      (adapter, cf. WEB_INTERFACE.md)
+    └── WebSocketStatus          real-time status              (adapter, upcoming)
 ```
 
-Notes de correspondance :
+Correspondence notes:
 
-* `PinValidator` (§23) est fusionné dans `PinManager::validate()` — la validation
-  et l'attribution partagent le même `BoardProfile`.
-* `FaultManager` (§23) est fusionné dans `SafetyManager` (`recordFault()` /
+* `PinValidator` (§23) is merged into `PinManager::validate()` — validation
+  and assignment share the same `BoardProfile`.
+* `FaultManager` (§23) is merged into `SafetyManager` (`recordFault()` /
   `faults()`).
-* Le module `gmb/` n'apparaît pas explicitement dans l'arbre §23 : il matérialise
-  la spécification [`Communication automatique des capacités par SysEx.md`](CAHIER_DES_CHARGES.md).
-* Les entrées marquées « adaptateur, à venir » sont des couches de plateforme ou
-  des modules de phases ultérieures qui consommeront le cœur.
+* The `gmb/` module does not appear explicitly in the §23 tree: it realizes
+  the [`SYSEX_CAPABILITIES.md`](SPEC_INDEX.md) specification.
+* Entries marked "adapter, upcoming" are platform layers or modules from later
+  phases that will consume the core.
 
 ---
 
-## 3. Flux de données principal
+## 3. Main data flow
 
-Un transport MIDI produit un `MidiEvent` interne unique (cahier des charges §8.2),
-et tout le reste du firmware ne dépend jamais de la manière dont les octets sont
-arrivés.
+A MIDI transport produces a single internal `MidiEvent` (specification §8.2),
+and everything else in the firmware never depends on how the bytes arrived.
 
 ```text
-Transport (WebSocket / RTP-MIDI / UDP / test Web / futur BLE/USB/DIN)
-        │  décodage
+Transport (WebSocket / RTP-MIDI / UDP / Web test / future BLE/USB/DIN)
+        │  decoding
         ▼
 MidiEvent { timestampUs, source, type, channel, data1, data2 }
         │
-        ├──► SysEx (F0 …) ─────────────► GmbSysEx  ──► CapabilitySnapshot ──► réponse
+        ├──► SysEx (F0 …) ─────────────► GmbSysEx  ──► CapabilitySnapshot ──► response
         │
         ▼
-MidiRouter (routage par canal / Omni)
+MidiRouter (routing by channel / Omni)
         │
         ▼
-StringFretSelector          (sélection corde/frette explicite CC20/CC21, FIFO)
-   ├─ onControlChange()      empile les sélections corde/frette en attente
+StringFretSelector          (explicit string/fret selection CC20/CC21, FIFO)
+   ├─ onControlChange()      queues pending string/fret selections
    ├─ onNoteOn() ──► NoteResolution { play, source, stringIndex, fret, instanceId }
-   └─ onNoteOff() ──► ActiveNote (relâche la corde réellement utilisée)
+   └─ onNoteOff() ──► ActiveNote (releases the string actually used)
         │
-        │  (mode Automatique / Hybride sans CC valide)
+        │  (Automatic / Hybrid mode without a valid CC)
         ▼
-NoteAllocator               (choisit la meilleure corde, regroupe les accords,
-                             applique la stratégie de saturation)
+NoteAllocator               (chooses the best string, groups chords,
+                             applies the saturation strategy)
         │  Allocation { stringIndex, fret }
         ▼
-StringController[c]          (machine d'état non bloquante, 1 par corde)
+StringController[c]          (non-blocking state machine, 1 per string)
    DISABLED → HOMING → IDLE → RELEASING_FINGER → MOVING →
    PRESSING_FINGER → SETTLING → READY_TO_PLUCK → PLUCKING →
    SUSTAINING → DAMPING (→ IDLE)     |  CANCELLING  |  FAULT
         │                                   │
         ▼                                   ▼
 StepperAxis / HomingController        ServoManager (PCA9685)
-   (mm ↔ pas, positions de frettes)      doigt / pincement / étouffoir
+   (mm ↔ steps, fret positions)          finger / pluck / damper
 ```
 
-Points clés du flux :
+Key points of the flow:
 
-* **Événement commun.** `MidiEvent` (voir [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md))
-  gère les subtilités MIDI (`isNoteOff()` traite un Note On vélocité 0 comme un
-  Note Off à running status).
-* **Sélection avant allocation.** En mode `Explicit`/`Hybrid`, `StringFretSelector`
-  impose la corde/frette ; en mode `Automatic` ou en repli, `NoteAllocator`
-  décide. Détails dans [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md).
-* **Identifiant de commande.** Chaque `noteOn(fret)` renvoie un `commandId` frais ;
-  toute action différée taguée avec un ancien id est ignorée. Cela empêche un
-  pincement après Note Off, un appui retardé, l'exécution d'une position obsolète
-  ou une attaque après un panic (cahier des charges §16).
-* **Note Off fiable.** L'affectation réelle d'un Note On est mémorisée
-  (`ActiveNote`) pour relâcher la bonne corde, même en accord ou notes répétées.
+* **Common event.** `MidiEvent` (see [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md))
+  handles the MIDI subtleties (`isNoteOff()` treats a Note On with velocity 0 as
+  a Note Off in running status).
+* **Selection before allocation.** In `Explicit`/`Hybrid` mode,
+  `StringFretSelector` enforces the string/fret; in `Automatic` mode or as a
+  fallback, `NoteAllocator` decides. Details in
+  [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md).
+* **Command identifier.** Each `noteOn(fret)` returns a fresh `commandId`;
+  any deferred action tagged with an old id is ignored. This prevents a
+  pluck after a Note Off, a delayed press, the execution of a stale position,
+  or an attack after a panic (specification §16).
+* **Reliable Note Off.** The actual assignment of a Note On is memorized
+  (`ActiveNote`) to release the correct string, even in a chord or with repeated
+  notes.
 
 ---
 
-## 4. Flux du snapshot de capacités (SysEx GMB)
+## 4. Capabilities snapshot flow (GMB SysEx)
 
-Le profil actif est **l'unique source de vérité**. Les capacités annoncées à
-General-Midi-Boop sont reconstruites depuis ce profil, jamais codées en dur.
+The active profile is **the single source of truth**. The capabilities
+announced to General-Midi-Boop are reconstructed from this profile, never
+hard-coded.
 
 ```text
-Interface Web édite un brouillon
+Web interface edits a draft
         │
         ▼
-ProfileValidator (validation complète)
-        │  valide
+ProfileValidator (full validation)
+        │  valid
         ▼
-Sauvegarde atomique + incrément capabilitiesRevision
+Atomic save + capabilitiesRevision increment
         │
         ▼
-buildSnapshot(Profile) ──► CapabilitySnapshot (immuable)
+buildSnapshot(Profile) ──► CapabilitySnapshot (immutable)
         │   { revision, identity, descriptor, capabilities, stringConfig, valid }
         ▼
-GmbSysEx::respond(request, snapshot)   (une réponse = un seul snapshot)
+GmbSysEx::respond(request, snapshot)   (one response = a single snapshot)
         │
         ▼
-Transport MIDI ──► General-Midi-Boop actualise l'instrument
+MIDI transport ──► General-Midi-Boop updates the instrument
         ▲
-        └── Bloc 8 (notification) invite GMB à relancer la découverte
+        └── Block 8 (notification) prompts GMB to restart discovery
 ```
 
-`buildSnapshot()` (`core/gmb/Capabilities.cpp`) calcule automatiquement la plage
-jouable (union des notes de toutes les cordes actives), le mode continu ou notes
-discrètes, la polyphonie (nombre de cordes actives ou surcharge), et la liste des
-CC réellement activés. Un snapshot est **immuable** : une modification de config
-pendant l'envoi ne peut pas mélanger deux versions du profil. Voir le protocole
-complet dans [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md#3-protocole-sysex-gmb).
+`buildSnapshot()` (`core/gmb/Capabilities.cpp`) automatically computes the
+playable range (union of the notes of all active strings), continuous or
+discrete-notes mode, polyphony (number of active strings or overload), and the
+list of CC actually enabled. A snapshot is **immutable**: a config change
+during sending cannot mix two versions of the profile. See the full protocol
+in [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md#3-protocole-sysex-gmb).
 
 ---
 
-## 5. Le profil, colonne vertébrale de la configuration
+## 5. The profile, backbone of the configuration
 
-`core/configuration/Profile.h` agrège toute la configuration :
+`core/configuration/Profile.h` aggregates the entire configuration:
 
-| Champ | Type | Rôle |
+| Field | Type | Role |
 | ----- | ---- | ---- |
-| `instrument` | `InstrumentInfo` | nom, type, programme GM, nb cordes, capo, transposition, mode de pincement |
-| `boardIdentifier` / `reserveUsb` / `pins` | — | carte, réservation USB, attribution GPIO |
-| `network` | `NetworkConfig` | mode AP/station, SSID, hostname, IP fixe |
-| `midi` | `MidiConfig` | canal, Omni, transposition, fenêtre d'accord, courbe de vélocité, pédale |
-| `selector` | `SelectorConfig` | sélection corde/frette (CC20/CC21, mode, timeout, FIFO…) |
-| `strings` | `vector<AxisConfig>` | géométrie/moteur par corde |
-| `homing` | `vector<HomingConfig>` | homing par axe |
-| `servos` | `vector<ServoConfig>` | servos (doigt/pincement/étouffoir/aux) |
-| `capabilitiesRevision` | `uint32_t` | compteur de révision (notification Bloc 8) |
+| `instrument` | `InstrumentInfo` | name, type, GM program, number of strings, capo, transposition, pluck mode |
+| `boardIdentifier` / `reserveUsb` / `pins` | — | board, USB reservation, GPIO assignment |
+| `network` | `NetworkConfig` | AP/station mode, SSID, hostname, static IP |
+| `midi` | `MidiConfig` | channel, Omni, transposition, chord window, velocity curve, pedal |
+| `selector` | `SelectorConfig` | string/fret selection (CC20/CC21, mode, timeout, FIFO…) |
+| `strings` | `vector<AxisConfig>` | geometry/motor per string |
+| `homing` | `vector<HomingConfig>` | homing per axis |
+| `servos` | `vector<ServoConfig>` | servos (finger/pluck/damper/aux) |
+| `capabilitiesRevision` | `uint32_t` | revision counter (Block 8 notification) |
 
-`Profile::instrumentView()` en dérive une `InstrumentView` partagée par le
-sélecteur corde/frette et le générateur de capacités.
+`Profile::instrumentView()` derives from it an `InstrumentView` shared by the
+string/fret selector and the capabilities generator.
 
 ---
 
-## 6. Phases de développement (§24)
+## 6. Development phases (§24)
 
-| Phase | Objet | Livrables clés |
+| Phase | Objective | Key deliverables |
 | ----- | ----- | -------------- |
-| **1 — Prototype une corde** | ESP32-S3, Wi-Fi, UI minimale, 1 moteur, 1 capteur HOME, 1 servo doigt, 1 servo pincement, test MIDI Wi-Fi, machine d'état complète, panic | machine d'état, homing, panic |
-| **2 — Configuration intuitive** | assistant, profil de carte, attribution auto des GPIO, validation des conflits, calibration moteur/servos, import/export JSON | `BoardProfile`, `PinManager`, `Profile`, wizard |
-| **3 — Multicorde** | 4 puis 6 axes, PCA9685, homing parallèle, allocation des notes, accords, diagnostics par corde | `NoteAllocator`, homing parallèle |
-| **4 — Jeu avancé** | grattage partagé, tremolo, étouffement, pédale de maintien, courbes de vélocité, stratégies de saturation | `SharedStrummer`, courbes |
-| **5 — Matériel dédié** | schéma, PCB, protections, connecteurs, arrêt matériel, validation électrique, doc câblage | `hardware/` |
-| **6 — Communications futures** | BLE MIDI, USB MIDI, MIDI DIN, liaisons filaires | nouveaux transports réutilisant `MidiEvent` |
+| **1 — Single-string prototype** | ESP32-S3, Wi-Fi, minimal UI, 1 motor, 1 HOME sensor, 1 finger servo, 1 pluck servo, Wi-Fi MIDI test, complete state machine, panic | state machine, homing, panic |
+| **2 — Intuitive configuration** | wizard, board profile, automatic GPIO assignment, conflict validation, motor/servo calibration, JSON import/export | `BoardProfile`, `PinManager`, `Profile`, wizard |
+| **3 — Multi-string** | 4 then 6 axes, PCA9685, parallel homing, note allocation, chords, per-string diagnostics | `NoteAllocator`, parallel homing |
+| **4 — Advanced playing** | shared strumming, tremolo, damping, sustain pedal, velocity curves, saturation strategies | `SharedStrummer`, curves |
+| **5 — Dedicated hardware** | schematic, PCB, protections, connectors, hardware shutdown, electrical validation, wiring documentation | `hardware/` |
+| **6 — Future communications** | BLE MIDI, USB MIDI, MIDI DIN, wired links | new transports reusing `MidiEvent` |
 
-L'état actuel du dépôt couvre le **cœur algorithmique** des phases 1 à 3 (modules
-`core/*` + 86 tests natifs). Les adaptateurs de plateforme et l'interface Web
-constituent les couches restantes.
+The current state of the repository covers the **algorithmic core** of phases 1
+to 3 (`core/*` modules + 86 native tests). The platform adapters and the Web
+interface constitute the remaining layers.
 
 ---
 
-## 7. Indépendance du transport
+## 7. Transport independence
 
-Ajouter un transport (BLE, USB, DIN, série, CAN/RS485) ne doit modifier ni le
-contrôleur des cordes, ni l'allocateur, ni la gestion des mouvements, ni les
-profils mécaniques (§8.3). Tous les transports :
+Adding a transport (BLE, USB, DIN, serial, CAN/RS485) must modify neither the
+string controller, nor the allocator, nor the motion management, nor the
+mechanical profiles (§8.3). All transports:
 
-1. décodent les octets en `MidiEvent` ;
-2. transmettent des octets MIDI complets au routeur ;
-3. réutilisent exactement les mêmes blocs, encodeur, décodeur, snapshot et tests
-   pour le SysEx GMB (spec SysEx §21).
+1. decode the bytes into `MidiEvent`;
+2. forward complete MIDI bytes to the router;
+3. reuse exactly the same blocks, encoder, decoder, snapshot, and tests
+   for the GMB SysEx (SysEx spec §21).
 
-Les GPIO19/GPIO20 restent réservés par défaut pour l'USB natif ESP32-S3.
+GPIO19/GPIO20 remain reserved by default for the ESP32-S3 native USB.

@@ -1,6 +1,6 @@
 /*
- * midiselect.js — MIDI page: string/fret selection (spec "selection corde et
- * frette") plus the general MIDI parameters (cahier des charges 18).
+ * midiselect.js — MIDI page: string/fret selection (string/fret selection spec)
+ * plus the general MIDI parameters (spec 18).
  *
  * Contains: the simplified selection panel (section 14) with the GMB preset
  * button (section 3); advanced settings (CC numbers, min/max/offset, numbering,
@@ -20,7 +20,7 @@
     var p = GMB.state.profile;
     var sfs = p.stringFretSelection;
 
-    // ---- General MIDI parameters (cahier des charges 18) --------------------
+    // ---- General MIDI parameters (spec 18) --------------------
     host.appendChild(h('div.card', [
       h('h2', 'MIDI parameters'),
       h('div.form-grid', [

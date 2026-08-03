@@ -1,5 +1,5 @@
 /*
- * wizard.js — first-configuration assistant (cahier des charges section 10).
+ * wizard.js — first-configuration assistant (spec section 10).
  *
  * Nine steps: Identification -> Board choice -> Automatic pin assignment ->
  * Mechanics per string -> Homing -> Servo calibration -> Note calibration ->
@@ -215,7 +215,7 @@
     });
   }
 
-  // Assisted steps/mm (cahier des charges 12.1) — mirrors StepperAxis::stepsPerMm.
+  // Assisted steps/mm (spec 12.1) — mirrors StepperAxis::stepsPerMm.
   function stepsPerMm(s) {
     var full = s.stepsPerRevolution * s.microsteps;
     if (s.transmission === 'screw') return full / (s.leadPerRevolutionMm || 1);
@@ -364,8 +364,8 @@
 
   // ---- Step 6: Servos per string -------------------------------------------
   var ROLE_LABEL = {
-    finger: 'Finger (doigt)', pluck: 'Pluck (médiator)', strum: 'Strum (grattage)',
-    damper: 'Damper (étouffoir)', sharedStrum: 'Shared strum', sharedDamper: 'Shared damper', aux: 'Auxiliary'
+    finger: 'Finger', pluck: 'Pluck (plectrum)', strum: 'Strum',
+    damper: 'Damper', sharedStrum: 'Shared strum', sharedDamper: 'Shared damper', aux: 'Auxiliary'
   };
   function roleLabel(fn) { return ROLE_LABEL[fn] || fn; }
 
@@ -414,10 +414,10 @@
         h('span.muted', servos.length + ' servo' + (servos.length === 1 ? '' : 's'))]),
       servos.length ? h('div.servo-list', servos.map(servoRow)) : h('p.muted', 'No servo yet — add one below.'),
       h('div.toolbar.wrap', [
-        GMB.button('+ Finger (doigt)', function () { addServo('finger', i); }, 'ghost'),
-        GMB.button('+ Strum (grattage)', function () { addServo('strum', i); }, 'ghost'),
-        GMB.button('+ Damper (étouffoir)', function () { addServo('damper', i); }, 'ghost'),
-        GMB.button('+ Pluck (médiator)', function () { addServo('pluck', i); }, 'ghost')
+        GMB.button('+ Finger', function () { addServo('finger', i); }, 'ghost'),
+        GMB.button('+ Strum', function () { addServo('strum', i); }, 'ghost'),
+        GMB.button('+ Damper', function () { addServo('damper', i); }, 'ghost'),
+        GMB.button('+ Pluck (plectrum)', function () { addServo('pluck', i); }, 'ghost')
       ])
     ]);
   }
@@ -563,8 +563,8 @@
           h('span.pill.mini', GMB.noteName(s.openNote)),
           h('span.motor-pos', 'Motor: ' + mp.toFixed(2) + ' mm')]),
         h('div.toolbar.wrap', [
-          GMB.button('Remplir automatiquement (théorique)', function () { autoFill(s); }, 'primary'),
-          GMB.button('Effacer la calibration', function () { s.calibratedFretMm = []; GMB.markDirty(); drawStep(); }, 'ghost')
+          GMB.button('Auto-fill (theoretical)', function () { autoFill(s); }, 'primary'),
+          GMB.button('Clear calibration', function () { s.calibratedFretMm = []; GMB.markDirty(); drawStep(); }, 'ghost')
         ]),
         fretEditor(s, i)
       ]));
@@ -612,8 +612,8 @@
         h('span.cal-shown', calCell)
       ]),
       h('td', h('div.fret-actions', [
-        GMB.button('Aller à cette frette', function () { jogToFret(s, i, f, theo); }, 'ghost'),
-        GMB.button('Enregistrer la position', function () { saveFret(s, i, f); }, 'primary')
+        GMB.button('Go to this fret', function () { jogToFret(s, i, f, theo); }, 'ghost'),
+        GMB.button('Save position', function () { saveFret(s, i, f); }, 'primary')
       ]))
     ]);
   }

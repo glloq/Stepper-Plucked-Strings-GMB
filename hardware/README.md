@@ -3,7 +3,7 @@
 Reference electronics for **Stepper-Plucked-Strings-GMB**, the ESP32-S3 MIDI
 machine that drives one stepper-positioned finger per string on plucked- or
 strummed-string instruments (1–6 strings). This document describes the reference
-architecture of cahier des charges §7; the wiring guide, bill of materials and
+architecture of SPECIFICATION.md §7; the wiring guide, bill of materials and
 Phase 5 CAD deliverables live alongside it.
 
 ## Directory

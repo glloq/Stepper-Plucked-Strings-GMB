@@ -1,5 +1,5 @@
 // Wi-Fi management: AP for first setup, station for normal use, automatic
-// fallback to AP after repeated failures (cahier des charges §8.1).
+// fallback to AP after repeated failures (spec §8.1).
 #pragma once
 
 #include <cstdint>
@@ -12,7 +12,7 @@ namespace gmb {
 class Net {
 public:
     // Passwords are supplied separately from the Profile so they are never
-    // stored in exportable config (cahier des charges §20). An empty apPassword
+    // stored in exportable config (spec §20). An empty apPassword
     // leaves the access point open.
     bool begin(const NetworkConfig& cfg, const std::string& stationPassword,
                const std::string& apPassword = "");

@@ -63,7 +63,7 @@ TEST(calibrated_fret_overrides_theory) {
     CHECK_NEAR(axis.fretPositionMm(5), gmb::fretPositionMm(650.0, 5), 1e-9);  // theory
 }
 
-// Simulate a full homing run against a virtual axis (cahier des charges 13).
+// Simulate a full homing run against a virtual axis (spec 13).
 TEST(homing_reaches_ready) {
     HomingConfig hc;
     hc.direction = -1;         // travel toward decreasing position

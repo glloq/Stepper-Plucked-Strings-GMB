@@ -1,4 +1,4 @@
-// Stepper axis geometry and unit conversion (cahier des charges 12).
+// Stepper axis geometry and unit conversion (spec 12).
 //
 // The firmware works in millimetres and converts to motor steps through a
 // transmission-dependent steps/mm factor, so the mechanical type is abstracted
@@ -56,13 +56,13 @@ public:
     const AxisConfig& config() const { return cfg_; }
     void setConfig(const AxisConfig& cfg) { cfg_ = cfg; }
 
-    // Assisted steps/mm computation (cahier des charges 12.1).
+    // Assisted steps/mm computation (spec 12.1).
     double stepsPerMm() const;
 
     long mmToSteps(double mm) const;
     double stepsToMm(long steps) const;
 
-    // Theoretical or calibrated fret position (cahier des charges 14.2 / 14.3).
+    // Theoretical or calibrated fret position (spec 14.2 / 14.3).
     double fretPositionMm(int fret) const;
 
     // Clamp a target to the configured soft limits.

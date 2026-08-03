@@ -1,4 +1,4 @@
-// Profile validation (cahier des charges section 10.9, 11.6; selection spec 18).
+// Profile validation (spec section 10.9, 11.6; selection spec 18).
 #pragma once
 
 #include <string>
@@ -18,7 +18,7 @@ struct ValidationIssue {
 class ProfileValidator {
 public:
     // Returns all issues. The profile is safe to activate only when there are no
-    // Error-severity issues (cahier des charges section 10.9).
+    // Error-severity issues (spec section 10.9).
     static std::vector<ValidationIssue> validate(const Profile& p);
 
     static bool isActivatable(const Profile& p) {

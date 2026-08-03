@@ -461,7 +461,7 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
 std::string ProfileStorage::exportJson(const Profile& p, bool /*includeSecrets*/) const {
     JsonDocument doc;
     toJson(p, doc);
-    // Ordinary exports never contain the Wi-Fi password (cahier des charges §20);
+    // Ordinary exports never contain the Wi-Fi password (spec §20);
     // the password is not part of the in-memory Profile at all here.
     std::string out;
     serializeJsonPretty(doc, out);

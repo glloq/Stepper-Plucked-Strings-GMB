@@ -4,7 +4,7 @@
 // (src/platform/esp32/). The core is unit-tested on the host; this file is the
 // hardware integration and runs only on device.
 //
-// Boot sequence (cahier des charges §21.1 / §13): power-on safe → validate
+// Boot sequence (spec §21.1 / §13): power-on safe → validate
 // profile → home every axis (non-blocking) → only then arm for play.
 #if defined(ARDUINO)
 
@@ -328,7 +328,7 @@ bool safetyLocked() {
 
 // Start homing only when it is safe to move. Refuses if a panic/E-stop is
 // latched, if the profile is invalid, or if a required motor could not attach a
-// hardware step generator (cahier des charges §13/§21).
+// hardware step generator (spec §13/§21).
 bool beginHoming(uint32_t nowMs) {
     if (safetyLocked()) return false;
     // Never enable drivers while a hardware E-stop is physically asserted, even
@@ -478,7 +478,7 @@ void doHoming(uint32_t nowMs) {
     g_phase = AppPhase::Ready;
     g_safety.arm(true, true);  // profile already validated before homing
     if (faulted > 0) {
-        // Announce only the axes that actually work (cahier des charges §13.2).
+        // Announce only the axes that actually work (spec §13.2).
         rebuildRuntimeCapabilities();
         notifyCapabilitiesChanged();
         g_safety.recordFault("homing",
@@ -859,7 +859,7 @@ void tickString(size_t i, uint32_t nowMs) {
 
 void setup() {
     Serial.begin(115200);
-    g_safety.boot();  // drivers off, servos neutralised (cahier des charges §21.1)
+    g_safety.boot();  // drivers off, servos neutralised (spec §21.1)
 
     // Web -> loop() command channel + shared-state mutex, created before the web
     // server so the first request is already safe.
@@ -1032,7 +1032,7 @@ void loop() {
     if (!panicked) drainCommands(nowMs);
     servicePendingActivation(nowMs);  // phase 2 of a deferred profile activation
 
-    // Wi-Fi loss policy (cahier des charges §21.4, default): cancel pending
+    // Wi-Fi loss policy (spec §21.4, default): cancel pending
     // commands and release notes in a controlled way, but stay armed/READY.
     static bool wasConnected = false;
     bool nowConnected = g_net.connected() && !g_net.accessPointActive();

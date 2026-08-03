@@ -1,4 +1,4 @@
-// Configurable, per-board GPIO description (cahier des charges section 11).
+// Configurable, per-board GPIO description (spec section 11).
 //
 // The firmware must NOT use a single global pin list for every board. Each board
 // ships a profile describing what every exposed GPIO can do, so the pin manager
@@ -11,7 +11,7 @@
 
 namespace gmb {
 
-// UI colour category (cahier des charges 11.2).
+// UI colour category (spec 11.2).
 enum class PinPreference : uint8_t {
     Recommended = 0,  // green
     Caution = 1,      // yellow — advanced mode only, with explanation
@@ -39,7 +39,7 @@ struct PinCapability {
 };
 
 // The kind of signal a pin is being requested for. Used to filter candidates
-// (cahier des charges 11.3).
+// (spec 11.3).
 enum class SignalKind : uint8_t {
     Step,     // stepper STEP — needs fast output
     Dir,      // stepper DIR — plain output
@@ -67,7 +67,7 @@ struct BoardProfile {
     bool supports(int8_t gpio, SignalKind kind) const;
 };
 
-// Built-in profile for the reference board (cahier des charges 11.4 / 11.5).
+// Built-in profile for the reference board (spec 11.4 / 11.5).
 BoardProfile makeEsp32S3DevKitC1();
 
 // Returns the built-in profile with a matching identifier, or nullptr.

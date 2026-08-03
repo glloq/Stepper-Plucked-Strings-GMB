@@ -267,7 +267,7 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
         }
     }
 
-    // Pluck-mode servo presence (cahier des charges §5.3).
+    // Pluck-mode servo presence (spec §5.3).
     {
         auto hasServoRole = [&](const std::string& fn, int strIdx) {
             for (const auto& s : p.servos)

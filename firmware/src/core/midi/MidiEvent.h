@@ -1,4 +1,4 @@
-// Transport-independent internal MIDI event (cahier des charges 8.2).
+// Transport-independent internal MIDI event (spec 8.2).
 //
 // Every transport (WebSocket, RTP-MIDI, UDP, BLE/USB later) must decode raw
 // MIDI into this single struct so that the rest of the firmware never depends

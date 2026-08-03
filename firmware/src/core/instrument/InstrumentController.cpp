@@ -174,7 +174,7 @@ int InstrumentController::findActive(uint8_t channel, uint8_t note) const {
 }
 
 void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
-    if (!accepts(e.channel)) return;  // channel / omni filter (cahier §18)
+    if (!accepts(e.channel)) return;  // channel / omni filter (spec §18)
 
     if (e.isControlChange()) {
         if (e.data1 == 120 || e.data1 == 123) {  // all sound / notes off

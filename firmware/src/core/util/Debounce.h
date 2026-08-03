@@ -1,5 +1,5 @@
 // Time-based contact debouncer for HOME / LIMIT / E-stop inputs
-// (cahier des charges §13.2 robustness). A raw reading must hold steady for a
+// (spec §13.2 robustness). A raw reading must hold steady for a
 // configured window before it is accepted, so a bounce or a short spike cannot
 // trigger a false reference, a false LIMIT, or a spurious E-stop.
 //

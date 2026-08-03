@@ -1,4 +1,4 @@
-// Ties the MIDI pipeline together (cahier des charges §16/§17/§18, selection spec).
+// Ties the MIDI pipeline together (spec §16/§17/§18, selection spec).
 //
 // transport -> MidiEvent -> [channel filter] -> [selection] -> [chord grouping +
 // allocation] -> per-string state machine -> motion/servo targets.
@@ -40,7 +40,7 @@ public:
     // Flush pending chord groups whose window has elapsed. Call every loop.
     void tick(uint32_t nowUs);
 
-    // Emergency stop everything (cahier des charges §21.3).
+    // Emergency stop everything (spec §21.3).
     void panic();
 
     // Take a string out of service at runtime (failed homing, etc.): fault its

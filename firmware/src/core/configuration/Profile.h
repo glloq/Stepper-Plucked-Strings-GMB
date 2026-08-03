@@ -1,4 +1,4 @@
-// Instrument configuration profile (cahier des charges section 20).
+// Instrument configuration profile (spec section 20).
 //
 // This is the single source of truth for the firmware. The web UI edits a draft
 // which is validated and then atomically activated; SysEx capabilities and the
@@ -46,7 +46,7 @@ struct MidiConfig {
     uint8_t globalChannel = 0;   // zero-based internal channel
     bool omni = false;
     int8_t transpose = 0;
-    uint8_t chordWindowMs = 3;   // grouping window (cahier des charges 17.2)
+    uint8_t chordWindowMs = 3;   // grouping window (spec 17.2)
     VelocityCurve velocityCurve = VelocityCurve::Linear;
     bool sustainPedal = true;
     uint8_t sustainCc = 64;
@@ -61,8 +61,8 @@ enum class ServoSource : uint8_t { Pca = 0, DirectGpio = 1 };
 // Servo roles. Per-string roles carry a stringIndex; shared roles use -1.
 //   finger : presses the string at the fret            (per string)
 //   pluck  : individual plectrum                       (per string)
-//   strum  : per-string strum/grattage servo           (per string)
-//   damper : per-string damper/silencieux (étouffoir)  (per string)
+//   strum  : per-string strum servo                    (per string)
+//   damper : per-string damper (mute)                  (per string)
 //   sharedStrum / sharedDamper : one mechanism across several strings
 //   aux    : any auxiliary actuator
 // (Function is kept as a string so the web UI can offer new roles without a

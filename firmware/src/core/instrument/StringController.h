@@ -1,4 +1,4 @@
-// Per-string state machine (cahier des charges section 16).
+// Per-string state machine (spec section 16).
 //
 // Each string runs an independent, non-blocking state machine. Every command
 // carries an id; when a command is cancelled or replaced, any deferred action
@@ -78,7 +78,7 @@ public:
     // Damping finished -> back to idle.
     void dampingDone();
 
-    // Emergency stop (cahier des charges 21.3).
+    // Emergency stop (spec 21.3).
     void panic();
 
 private:

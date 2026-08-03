@@ -1,5 +1,5 @@
 // Local web server: serves the static UI from LittleFS and the REST + WebSocket
-// API the interface uses (cahier des charges §9, §19; docs/WEB_INTERFACE.md).
+// API the interface uses (spec §9, §19; docs/WEB_INTERFACE.md).
 #pragma once
 
 #include <functional>

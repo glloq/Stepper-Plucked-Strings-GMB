@@ -1,5 +1,5 @@
 /*
- * profiles.js — profiles page (cahier des charges section 20).
+ * profiles.js — profiles page (spec section 20).
  *
  * Saved profiles live in numbered storage slots on the device
  * (GET /api/profiles -> { profiles:[{slot,name,used}], startupSlot }). Because

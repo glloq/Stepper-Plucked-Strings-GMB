@@ -26,7 +26,7 @@ TEST(fsm_full_pluck_sequence) {
     CHECK(c.state() == StringState::Sustaining);
 }
 
-// Open string skips the finger press (cahier des charges 15.3).
+// Open string skips the finger press (spec 15.3).
 TEST(fsm_open_string_skips_finger) {
     StringController c = armed();
     uint32_t id = c.noteOn(0);  // open
@@ -109,7 +109,7 @@ TEST(fsm_trigger_rejects_stale_id) {
     CHECK(c.trigger(newId));
 }
 
-// Panic drops any armed attack (cahier des charges 21.3).
+// Panic drops any armed attack (spec 21.3).
 TEST(fsm_panic_cancels_everything) {
     StringController c = armed();
     uint32_t id = c.noteOn(5);

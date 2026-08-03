@@ -1,4 +1,4 @@
-// Explicit string/fret selection over MIDI CC (spec: "selection corde et frette").
+// Explicit string/fret selection over MIDI CC (string/fret selection spec).
 //
 // General-Midi-Boop (or a tablature-aware MIDI file) sends a string CC (default
 // CC20) and a fret CC (default CC21) *before* a Note On to force a physical
@@ -107,7 +107,7 @@ struct ActiveNote {
 
 // A CC selection that just became complete (string + fret both received). When
 // prepareOnCompleteSelection is on, the instrument pre-positions this string in
-// anticipation of the Note On (spec: "préparation anticipée").
+// anticipation of the Note On (spec: "early preparation").
 struct CompletedSelection {
     uint8_t midiChannel = 0;
     uint8_t stringIndex = 0;  // physical axis (already mapped, range-checked)

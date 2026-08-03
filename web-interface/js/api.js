@@ -17,7 +17,7 @@
   var GMB = global.GMB || (global.GMB = {});
 
   // ---------------------------------------------------------------------------
-  // ESP32-S3-DevKitC-1 board profile (cahier des charges 11.4 / 11.5).
+  // ESP32-S3-DevKitC-1 board profile (spec 11.4 / 11.5).
   //
   // Mirrors firmware/src/core/board/BoardProfile.h PinCapability. `preference`:
   //   recommended | caution | reserved   (grey "used" is a runtime state).
@@ -74,7 +74,7 @@
       pins.push(pin(g, { adc: true, highSpeedOutput: true, preference: 'recommended',
         note: 'General purpose (ADC2) — recommended for DIR.' }));
     });
-    // Native USB — reserved by default (cahier des charges 8.3 / 11.3).
+    // Native USB — reserved by default (spec 8.3 / 11.3).
     pins.push(pin(19, { usb: true, preference: 'reserved',
       note: 'USB-JTAG / native USB (D-). Reserved for future USB MIDI.' }));
     pins.push(pin(20, { usb: true, preference: 'reserved',
@@ -124,7 +124,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Default recommended pin assignment (cahier des charges 11.5). Signal names
+  // Default recommended pin assignment (spec 11.5). Signal names
   // match firmware PinAssignment.signal ("STEP1", "HOME3", "SDA"...).
   // ---------------------------------------------------------------------------
   var RECOMMENDED = {
@@ -142,7 +142,7 @@
   };
   GMB.SIGNAL_KIND = SIGNAL_KIND;
 
-  // Can a pin (statically) carry a given signal kind? (cahier des charges 11.3)
+  // Can a pin (statically) carry a given signal kind? (spec 11.3)
   GMB.pinSupports = function (p, kind) {
     if (!p || !p.exposed || p.reserved || p.preference === 'reserved') return false;
     switch (kind) {
@@ -202,7 +202,7 @@
   }
   GMB.servoDefaults = servo;
 
-  // Theoretical fret position (cahier des charges 14.2): scale·(1−2^(−fret/12)).
+  // Theoretical fret position (spec 14.2): scale·(1−2^(−fret/12)).
   GMB.fretTheoreticalMm = function (s, fret) {
     return (s.scaleLengthMm || 0) * (1 - Math.pow(2, -fret / 12));
   };
@@ -313,7 +313,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Live status (dashboard, cahier des charges 19). Mock evolves over time.
+  // Live status (dashboard, spec 19). Mock evolves over time.
   // ---------------------------------------------------------------------------
   function sampleStatus() {
     var p = MOCK.profile;
@@ -399,7 +399,7 @@
     return { pins: pins, errors: [] };
   }
 
-  // Mock validation (cahier des charges 11.6). Mirrors the firmware contract:
+  // Mock validation (spec 11.6). Mirrors the firmware contract:
   // decodes the full profile and returns { ok, issues:[{field,message,severity}] }.
   function mockValidatePins(profile) {
     var pins = (profile && profile.pins) || [];

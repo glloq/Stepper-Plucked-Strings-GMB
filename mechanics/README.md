@@ -1,7 +1,7 @@
 # Mechanics — reference architecture
 
-Reference mechanical architecture for **Stepper-Plucked-Strings-GMB** (cahier des
-charges §5), and how each mechanical parameter maps to the instrument-profile
+Reference mechanical architecture for **Stepper-Plucked-Strings-GMB**
+(SPECIFICATION.md §5), and how each mechanical parameter maps to the instrument-profile
 fields (`firmware/src/core/motion/StepperAxis.h`, `instrument-profiles/`).
 
 ## 1. One independent channel per string (§5.1)
@@ -60,9 +60,9 @@ The profile field `instrument.pluckMode` selects `individual`, `sharedStrum`, or
 `both`.
 
 Per string, up to four servo roles can be defined: `finger` (press), `pluck`
-(individual plectrum), `strum` (per-string strum / grattage) and `damper`
-(per-string mute / silencieux / étouffoir). Each string also has its own endstop
-(FDC): the `HOME` reference sensor, plus an optional `LIMIT` switch at the far
+(individual plectrum), `strum` (per-string strum) and `damper`
+(per-string mute). Each string also has its own endstop
+: the `HOME` reference sensor, plus an optional `LIMIT` switch at the far
 end.
 
 ## 3.1 Servo signal source: PCA9685 or direct GPIO
@@ -110,7 +110,7 @@ A calibrated table (`calibratedFretMm`) overrides theory when present (§14.3).
 
 ## 6. Parameter → profile-field mapping
 
-`stepsPerMm` is computed from the transmission (cahier des charges §12.1):
+`stepsPerMm` is computed from the transmission (SPECIFICATION.md §12.1):
 
 **Belt (GT2):**
 

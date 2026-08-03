@@ -26,7 +26,7 @@ int NoteAllocator::cost(int stringIndex, uint8_t note) const {
     int fret = fretFor(stringIndex, note);
     if (fret < 0) return 1 << 20;
     // Prefer the smallest carriage movement; a tiny bias keeps a well-positioned
-    // finger where it is (cahier des charges 17.2, priorities 4 & 5).
+    // finger where it is (spec 17.2, priorities 4 & 5).
     return std::abs(fret - runtime_[stringIndex].currentFret);
 }
 

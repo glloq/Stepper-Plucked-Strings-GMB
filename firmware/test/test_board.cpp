@@ -4,7 +4,7 @@
 
 using namespace gmb;
 
-// Acceptance criteria 3, 4, 5 (cahier des charges 25).
+// Acceptance criteria 3, 4, 5 (spec 25).
 
 TEST(board_reserved_pins_are_red) {
     BoardProfile b = makeEsp32S3DevKitC1();
@@ -36,7 +36,7 @@ TEST(auto_assign_matches_recommended_table) {
     PinRequest req;
     req.stringCount = 6;
     CHECK(pm.autoAssign(req));
-    // Recommended table (cahier des charges 11.5).
+    // Recommended table (spec 11.5).
     CHECK_EQ(pm.gpioOf("STEP1"), 4);
     CHECK_EQ(pm.gpioOf("STEP6"), 16);
     CHECK_EQ(pm.gpioOf("DIR1"), 17);

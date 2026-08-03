@@ -1,7 +1,7 @@
 # Wiring guide
 
 Connection guide for the **Stepper-Plucked-Strings-GMB** reference electronics
-(cahier des charges §7 and §22). Default GPIO come from the ESP32-S3-DevKitC-1
+(SPECIFICATION.md §7 and §22). Default GPIO come from the ESP32-S3-DevKitC-1
 board profile (§11.5, `board-profiles/esp32-s3-devkitc-1.json`); every line can
 be reassigned from the web interface.
 

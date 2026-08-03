@@ -2,7 +2,7 @@
 // mixable per servo (user requirement: work with or without a PCA). Roles:
 // finger / pluck / strum / damper per string, plus shared and aux actuators.
 // The PCA /OE line is tied to a safety pin so all PCA servos can be neutralised
-// instantly (cahier des charges §21.2); direct servos are detached on stop.
+// instantly (spec §21.2); direct servos are detached on stop.
 #pragma once
 
 #include <cstdint>

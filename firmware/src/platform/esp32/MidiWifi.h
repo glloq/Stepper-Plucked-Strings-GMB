@@ -1,4 +1,4 @@
-// Wi-Fi MIDI transport (cahier des charges §8.2). Initial implementation uses a
+// Wi-Fi MIDI transport (spec §8.2). Initial implementation uses a
 // configurable UDP socket carrying raw MIDI bytes; decoded events and SysEx come
 // out through the transport-independent MidiParser so BLE/USB/DIN can be added
 // later without touching the instrument logic (§8.3).

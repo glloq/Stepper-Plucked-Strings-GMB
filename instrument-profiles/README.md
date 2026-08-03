@@ -1,7 +1,7 @@
 # Instrument profiles
 
 Example configuration profiles for **Stepper-Plucked-Strings-GMB**. Each file is
-a full, valid instrument profile matching the JSON format of cahier des charges
+a full, valid instrument profile matching the JSON format of SPECIFICATION.md
 §20 and the firmware `gmb::Profile` (`firmware/src/core/configuration/Profile.h`).
 
 They are meant as realistic starting points: import one from the web interface,
@@ -25,7 +25,7 @@ The set is intentionally diverse so it exercises the schema:
 
 * **Pluck modes** — `individual` (ukulele, bass, banjo), `sharedStrum`
   (mandolin), and `both` (guitar, which also carries a shared strummer on an aux
-  channel). See cahier des charges §5.3.
+  channel). See SPECIFICATION.md §5.3.
 * **Transmissions** — `beltGt2` (ukulele, guitar, banjo), `screw` (bass,
   long-scale lead screw), and `custom` (mandolin, `customStepsPerMm`). See §12.1.
 * **String/fret selection** — the guitar sets `stringFretSelection.string.reverseOrder = true`

@@ -1,194 +1,192 @@
-# Sécurité — Stepper-Plucked-Strings-GMB
+# Safety — Stepper-Plucked-Strings-GMB
 
-> Sources : `cahier des charges.md` §21, §22 · Code : `core/safety/SafetyManager.{h,cpp}`.
-> Documents liés : [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`CALIBRATION.md`](CALIBRATION.md) · [`WEB_INTERFACE.md`](WEB_INTERFACE.md).
+> Sources: `SPECIFICATION.md` §21, §22 · Code: `core/safety/SafetyManager.{h,cpp}`.
+> Related documents: [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`CALIBRATION.md`](CALIBRATION.md) · [`WEB_INTERFACE.md`](WEB_INTERFACE.md).
 
-Le `SafetyManager` centralise les états sûrs, le panic logiciel, l'arrêt d'urgence
-matériel et le journal des défauts.
+The `SafetyManager` centralizes safe states, software panic, hardware emergency
+stop, and the fault log.
 
 ```cpp
 enum class SafetyState {
-    PowerOnSafe,   // drivers off, servos neutralisés, files vides
-    Armed,         // fonctionnement normal
-    Panic,         // panic logiciel verrouillé
-    EmergencyStop, // arrêt matériel asserté
+    PowerOnSafe,   // drivers off, servos neutralised, queues empty
+    Armed,         // normal operation
+    Panic,         // latched software panic
+    EmergencyStop, // hardware stop asserted
 };
 ```
 
-`actuatorsAllowed()` ne renvoie `true` que dans l'état `Armed` : aucun actionneur
-ne bouge dans les autres états.
+`actuatorsAllowed()` only returns `true` in the `Armed` state: no actuator moves
+in any other state.
 
 ---
 
-## 1. État au démarrage (§21.1)
+## 1. State at startup (§21.1)
 
-À la mise sous tension, `boot()` place le système en `PowerOnSafe` :
+At power-on, `boot()` places the system into `PowerOnSafe`:
 
 ```text
-drivers désactivés
-servos neutralisés
-sorties auxiliaires coupées
-files MIDI vides
-profil vérifié
-GPIO validés
+drivers disabled
+servos neutralised
+auxiliary outputs cut
+MIDI queues empty
+profile verified
+GPIO validated
 ```
 
-La transition vers `Armed` n'est possible **qu'après** validation du profil et des
-GPIO :
+The transition to `Armed` is only possible **after** validation of the profile
+and the GPIO pins:
 
 ```cpp
-bool arm(bool profileValid, bool pinsValid);  // Armed uniquement si les deux sont vrais
+bool arm(bool profileValid, bool pinsValid);  // Armed only if both are true
 ```
 
-Aucun actionneur n'est activé en mode normal tant que les erreurs critiques ne
-sont pas corrigées (cf. assistant §9, [`WEB_INTERFACE.md`](WEB_INTERFACE.md)).
+No actuator is enabled in normal mode as long as critical errors remain
+uncorrected (see the wizard §9, [`WEB_INTERFACE.md`](WEB_INTERFACE.md)).
 
-### Séquence de démarrage complète (§13 / §21.1)
+### Complete startup sequence (§13 / §21.1)
 
-`main.cpp` suit une machine à trois phases ; **le jeu n'est armé qu'après un
-homing réussi**, de sorte qu'aucun axe ne bouge depuis une position physique
-inconnue :
+`main.cpp` follows a three-phase state machine; **playback is only armed after a
+successful homing**, so that no axis moves from an unknown physical position:
 
 ```text
-Boot     : PowerOnSafe — profil chargé et validé, drivers OFF, servos au repos
-   │        (si le profil est invalide, on reste en Boot : aucun mouvement)
+Boot     : PowerOnSafe — profile loaded and validated, drivers OFF, servos at rest
+   │        (if the profile is invalid, it stays in Boot: no movement)
    ▼
-Homing   : drivers ON ; chaque axe exécute son HomingController (non bloquant,
-   │        en parallèle). L'origine est ancrée sur le capteur HOME (0 mm).
-   │        Un axe en défaut est désactivé sans bloquer les autres.
+Homing   : drivers ON; each axis runs its HomingController (non-blocking,
+   │        in parallel). The origin is anchored on the HOME sensor (0 mm).
+   │        A faulty axis is disabled without blocking the others.
    ▼
-Ready    : tous les axes homés → arm() → les notes MIDI sont jouées.
+Ready    : all axes homed → arm() → MIDI notes are played.
 ```
 
-Pendant `Boot` et `Homing`, les `Note On` ne sont pas joués (seules les requêtes
-SysEx sont traitées). Un changement de configuration mécanique depuis
-l'interface Web relance un homing avant de rejouer.
+During `Boot` and `Homing`, `Note On` messages are not played (only SysEx
+requests are processed). A mechanical configuration change from the Web
+interface triggers a new homing before playback resumes.
 
-### Arrêt d'urgence matériel et fins de course
+### Hardware emergency stop and limit switches
 
-* **E-stop matériel** : si une broche `ESTOP` est affectée (active bas), `loop()`
-  la lit à chaque passage et déclenche immédiatement un panic (drivers coupés,
-  servos neutralisés). Sans broche `ESTOP` affectée, seul le panic logiciel
-  (bouton STOP Web / CC120/CC123) est disponible.
-* **Fins de course `LIMIT`** : un `LIMIT` actif pendant un déplacement provoque
-  un **arrêt immédiat** de l'axe concerné (pas une décélération), invalide sa
-  position (re-homing obligatoire) et le met en défaut, sans perturber les
-  autres axes.
+* **Hardware E-stop**: if an `ESTOP` pin is assigned (active low), `loop()`
+  reads it on every pass and immediately triggers a panic (drivers cut off,
+  servos neutralized). Without an assigned `ESTOP` pin, only the software panic
+  (Web STOP button / CC120/CC123) is available.
+* **`LIMIT` switches**: an active `LIMIT` during a movement causes an
+  **immediate stop** of the axis concerned (not a deceleration), invalidates its
+  position (re-homing required) and puts it into a fault state, without
+  disturbing the other axes.
 
-### Reprise après panic / E-stop (`POST /api/reset`)
+### Recovery after panic / E-stop (`POST /api/reset`)
 
-Après un panic ou un E-stop, l'état de sécurité est **verrouillé** : ni le
-chargement d'un profil ni un nouveau homing ne peuvent réactiver les moteurs.
-La reprise est explicite via `POST /api/reset` (bouton « Reset & re-home » du
-tableau de bord), acceptée uniquement si :
+After a panic or an E-stop, the safety state is **locked**: neither loading a
+profile nor a new homing can re-enable the motors. Recovery is explicit via
+`POST /api/reset` (the "Reset & re-home" button on the dashboard), accepted only
+if:
 
-* l'E-stop est physiquement relâché ;
-* aucun `LIMIT` n'est actif ;
-* le profil est valide ;
-* tous les axes/servos ont pu attacher leur canal matériel.
+* the E-stop is physically released;
+* no `LIMIT` is active;
+* the profile is valid;
+* all axes/servos were able to attach their hardware channel.
 
-La reprise force alors un **nouveau homing** avant de rejouer.
+Recovery then forces a **new homing** before playback resumes.
 
-### Mode dégradé (`readyDegraded`)
+### Degraded mode (`readyDegraded`)
 
-Si un ou plusieurs axes échouent leur homing, le système passe malgré tout en
-lecture **mais** :
+If one or more axes fail their homing, the system still enters playback **but**:
 
-* les cordes défaillantes sont désactivées (aucune note, même en sélection CC) ;
-* la **polyphonie annoncée** par SysEx est réduite au nombre d'axes
-  fonctionnels et la **révision des capacités** est incrémentée (General-Midi-
-  Boop cesse d'envoyer les notes injouables) ;
-* l'état exposé devient `readyDegraded` et le défaut apparaît dans le tableau
-  de bord.
+* the failing strings are disabled (no note, even under CC selection);
+* the **polyphony announced** via SysEx is reduced to the number of functional
+  axes and the **capabilities revision** is incremented (General-Midi-Boop stops
+  sending the unplayable notes);
+* the exposed state becomes `readyDegraded` and the fault appears on the
+  dashboard.
 
-### Secrets Wi-Fi et accès
+### Wi-Fi secrets and access
 
-* Les mots de passe Wi-Fi (station et point d'accès) sont stockés en **NVS**
-  (`Preferences`), jamais dans le profil exportable, et se règlent via
-  `POST /api/wifi`. Le point d'accès peut être protégé en WPA2 (mot de passe ≥ 8
-  caractères) ; sinon il reste ouvert.
-### Authentification de l'API Web
+* Wi-Fi passwords (station and access point) are stored in **NVS**
+  (`Preferences`), never in the exportable profile, and are set via
+  `POST /api/wifi`. The access point can be protected with WPA2 (password ≥ 8
+  characters); otherwise it remains open.
+### Web API authentication
 
-Les routes qui **déplacent la mécanique ou changent la configuration**
+The routes that **move the mechanics or change the configuration**
 (`PUT /api/profile`, `/api/profiles*`, `/api/reset`, `/api/test/note`,
-`/api/test/servo`, `/api/wifi`) sont protégées par un **jeton administrateur**
-stocké en NVS :
+`/api/test/servo`, `/api/wifi`) are protected by an **administrator token**
+stored in NVS:
 
-* tant qu'aucun jeton n'est défini (premier démarrage), les écritures sont
-  autorisées pour permettre la configuration initiale ;
-* une fois défini via `POST /api/auth`, chaque écriture doit fournir l'en-tête
-  `X-GMB-Token` correspondant ; sinon la requête est refusée (401) ;
-* `POST /api/panic` reste **toujours** accessible (sécurité) ;
-* le statut expose `authConfigured` et `apOpen` pour que l'interface avertisse
-  quand le point d'accès est ouvert **et** sans jeton.
+* as long as no token is defined (first startup), writes are allowed to enable
+  the initial configuration;
+* once defined via `POST /api/auth`, each write must provide the matching
+  `X-GMB-Token` header; otherwise the request is refused (401);
+* `POST /api/panic` remains **always** accessible (safety);
+* the status exposes `authConfigured` and `apOpen` so the interface can warn
+  when the access point is open **and** without a token.
 
-**Recommandation** : sur un réseau non maîtrisé, définir un mot de passe AP
-(WPA2, ≥ 8 caractères) **et** un jeton administrateur.
+**Recommendation**: on an untrusted network, set an AP password (WPA2, ≥ 8
+characters) **and** an administrator token.
 
-**Limitations connues restantes** : pas encore de protection CSRF/origine
-dédiée, ni de confirmation physique locale pour le reset/homing, ni de
-séparation formelle réseau MIDI / réseau d'administration — voir la note de
-limitations du [`README`](../README.md).
-
----
-
-## 2. Arrêt d'urgence matériel — /OE du PCA9685 (§21.2)
-
-Un arrêt **matériel** doit pouvoir :
-
-* désactiver les drivers pas à pas ;
-* désactiver le PCA9685 par sa broche `/OE` (neutralisation immédiate de tous les
-  servos, indépendamment du firmware) ;
-* neutraliser les sorties auxiliaires ;
-* **conserver l'ESP32 alimenté** (pour journalisation et reprise contrôlée).
-
-La sortie `/OE` du PCA9685 est reliée à une broche de sécurité (GPIO47 dans le
-profil DevKitC-1 recommandé — voir [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md)).
-`emergencyStop(nowMs)` verrouille l'état `EmergencyStop` et enregistre la cause.
+**Known remaining limitations**: no dedicated CSRF/origin protection yet, no
+local physical confirmation for reset/homing, and no formal separation between
+the MIDI network and the administration network — see the limitations note in
+the [`README`](../README.md).
 
 ---
 
-## 3. Panic logiciel (§21.3)
+## 2. Hardware emergency stop — the PCA9685 /OE (§21.2)
 
-`panic(cause, nowMs)` verrouille l'état `Panic`, enregistre la cause, et le
-firmware doit :
+A **hardware** stop must be able to:
 
-* vider la file MIDI ;
-* annuler tous les mouvements ;
-* annuler tous les pincements ;
-* relever les doigts ;
-* neutraliser les servos ;
-* désactiver les moteurs ;
-* enregistrer la cause.
+* disable the stepper drivers;
+* disable the PCA9685 via its `/OE` pin (immediate neutralization of all servos,
+  independently of the firmware);
+* neutralize the auxiliary outputs;
+* **keep the ESP32 powered** (for logging and controlled recovery).
 
-Le mécanisme d'identifiant de commande de `StringController` garantit qu'aucune
-attaque différée n'est exécutée après un panic (voir [`ARCHITECTURE.md`](ARCHITECTURE.md)
-§3 et `cahier des charges.md` §16). `reset()` ramène en `PowerOnSafe` et exige un
-ré-armement.
-
-L'API Web expose `POST /api/panic` ([`WEB_INTERFACE.md`](WEB_INTERFACE.md)).
+The PCA9685 `/OE` output is wired to a safety pin (GPIO47 in the recommended
+DevKitC-1 profile — see [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md)).
+`emergencyStop(nowMs)` locks the `EmergencyStop` state and records the cause.
 
 ---
 
-## 4. Perte du Wi-Fi (§21.4)
+## 3. Software panic (§21.3)
 
-Comportement configurable (`WifiLossBehavior`) :
+`panic(cause, nowMs)` locks the `Panic` state, records the cause, and the
+firmware must:
+
+* flush the MIDI queue;
+* cancel all movements;
+* cancel all plucks;
+* lift the fingers;
+* neutralize the servos;
+* disable the motors;
+* record the cause.
+
+The `StringController` command-identifier mechanism guarantees that no deferred
+attack is executed after a panic (see [`ARCHITECTURE.md`](ARCHITECTURE.md)
+§3 and `SPECIFICATION.md` §16). `reset()` returns to `PowerOnSafe` and requires
+a re-arm.
+
+The Web API exposes `POST /api/panic` ([`WEB_INTERFACE.md`](WEB_INTERFACE.md)).
+
+---
+
+## 4. Wi-Fi loss (§21.4)
+
+Configurable behavior (`WifiLossBehavior`):
 
 | Valeur | Comportement |
 | ------ | ------------ |
-| `FinishThenStop` (0) | **défaut** : annuler les commandes en attente, relâchement contrôlé, retour à READY |
-| `StopImmediately` (1) | arrêter immédiatement |
-| `ContinueQueued` (2) | continuer les commandes déjà en file |
-| `IdleKeepMotors` (3) | revenir en attente sans désactiver les moteurs |
+| `FinishThenStop` (0) | **default**: cancel pending commands, controlled release, return to READY |
+| `StopImmediately` (1) | stop immediately |
+| `ContinueQueued` (2) | continue commands already queued |
+| `IdleKeepMotors` (3) | return to idle without disabling the motors |
 
-Comportement par défaut détaillé : annulation des commandes en attente,
-relâchement contrôlé, retour à l'état READY.
+Default behavior in detail: cancellation of pending commands, controlled
+release, return to the READY state.
 
 ---
 
-## 5. Journal des défauts
+## 5. Fault log
 
-`SafetyManager` intègre le rôle de `FaultManager` (§23) :
+`SafetyManager` incorporates the role of `FaultManager` (§23):
 
 ```cpp
 struct FaultRecord { std::string source; std::string message; uint32_t atMs; };
@@ -198,28 +196,28 @@ const std::vector<FaultRecord>& faults() const;
 void clearFaults();
 ```
 
-Les défauts sont affichés sur le tableau de bord Web (§19).
+Faults are displayed on the Web dashboard (§19).
 
 ---
 
-## 6. Alimentation (§22)
+## 6. Power supply (§22)
 
-Rails recommandés :
+Recommended rails:
 
 | Rail | Usage |
 | ---- | ----- |
-| 24 V | moteurs pas à pas |
-| 5 à 7,4 V | servomoteurs |
-| 5 V | logique |
-| 3,3 V | ESP32-S3 |
+| 24 V | stepper motors |
+| 5 to 7.4 V | servomotors |
+| 5 V | logic |
+| 3.3 V | ESP32-S3 |
 
-Exigences :
+Requirements:
 
-* alimentation servo **séparée** ;
-* fusible moteurs ; fusible servos ;
-* protection contre l'inversion de polarité ;
-* TVS sur le rail moteur ;
-* condensateurs près des drivers ; condensateur de réserve près du PCA9685 ;
-* masse commune structurée ;
-* connecteurs verrouillables ;
-* **aucun servo alimenté par le régulateur de l'ESP32**.
+* **separate** servo power supply;
+* motor fuse; servo fuse;
+* reverse-polarity protection;
+* TVS on the motor rail;
+* capacitors near the drivers; a reserve capacitor near the PCA9685;
+* structured common ground;
+* lockable connectors;
+* **no servo powered from the ESP32 regulator**.

@@ -157,12 +157,10 @@ Arduino dependency, tested on a PC) plus thin ESP32 adapters
 | [Safety](docs/SAFETY.md) | Homing, E-stop, fault handling |
 | [Arduino IDE](docs/ARDUINO_IDE.md) | Building without PlatformIO |
 
-> The in-depth guides above are currently written in French; this README is the
-> English overview and entry point.
-
-The original specifications are the three markdown files at the repository root
-(in French): the full requirements (`cahier des charges.md`), the string/fret CC
-selection spec, and the SysEx capability protocol.
+The original specifications are the three markdown files at the repository root:
+the full requirements ([`SPECIFICATION.md`](SPECIFICATION.md)), the string/fret
+CC selection spec ([`STRING_FRET_SELECTION.md`](STRING_FRET_SELECTION.md)), and
+the SysEx capability protocol ([`SYSEX_CAPABILITIES.md`](SYSEX_CAPABILITIES.md)).
 
 ---
 

@@ -1,5 +1,5 @@
-// Trapezoidal motion profile (cahier des charges §12: vitesse et accélération
-// maximales). Pure C++ so the acceleration logic is unit-tested on the host; the
+// Trapezoidal motion profile (spec §12: maximum speed and acceleration).
+// Pure C++ so the acceleration logic is unit-tested on the host; the
 // ESP32 StepperBank advances one planner per axis and steps toward its position,
 // which gives smooth accel/decel instead of a fixed step rate.
 #pragma once

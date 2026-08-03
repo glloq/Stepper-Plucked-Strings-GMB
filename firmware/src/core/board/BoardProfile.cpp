@@ -98,7 +98,7 @@ BoardProfile makeEsp32S3DevKitC1() {
     auto add = [&](PinCapability c) { b.pins.push_back(c); };
 
     // ADC1 covers GPIO1..10, ADC2 covers GPIO11..20 on the ESP32-S3.
-    // Strapping / boot pins (cahier des charges 11.4).
+    // Strapping / boot pins (spec 11.4).
     add(reservedPin(0, "Strapping / BOOT button", /*strapping=*/true));
     add(normalPin(1, PinPreference::Recommended, true));
     add(normalPin(2, PinPreference::Recommended, true));

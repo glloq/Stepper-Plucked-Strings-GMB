@@ -1,4 +1,4 @@
-// Safety & fault handling (cahier des charges section 21).
+// Safety & fault handling (spec section 21).
 #pragma once
 
 #include <cstdint>
@@ -14,7 +14,7 @@ enum class SafetyState : uint8_t {
     EmergencyStop, // hardware E-stop asserted
 };
 
-// Configurable behaviour when Wi-Fi is lost (cahier des charges 21.4).
+// Configurable behaviour when Wi-Fi is lost (spec 21.4).
 enum class WifiLossBehavior : uint8_t {
     FinishThenStop = 0,   // default: cancel pending, controlled release, READY
     StopImmediately = 1,
@@ -32,7 +32,7 @@ class SafetyManager {
 public:
     SafetyState state() const { return state_; }
 
-    // At power-up everything is neutralised (cahier des charges 21.1).
+    // At power-up everything is neutralised (spec 21.1).
     void boot() { state_ = SafetyState::PowerOnSafe; }
 
     // Transition to normal operation only after the profile is validated and
@@ -45,12 +45,12 @@ public:
         return false;
     }
 
-    // Software panic (cahier des charges 21.3): the caller must flush the MIDI
+    // Software panic (spec 21.3): the caller must flush the MIDI
     // queue, cancel motion/plucks, lift fingers, neutralise servos, disable
     // motors; this records the cause and latches the state.
     void panic(const std::string& cause, uint32_t nowMs);
 
-    // Hardware emergency stop (cahier des charges 21.2).
+    // Hardware emergency stop (spec 21.2).
     void emergencyStop(uint32_t nowMs);
 
     // Clear a latched panic/E-stop back to the safe state (requires re-arming).

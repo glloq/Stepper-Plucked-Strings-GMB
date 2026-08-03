@@ -1,5 +1,5 @@
 /*
- * pins.js — GPIO pin assignment grid (cahier des charges section 11).
+ * pins.js — GPIO pin assignment grid (spec section 11).
  *
  * Colour categories: Green=recommended / Yellow=caution (advanced only) /
  * Red=reserved (never selectable) / Grey=used. Per-signal candidate lists are
@@ -131,7 +131,7 @@
     GMB.markDirty();
   }
 
-  // Candidate GPIOs for a signal (cahier des charges 11.3): compatible, not
+  // Candidate GPIOs for a signal (spec 11.3): compatible, not
   // reserved, not used elsewhere. Caution pins only surface in advanced mode.
   function candidates(kind, signal) {
     var reserveUsb = GMB.state.profile.board.reserveUsb;
