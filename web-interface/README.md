@@ -93,8 +93,9 @@ The setup wizard configures a full instrument (1–6 strings) with a stepper plu
 servos per string, **with or without a PCA9685**:
 
 - **Servos per string (step 6).** For each string, add the servos it uses —
-  **finger**, **strum**, **damper** and an
-  optional **pluck**. Each servo picks its signal **source**:
+  **finger**, **strum**, an optional **strum lift** (raises/lowers the strum
+  servo per stroke), **damper** and an optional **pluck**. Each servo picks its
+  signal **source**:
   - **PCA9685** — choose `pcaBoard` (0–3, i.e. up to four boards / 64 channels)
     and `channel` (0–15). A compact channel-availability map flags duplicate
     `board+channel` in red.

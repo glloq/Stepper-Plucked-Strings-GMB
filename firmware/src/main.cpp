@@ -82,7 +82,7 @@ std::vector<TestNoteOff> g_testOffs;
 // Per-string non-blocking playback scheduler.
 struct StringSched {
     enum Phase { Idle, WaitStopped, ReleasingFinger, MovingToFret, PressingFinger,
-                 Settling, Ready }
+                 Settling, Ready, StrumLiftDown, StrumLiftHold }
         phase = Idle;
     uint32_t phaseStartMs = 0;
     uint32_t commandId = 0;
@@ -90,6 +90,8 @@ struct StringSched {
     uint32_t readySinceMs = 0;  // when this string reached Ready (shared-strum sync)
     uint32_t dampUntilMs = 0;   // don't move until the damper has acted (replace)
     uint32_t moveDeadlineMs = 0;  // fault the axis if the move isn't done by then
+    int liftIndex = -1;    // engaged strum-lift servo during a stroke (-1 = none)
+    int strikeIndex = -1;  // striker to fire once the lift has lowered
 };
 
 // Estimate a trapezoidal/triangular move time (ms) for a distance at a given max
@@ -658,11 +660,19 @@ void drainCommands(uint32_t nowMs) {
     }
 }
 
+// The per-string individual striker: the plectrum ('pluck') if present, otherwise
+// the per-string strum servo ('strum'). Both name the same physical per-string
+// striker, so an instrument may wire either one.
+int perStringStrikeIndex(size_t i) {
+    int p = g_servos.pluckIndex(static_cast<int>(i));
+    return p >= 0 ? p : g_servos.strumIndex(static_cast<int>(i));
+}
+
 // Does a given string rely on the shared strummer (shared modes, or no
-// individual plectrum of its own)?
+// individual striker of its own)?
 bool usesSharedStrum(size_t i) {
     PluckMode mode = g_profile.instrument.pluckMode;
-    int pi = g_servos.pluckIndex(static_cast<int>(i));
+    int pi = perStringStrikeIndex(i);
     return (mode == PluckMode::SharedStrum || mode == PluckMode::Both) || pi < 0;
 }
 
@@ -676,7 +686,9 @@ bool sharedGroupPositioned(uint32_t group) {
         const StringTarget& t = g_instrument.target(j);
         if (!t.active || t.strumGroup != group) continue;
         if (!usesSharedStrum(j)) continue;
-        if (g_sched[j].phase != StringSched::Ready) return false;  // still travelling
+        // Reached its fret once it is at Ready or beyond (the strum-lift sub-phases
+        // come after Ready); anything earlier is still travelling.
+        if (g_sched[j].phase < StringSched::Ready) return false;
     }
     return true;
 }
@@ -720,6 +732,7 @@ void tickString(size_t i, uint32_t nowMs) {
             g_steppers.stop(i);
             int fi = g_servos.fingerIndex(static_cast<int>(i));
             if (fi >= 0) g_servos.release(fi);
+            if (sch.liftIndex >= 0) { g_servos.release(sch.liftIndex); sch.liftIndex = -1; }
             int di = g_servos.damperIndex(static_cast<int>(i));
             if (di >= 0) g_servos.strike(di);
             sch.phase = StringSched::WaitStopped;
@@ -748,6 +761,8 @@ void tickString(size_t i, uint32_t nowMs) {
                 sch.dampUntilMs = nowMs + g_servos.travelMs(di) + g_servos.settleMs(di);
             }
         }
+        // A strum lift engaged for the previous note is raised before anything else.
+        if (sch.liftIndex >= 0) { g_servos.release(sch.liftIndex); sch.liftIndex = -1; }
         // Lift the finger and WAIT for it to travel up before moving the carriage,
         // so the finger never drags along the string (§16).
         sch.commandId = tgt.commandId;
@@ -818,7 +833,7 @@ void tickString(size_t i, uint32_t nowMs) {
         case StringSched::Ready: {
             if (!sc.pluckArmed()) break;  // not armed (prepared / already plucked)
             PluckMode mode = g_profile.instrument.pluckMode;
-            int pi = g_servos.pluckIndex(static_cast<int>(i));
+            int pi = perStringStrikeIndex(i);
             bool doIndividual = (mode == PluckMode::Individual ||
                                  mode == PluckMode::Both) && pi >= 0;
             bool doShared = usesSharedStrum(i);
@@ -833,7 +848,8 @@ void tickString(size_t i, uint32_t nowMs) {
                 }
             }
             if (!sc.executePluck(tgt.commandId)) break;
-            if (doIndividual) g_servos.strike(pi, tgt.intensity);
+            // Shared strum sweep (once per chord group) — not gated by a per-string
+            // strum lift.
             if (doShared) {
                 int si = g_servos.sharedStrumIndex();
                 // Exactly one sweep PER GROUP: keyed on the chord's strum group, not
@@ -847,8 +863,39 @@ void tickString(size_t i, uint32_t nowMs) {
                     g_lastSharedStrumMs = nowMs;
                 }
             }
+            // Individual strike. If the string carries a strum-lift servo, lower it
+            // onto the string first, strike, then raise it — otherwise strike now.
+            if (doIndividual) {
+                int li = g_servos.strumLiftIndex(static_cast<int>(i));
+                if (li >= 0) {
+                    g_servos.press(li);  // lower / engage the strum servo
+                    sch.liftIndex = li;
+                    sch.strikeIndex = pi;
+                    sch.phase = StringSched::StrumLiftDown;
+                    sch.phaseStartMs = nowMs;
+                    break;
+                }
+                g_servos.strike(pi, tgt.intensity);
+            }
             break;
         }
+        case StringSched::StrumLiftDown:
+            // Wait for the lift to lower the strum servo onto the string, then strum.
+            if (nowMs - sch.phaseStartMs >= g_servos.travelMs(sch.liftIndex)) {
+                g_servos.strike(sch.strikeIndex, tgt.intensity);
+                sch.phase = StringSched::StrumLiftHold;
+                sch.phaseStartMs = nowMs;
+            }
+            break;
+        case StringSched::StrumLiftHold:
+            // Hold the lift down until the strum stroke has completed, then raise it.
+            if (nowMs - sch.phaseStartMs >= g_servos.travelMs(sch.strikeIndex)) {
+                g_servos.release(sch.liftIndex);  // raise / disengage
+                sch.liftIndex = -1;
+                sch.strikeIndex = -1;
+                sch.phase = StringSched::Ready;
+            }
+            break;
         case StringSched::WaitStopped:
         case StringSched::Idle:
             break;

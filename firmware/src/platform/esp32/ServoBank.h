@@ -1,6 +1,7 @@
 // Servo bank supporting PCA9685 (up to four boards) AND direct-GPIO servos,
 // mixable per servo (user requirement: work with or without a PCA). Roles:
-// finger / pluck / strum / damper per string, plus shared and aux actuators.
+// finger / pluck / strum / strumLift / damper per string, plus shared and aux
+// actuators.
 // The PCA /OE line is tied to a safety pin so all PCA servos can be neutralised
 // instantly (spec §21.2); direct servos are detached on stop.
 #pragma once
@@ -53,6 +54,9 @@ public:
     int fingerIndex(int stringIndex) const { return servoIndex("finger", stringIndex); }
     int pluckIndex(int stringIndex) const { return servoIndex("pluck", stringIndex); }
     int strumIndex(int stringIndex) const { return servoIndex("strum", stringIndex); }
+    // Optional per-string lift that lowers (engages) the strum/pluck servo onto
+    // the string for a stroke, then raises (disengages) it: rest = raised.
+    int strumLiftIndex(int stringIndex) const { return servoIndex("strumLift", stringIndex); }
     int damperIndex(int stringIndex) const { return servoIndex("damper", stringIndex); }
     int sharedStrumIndex() const { return servoIndex("sharedStrum", -1); }
 

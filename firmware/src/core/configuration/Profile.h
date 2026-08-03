@@ -62,6 +62,7 @@ enum class ServoSource : uint8_t { Pca = 0, DirectGpio = 1 };
 //   finger : presses the string at the fret            (per string)
 //   pluck  : individual plectrum                       (per string)
 //   strum  : per-string strum servo                    (per string)
+//   strumLift : lowers/raises the strum servo per stroke (per string)
 //   damper : per-string damper (mute)                  (per string)
 //   sharedStrum / sharedDamper : one mechanism across several strings
 //   aux    : any auxiliary actuator

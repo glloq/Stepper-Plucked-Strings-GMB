@@ -224,7 +224,8 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
 
             // Per-string roles must reference an existing string.
             bool perString = s.function == "finger" || s.function == "pluck" ||
-                             s.function == "strum" || s.function == "damper";
+                             s.function == "strum" || s.function == "strumLift" ||
+                             s.function == "damper";
             if (perString) {
                 if (s.stringIndex < 0 || s.stringIndex >= (int)p.strings.size())
                     err(tag + ".stringIndex",
@@ -281,11 +282,20 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
         if (needIndividual) {
             for (size_t i = 0; i < p.strings.size(); ++i)
                 if (p.strings[i].enabled &&
-                    !hasServoRole("pluck", static_cast<int>(i)))
+                    !hasServoRole("pluck", static_cast<int>(i)) &&
+                    !hasServoRole("strum", static_cast<int>(i)))
                     err("servos.pluck",
                         "String " + std::to_string(i) +
-                            " needs a pluck servo for the individual pluck mode");
+                            " needs a pluck or strum servo for the individual pluck mode");
         }
+        // A per-string strum lift only makes sense paired with a striker to lift.
+        for (size_t i = 0; i < p.strings.size(); ++i)
+            if (hasServoRole("strumLift", static_cast<int>(i)) &&
+                !hasServoRole("pluck", static_cast<int>(i)) &&
+                !hasServoRole("strum", static_cast<int>(i)))
+                err("servos.strumLift",
+                    "String " + std::to_string(i) +
+                        " has a strum-lift servo but no pluck/strum servo to lift");
         if (needShared) {
             bool found = false;
             for (const auto& s : p.servos)

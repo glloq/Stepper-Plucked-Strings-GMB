@@ -91,6 +91,58 @@ TEST(pca_board_range) {
     CHECK(!ProfileValidator::isActivatable(p));
 }
 
+// A per-string strum-lift servo paired with the string's pluck servo validates.
+TEST(strum_lift_with_striker_is_valid) {
+    Profile p = uke();
+    ServoConfig lift;
+    lift.enabled = true;
+    lift.function = "strumLift";
+    lift.stringIndex = 0;
+    lift.source = ServoSource::Pca;
+    lift.pcaBoard = 0;
+    lift.channel = 12;  // free channel (finger 0..5, pluck 6..11)
+    p.servos.push_back(lift);
+    CHECK(ProfileValidator::isActivatable(p));
+}
+
+// A per-string strum servo counts as the individual striker (no pluck required).
+TEST(per_string_strum_satisfies_individual_mode) {
+    Profile p = uke();
+    for (auto& s : p.servos)
+        if (s.function == "pluck" && s.stringIndex == 0) s.function = "strum";
+    CHECK(ProfileValidator::isActivatable(p));
+}
+
+// A strum lift with no striker to lift on its string is rejected.
+TEST(strum_lift_without_striker_rejected) {
+    Profile p = uke();
+    // Shared-strum mode: per-string strikers are optional, so the only reason the
+    // profile fails is the dangling strum lift.
+    p.instrument.pluckMode = PluckMode::SharedStrum;
+    ServoConfig shared;
+    shared.enabled = true;
+    shared.function = "sharedStrum";
+    shared.stringIndex = -1;
+    shared.source = ServoSource::Pca;
+    shared.pcaBoard = 0;
+    shared.channel = 12;
+    p.servos.push_back(shared);
+    // Drop string 0's pluck so it has no striker at all.
+    for (auto it = p.servos.begin(); it != p.servos.end();) {
+        if (it->function == "pluck" && it->stringIndex == 0) it = p.servos.erase(it);
+        else ++it;
+    }
+    ServoConfig lift;
+    lift.enabled = true;
+    lift.function = "strumLift";
+    lift.stringIndex = 0;
+    lift.source = ServoSource::Pca;
+    lift.pcaBoard = 0;
+    lift.channel = 13;
+    p.servos.push_back(lift);
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
 // Adjustable per-fret positions: the calibrated table overrides theory and is
 // what the web fret editor writes.
 TEST(adjustable_fret_positions) {

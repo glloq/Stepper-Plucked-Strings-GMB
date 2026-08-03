@@ -59,9 +59,10 @@ Two modes, which may be combined on the same instrument:
 The profile field `instrument.pluckMode` selects `individual`, `sharedStrum`, or
 `both`.
 
-Per string, up to four servo roles can be defined: `finger` (press), `pluck`
-(individual plectrum), `strum` (per-string strum) and `damper`
-(per-string mute). Each string also has its own endstop
+Per string, several servo roles can be defined: `finger` (press), `pluck`
+(individual plectrum), `strum` (per-string strum), `strumLift` (an optional
+servo that lowers the strum servo onto the string for a stroke, then raises it)
+and `damper` (per-string mute). Each string also has its own endstop
 : the `HOME` reference sensor, plus an optional `LIMIT` switch at the far
 end.
 

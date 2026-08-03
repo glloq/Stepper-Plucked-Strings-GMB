@@ -364,7 +364,7 @@
 
   // ---- Step 6: Servos per string -------------------------------------------
   var ROLE_LABEL = {
-    finger: 'Finger', pluck: 'Pluck (plectrum)', strum: 'Strum',
+    finger: 'Finger', pluck: 'Pluck (plectrum)', strum: 'Strum', strumLift: 'Strum lift',
     damper: 'Damper', sharedStrum: 'Shared strum', sharedDamper: 'Shared damper', aux: 'Auxiliary'
   };
   function roleLabel(fn) { return ROLE_LABEL[fn] || fn; }
@@ -416,6 +416,7 @@
       h('div.toolbar.wrap', [
         GMB.button('+ Finger', function () { addServo('finger', i); }, 'ghost'),
         GMB.button('+ Strum', function () { addServo('strum', i); }, 'ghost'),
+        GMB.button('+ Strum lift', function () { addServo('strumLift', i); }, 'ghost'),
         GMB.button('+ Damper', function () { addServo('damper', i); }, 'ghost'),
         GMB.button('+ Pluck (plectrum)', function () { addServo('pluck', i); }, 'ghost')
       ])
@@ -527,7 +528,7 @@
     if (GMB.isAdvanced()) {
       fields = fields.concat([
         GMB.field('Function', GMB.input(sv, 'function', {
-          type: 'select', options: ['finger', 'pluck', 'strum', 'damper', 'sharedStrum', 'sharedDamper', 'aux'],
+          type: 'select', options: ['finger', 'pluck', 'strum', 'strumLift', 'damper', 'sharedStrum', 'sharedDamper', 'aux'],
           onChange: function () { drawStep(); }
         })),
         GMB.field('Pulse min (µs)', GMB.input(sv, 'pulseMinUs', { type: 'number' })),

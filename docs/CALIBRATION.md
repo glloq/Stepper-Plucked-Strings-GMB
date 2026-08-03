@@ -149,7 +149,7 @@ enum class ServoSource : uint8_t { Pca = 0, DirectGpio = 1 };
 
 struct ServoConfig {
     bool enabled;
-    std::string function;         // "finger"/"pluck"/"strum"/"damper"/"sharedStrum"/"aux"
+    std::string function;         // "finger"/"pluck"/"strum"/"strumLift"/"damper"/"sharedStrum"/"aux"
     int8_t stringIndex;           // owner string, -1 = shared/global
 
     ServoSource source;           // PCA9685 OR direct ESP32 GPIO
