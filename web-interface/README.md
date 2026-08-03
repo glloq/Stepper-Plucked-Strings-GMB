@@ -121,8 +121,9 @@ servos per string, **with or without a PCA9685**:
   fret (0..`maxFret`) editing `calibratedFretMm[]`: **Fill automatically
   (theoretical)** fills every fret from `scaleLength·(1−2^(−fret/12))`, per-fret
   **+/−** nudge buttons and a direct numeric field, **Go to this fret**
-  (jog/test — updates the displayed motor position), and **Save
-  position**. A calibrated value always overrides theory in the firmware.
+  (jog/test — updates the displayed motor position), and **Capture
+  position** (records the live motor position). A calibrated value always
+  overrides theory in the firmware.
 
 ## Backend endpoints
 
@@ -140,13 +141,15 @@ REST (all JSON):
 | POST | `/api/pins/validate` | validate assignments, returns per-signal errors + suggestions |
 | POST | `/api/panic` | software panic / STOP (§21.3) |
 | POST | `/api/test/note` | integrated note/string/fret test; returns a step trace (§16) |
-| POST | `/api/test/servo` | drive one servo to `rest`/`active`; returns the pulse width + wiring |
-| POST | `/api/test/endstop` | live HOME/LIMIT switch readout for one string (`{level, active}`) |
+| POST | `/api/test/servo` | drive one servo to `rest`/`active` (armed only) |
+| POST | `/api/test/jog` | nudge one axis by a signed mm delta (armed only) |
+| POST | `/api/test/endstop` | live HOME/LIMIT switch readout for one axis (`{ok, home:bool, limit:bool}`) |
 | POST | `/api/sysex/request` | run a SysEx request, returns sent + received + decoded (§18) |
 | GET  | `/api/capabilities` | computed GMB capabilities snapshot (§17) |
 
-`POST /api/test/servo` body: `{ function, source, pcaBoard, channel, gpio, to:"rest"|"active", restUs, activeUs }`.
-`POST /api/test/endstop` body: `{ string, homeGpio, limitGpio, sensorActiveHigh }` → `{ home:{gpio,level,active}, limit?:{...} }`.
+`POST /api/test/servo` body: `{ index, active }` → `{ ok, accepted, commandId, note }` (202 queued / 503 queue full / 409 not armed).
+`POST /api/test/jog` body: `{ axis, deltaMm }` → `{ ok, accepted, commandId, note }` (202 queued / 409 not armed / 503 queue full; clamped to travel and ±25 mm).
+`POST /api/test/endstop` body: `{ axis }` → `{ ok, home:<bool>, limit:<bool> }`.
 
 WebSocket:
 

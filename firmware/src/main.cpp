@@ -95,6 +95,7 @@ struct StringSched {
     bool fingerPressStarted = false;  // finger descent already begun (lead)
     uint32_t liftStartMs = 0;   // when the strum lift began lowering
     bool liftStarted = false;   // strum lift descent already begun (lead)
+    uint32_t jogSafeAtMs = 0;   // earliest a manual jog may move (finger lifted)
 };
 
 // Estimate a trapezoidal/triangular move time (ms) for a distance at a given max
@@ -633,10 +634,14 @@ bool doJog(int axis, double deltaMm, uint32_t nowMs) {
     if (g_phase != AppPhase::Ready) return false;
     if (!g_safety.actuatorsAllowed()) return false;
     if (axis < 0 || axis >= static_cast<int>(g_instrument.stringCount())) return false;
+    if (axis < static_cast<int>(g_profile.strings.size()) &&
+        !g_profile.strings[axis].enabled) return false;         // disabled axis: no-op
     if (axis < static_cast<int>(g_axisFaulted.size()) && g_axisFaulted[axis]) return false;
     if (g_instrument.target(axis).active) return false;         // don't fight a live note
     if (g_sched[axis].phase != StringSched::Idle) return false;  // axis busy
     if (g_steppers.isRunning(axis)) return false;                // still moving
+    // Wait until a just-released finger has fully lifted (§16: no drag).
+    if (static_cast<int32_t>(nowMs - g_sched[axis].jogSafeAtMs) < 0) return false;
     if (deltaMm > 25.0) deltaMm = 25.0;                          // bound one nudge
     if (deltaMm < -25.0) deltaMm = -25.0;
     g_steppers.moveToMm(axis, g_steppers.positionMm(axis) + deltaMm);
@@ -744,6 +749,9 @@ void tickString(size_t i, uint32_t nowMs) {
             g_steppers.stop(i);
             int fi = g_servos.fingerIndex(static_cast<int>(i));
             if (fi >= 0) g_servos.release(fi);
+            // A manual jog must not move the carriage until the finger has fully
+            // lifted off the string (§16: never drag the finger).
+            sch.jogSafeAtMs = nowMs + g_servos.travelMs(fi);
             if (sch.liftIndex >= 0) { g_servos.release(sch.liftIndex); sch.liftIndex = -1; }
             sch.liftStarted = false;
             int di = g_servos.damperIndex(static_cast<int>(i));
@@ -792,6 +800,14 @@ void tickString(size_t i, uint32_t nowMs) {
         if (sch.fingerIndex >= 0) g_servos.release(sch.fingerIndex);
         sch.phase = StringSched::ReleasingFinger;
         sch.phaseStartMs = nowMs;
+    }
+
+    // A prepared (anticipated) note is "received" when its Note On triggers it —
+    // possibly while it is still mechanically moving. Anchor the fixed execution
+    // delay to that trigger instant so it is not over-delayed to settle time.
+    if (!sch.executeAnchored && sc.consumeTriggerEdge()) {
+        sch.executeAtMs = nowMs + g_profile.midi.noteExecutionDelayMs;
+        sch.executeAnchored = true;
     }
 
     switch (sch.phase) {
@@ -876,7 +892,10 @@ void tickString(size_t i, uint32_t nowMs) {
                 uint32_t settle = g_servos.settleMs(sch.fingerIndex);
                 if (li >= 0 &&
                     (nowMs - sch.phaseStartMs) + g_profile.midi.strumLeadMs >= settle) {
-                    g_servos.press(li);  // start lowering the lift early
+                    if (!g_servos.press(li)) {  // start lowering the lift early
+                        faultRuntimeAxis(i, "strum lift servo write failed", nowMs);
+                        break;
+                    }
                     sch.liftIndex = li;
                     sch.strikeIndex = pi;
                     sch.liftStartMs = nowMs;
@@ -899,6 +918,27 @@ void tickString(size_t i, uint32_t nowMs) {
             }
             if (!sc.pluckArmed()) break;  // not armed (prepared / already plucked)
             int pi = perStringStrikeIndex(i);
+            // Pre-lower the strum lift DURING the fixed-delay wait so the strike
+            // lands AT executeAtMs even with a lift — this keeps a chord's lift and
+            // no-lift strings synchronised. It begins travel+engageDelay before
+            // executeAtMs; with a zero/short delay it simply starts as soon as ready.
+            if (pi >= 0 && !sch.liftStarted) {
+                int li = g_servos.strumLiftIndex(static_cast<int>(i));
+                if (li >= 0) {
+                    uint32_t liftMs = g_servos.travelMs(li) + g_servos.engageDelayMs(li);
+                    if (static_cast<int32_t>(nowMs - sch.executeAtMs) +
+                            static_cast<int32_t>(liftMs) >= 0) {
+                        if (!g_servos.press(li)) {
+                            faultRuntimeAxis(i, "strum lift servo write failed", nowMs);
+                            break;
+                        }
+                        sch.liftIndex = li;
+                        sch.strikeIndex = pi;
+                        sch.liftStartMs = nowMs;
+                        sch.liftStarted = true;
+                    }
+                }
+            }
             // Fixed reception -> sound delay: stay ready but silent until the
             // scheduled execution time. The mechanics have been preparing (and any
             // anticipated strum lift has been lowering) during this window.
@@ -908,13 +948,16 @@ void tickString(size_t i, uint32_t nowMs) {
             // is no shared strummer. An optional strum-lift lowers the strum servo
             // onto the string for the stroke, then raises it.
             if (pi >= 0) {
-                // Use the lift already lowering (strum lead) if there is one,
+                // Use the lift already lowering (strum lead / pre-lower) if any,
                 // otherwise start it now.
                 int li = sch.liftStarted ? sch.liftIndex
                                          : g_servos.strumLiftIndex(static_cast<int>(i));
                 if (li >= 0) {
                     if (!sch.liftStarted) {
-                        g_servos.press(li);  // lower / engage the strum servo now
+                        if (!g_servos.press(li)) {  // lower / engage the strum servo now
+                            faultRuntimeAxis(i, "strum lift servo write failed", nowMs);
+                            break;
+                        }
                         sch.liftIndex = li;
                         sch.strikeIndex = pi;
                         sch.liftStartMs = nowMs;

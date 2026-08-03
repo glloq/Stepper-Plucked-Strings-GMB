@@ -73,6 +73,24 @@ VelocityCurve velocityCurveFrom(JsonVariantConst v, bool* ok) {
     return VelocityCurve::Linear;  // absent: default allowed
 }
 
+// Pin signal-kind name, matching the string form used by the web UI and the
+// shipped profiles (import re-derives kind from the signal name, so this is only
+// for round-trip consistency of exported profiles).
+const char* signalKindName(SignalKind k) {
+    switch (k) {
+        case SignalKind::Step: return "step";
+        case SignalKind::Dir: return "dir";
+        case SignalKind::Enable: return "enable";
+        case SignalKind::Home: return "home";
+        case SignalKind::Limit: return "limit";
+        case SignalKind::Diag: return "diag";
+        case SignalKind::I2cSda: return "i2cSda";
+        case SignalKind::I2cScl: return "i2cScl";
+        case SignalKind::ServoOe: return "servoOe";
+        default: return "generic";
+    }
+}
+
 const char* saturationName(SaturationStrategy s) {
     switch (s) {
         case SaturationStrategy::IgnoreExtra: return "ignoreExtra";
@@ -189,7 +207,7 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
         JsonObject o = pins.add<JsonObject>();
         o["signal"] = a.signal;
         o["gpio"] = a.gpio;
-        o["kind"] = static_cast<int>(a.kind);
+        o["kind"] = signalKindName(a.kind);
     }
 
     JsonObject net = doc["network"].to<JsonObject>();

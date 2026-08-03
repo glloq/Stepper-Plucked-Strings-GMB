@@ -78,6 +78,11 @@ public:
     // and re-anchor the fixed execution delay to the trigger instant.
     bool willArmOnSettle() const { return armOnSettle_; }
 
+    // One-shot edge: true exactly once after trigger() fires for a prepared note,
+    // so the scheduler can anchor the fixed execution delay to the Note-On instant
+    // even when the note is triggered before it is mechanically ready.
+    bool consumeTriggerEdge() { bool e = triggerEdge_; triggerEdge_ = false; return e; }
+
     // Release the note. Cancels any armed/prepared attack.
     void noteOff();
 
@@ -95,6 +100,7 @@ private:
     bool openString_ = true;
     bool pluckArmed_ = false;
     bool armOnSettle_ = true;  // false while a note is only prepared (not triggered)
+    bool triggerEdge_ = false; // set by trigger(), consumed once by the scheduler
 
     void invalidate() {
         commandId_ = nextId_++;  // any deferred action tagged with the old id dies

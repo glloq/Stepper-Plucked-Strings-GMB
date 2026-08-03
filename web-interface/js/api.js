@@ -266,8 +266,7 @@
       // Ukulele GCEA: physical order low->high used by GMB = G4(67) C4(60) E4(64) A4(69)
       strings: [ukuleleString(67), ukuleleString(60), ukuleleString(64), ukuleleString(69)],
       // A representative mix: one finger + one pluck per string on PCA board 0
-      // (channels 0–3 fingers, 6–9 plucks — the recommended layout), plus one
-      // shared strum driven directly from a free ESP32 GPIO (no PCA needed).
+      // (channels 0–3 fingers, 6–9 plucks — the recommended layout).
       servos: [
         servo('finger', 0, { channel: 0 }),
         servo('finger', 1, { channel: 1 }),
@@ -801,6 +800,12 @@
       return this._call('/api/test/servo', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wire)
       }, function () { return mockTestServo(payload); });
+    },
+    // GET /api/commands?id=N -> { id, state:"queued"|"succeeded"|"refused"|"unknown" }.
+    // Lets a 202-accepted command (e.g. a jog) be followed up for its real outcome.
+    commandState: function (id) {
+      return this._call('/api/commands?id=' + encodeURIComponent(id), null,
+        function () { return { id: id, state: 'succeeded' }; });
     },
     // POST /api/test/jog -> { ok } (409 if not armed). Body: { axis, deltaMm }.
     jog: function (payload) {

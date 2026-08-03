@@ -35,6 +35,7 @@ bool StringController::trigger(uint32_t id) {
     if (id != commandId_) return false;
     if (state_ == StringState::Disabled || state_ == StringState::Fault) return false;
     armOnSettle_ = true;
+    triggerEdge_ = true;  // Note-On instant, for the scheduler's fixed-delay anchor
     // Already settled while prepared: arm the deferred pluck right away.
     if (state_ == StringState::ReadyToPluck) pluckArmed_ = true;
     return true;
