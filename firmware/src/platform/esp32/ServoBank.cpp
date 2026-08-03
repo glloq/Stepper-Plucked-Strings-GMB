@@ -103,29 +103,33 @@ bool ServoBank::attachDirect(int index) {
 #endif
 }
 
-void ServoBank::writeMicros(int index, uint16_t us) {
-    if (index < 0 || index >= (int)servos_.size()) return;
+bool ServoBank::writeMicros(int index, uint16_t us) {
+    if (index < 0 || index >= (int)servos_.size()) return false;
     const ServoConfig& s = servos_[index];
-    if (!s.enabled) return;  // never drive a disabled servo
+    if (!s.enabled) return false;  // never drive a disabled servo
     us = clampPulse(s, us);
     // Apply inversion by mirroring within the calibrated pulse window.
     if (s.inverted) us = static_cast<uint16_t>(s.pulseMinUs + s.pulseMaxUs - us);
 #if defined(ARDUINO)
     if (s.source == ServoSource::Pca) {
-        if (s.pcaBoard < kMaxPca && pcaPresent_[s.pcaBoard])
-            pca_[s.pcaBoard].writeMicroseconds(s.channel, us);
+        if (s.pcaBoard >= kMaxPca || !pcaPresent_[s.pcaBoard]) return false;
+        pca_[s.pcaBoard].writeMicroseconds(s.channel, us);
     } else if (s.gpio >= 0) {
-        if (!attached_[index] && !attachDirect(index)) return;  // reattach if cut
+        if (!attached_[index] && !attachDirect(index)) return false;  // reattach failed
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
         ledcWrite(s.gpio, usToDuty(us));
 #else
-        if (ledcCh_[index] >= 0) ledcWrite(ledcCh_[index], usToDuty(us));
+        if (ledcCh_[index] < 0) return false;
+        ledcWrite(ledcCh_[index], usToDuty(us));
 #endif
+    } else {
+        return false;  // no output configured
     }
     rt_[index].pwmOff = false;
 #else
     (void)us;
 #endif
+    return true;
 }
 
 void ServoBank::writeOff(int index) {
@@ -162,10 +166,11 @@ void ServoBank::toActive(int index) {
 
 void ServoBank::toMicros(int index, uint16_t us) { writeMicros(index, us); }
 
-void ServoBank::press(int index) {
-    if (index < 0 || index >= (int)servos_.size()) return;
-    toActive(index);
+bool ServoBank::press(int index) {
+    if (index < 0 || index >= (int)servos_.size()) return false;
+    bool ok = writeMicros(index, servos_[index].activeUs);
     rt_[index].mode = Mode::Active;
+    return ok;  // false => the servo could not be driven (attach/PCA failure)
 }
 
 void ServoBank::release(int index) {

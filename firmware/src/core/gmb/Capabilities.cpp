@@ -121,6 +121,12 @@ CapabilitySnapshot buildSnapshot(const Profile& p, int polyphonyOverride) {
     std::sort(tuning.begin(), tuning.end());
     sc.tuning = tuning;
 
+    // A degraded run announces only the enabled strings (renumbered 1..N), so the
+    // CC bounds and the custom mapping must be made consistent with that reduced
+    // set — otherwise a client sees, say, 3 strings but a CC range / mapping still
+    // referencing the original 4 axes (audit P1-6).
+    const bool degraded = enabledCount < p.strings.size();
+
     // v2 extras.
     sc.ccStringMin = p.selector.string.minimum;
     sc.ccStringMax = p.selector.string.maximum;
@@ -130,10 +136,19 @@ CapabilitySnapshot buildSnapshot(const Profile& p, int polyphonyOverride) {
     sc.ccFretOffset = p.selector.fret.offset;
     sc.selectionMode = static_cast<uint8_t>(p.selector.mode);
     sc.stringOrder = p.selector.string.reverseOrder ? 1 : 0;
-    if (!p.selector.string.mapping.empty()) sc.stringOrder = 2;
     for (const auto& s : p.strings)
         if (s.enabled) sc.fretsPerString.push_back(s.maxFret);
-    for (int8_t m : p.selector.string.mapping) sc.mapping.push_back(static_cast<uint8_t>(m));
+    if (degraded) {
+        // Reduced set: clamp the CC range to what is actually announced and drop
+        // the custom mapping (it references the original physical axes and would
+        // be incoherent against the renumbered set).
+        if (sc.ccStringMax > enabledCount) sc.ccStringMax = enabledCount;
+        if (sc.ccStringMin > sc.ccStringMax) sc.ccStringMin = sc.ccStringMax;
+    } else {
+        if (!p.selector.string.mapping.empty()) sc.stringOrder = 2;
+        for (int8_t m : p.selector.string.mapping)
+            sc.mapping.push_back(static_cast<uint8_t>(m));
+    }
 
     snap.identity.deviceName = p.instrument.name;
     return snap;

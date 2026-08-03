@@ -35,7 +35,9 @@ public:
     //   press  : hold active   (finger down)
     //   release: return to rest (finger up), then optionally cut PWM at rest
     //   strike : pulse active then auto-return to rest (pluck / strum / damper)
-    void press(int index);
+    // Returns false if the servo could not actually be driven (LEDC re-attach or
+    // PCA write failure) so the caller can fault the axis (audit P1-5).
+    bool press(int index);
     void release(int index);
     // intensity 0..1 scales the strike depth between rest and active (velocity).
     void strike(int index, double intensity = 1.0);
@@ -104,7 +106,7 @@ private:
         Adafruit_PWMServoDriver(0x40), Adafruit_PWMServoDriver(0x41),
         Adafruit_PWMServoDriver(0x42), Adafruit_PWMServoDriver(0x43)};
 #endif
-    void writeMicros(int index, uint16_t us);
+    bool writeMicros(int index, uint16_t us);  // false if the write couldn't apply
     void writeOff(int index);
     bool attachDirect(int index);  // (re)attach a direct servo's LEDC channel
 };

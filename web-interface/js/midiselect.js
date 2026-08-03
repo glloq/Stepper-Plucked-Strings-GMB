@@ -32,7 +32,9 @@
         GMB.field('Transpose (semitones)', GMB.input(p.midi, 'transpose', { type: 'number', min: -24, max: 24 })),
         GMB.field('Chord window (ms)', GMB.input(p.midi, 'chordWindowMs', { type: 'number', min: 0, max: 50 })),
         GMB.field('Velocity curve', GMB.input(p.midi, 'velocityCurve', {
-          type: 'select', options: ['linear', 'soft', 'hard', 'exponential', 'custom']
+          // 'custom' is intentionally omitted: no custom curve table exists yet,
+          // so offering it would silently behave like 'linear' (audit P1-12).
+          type: 'select', options: ['linear', 'soft', 'hard', 'exponential']
         })),
         GMB.field('Sustain pedal (CC64)', GMB.input(p.midi, 'sustainPedal', { type: 'checkbox' }))
       ])

@@ -255,6 +255,13 @@ void applyProfile() {
         if (i < g_profile.homing.size()) g_homing[i].configure(g_profile.homing[i]);
     }
 
+    // NOTE (audit P1-7): the network stack (Net) is deliberately NOT restarted
+    // here. Applying a new SSID / mode mid-session would drop the very connection
+    // used to configure the device; Wi-Fi and static-IP changes therefore take
+    // effect on the next reboot (the /api/wifi route already reports this). The
+    // status DTO exposes both the active mode (Net) and the profile's configured
+    // SSID so the UI can prompt a reboot when they differ.
+
     // The E-stop pin belongs to the (possibly new) profile — re-resolve it here
     // so a profile change updates which pin is monitored.
     g_estopPin = pinOf("ESTOP");
@@ -778,8 +785,12 @@ void tickString(size_t i, uint32_t nowMs) {
                 if (sc.openString() || sch.fingerIndex < 0) {
                     sch.phase = StringSched::Ready;  // no finger press for open string
                     sch.readySinceMs = nowMs;
+                } else if (!g_servos.press(sch.fingerIndex)) {
+                    // The finger servo could not be driven (LEDC re-attach / PCA
+                    // failure): fault the axis rather than play a wrong pitch with a
+                    // finger that never pressed (audit P1-5).
+                    faultRuntimeAxis(i, "finger servo write failed", nowMs);
                 } else {
-                    g_servos.press(sch.fingerIndex);
                     sch.phase = StringSched::PressingFinger;
                     sch.phaseStartMs = nowMs;
                 }
