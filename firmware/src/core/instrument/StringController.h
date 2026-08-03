@@ -1,4 +1,4 @@
-// Per-string state machine (cahier des charges section 16).
+// Per-string state machine (spec section 16).
 //
 // Each string runs an independent, non-blocking state machine. Every command
 // carries an id; when a command is cancelled or replaced, any deferred action
@@ -72,13 +72,19 @@ public:
     bool pluckArmed() const { return pluckArmed_; }
     uint32_t pluckCommandId() const { return commandId_; }
 
+    // True for a normal note that arms its pluck as soon as it is ready; false
+    // while a note is only PREPARED (anticipated) and still waiting for trigger().
+    // Lets the scheduler skip strum-lift anticipation for a merely-prepared note
+    // and re-anchor the fixed execution delay to the trigger instant.
+    bool willArmOnSettle() const { return armOnSettle_; }
+
     // Release the note. Cancels any armed/prepared attack.
     void noteOff();
 
     // Damping finished -> back to idle.
     void dampingDone();
 
-    // Emergency stop (cahier des charges 21.3).
+    // Emergency stop (spec 21.3).
     void panic();
 
 private:

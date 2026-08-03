@@ -3,7 +3,7 @@
 Machine-readable GPIO capability maps for the ESP32 boards supported by
 **Stepper-Plucked-Strings-GMB**. The web configurator and the firmware pin
 manager use these files to filter which GPIO may carry which signal, per board
-and per module variant (cahier des charges §11).
+and per module variant (SPECIFICATION.md §11).
 
 Each JSON file mirrors the corresponding built-in profile in the firmware
 (`firmware/src/core/board/BoardProfile.cpp`). Keeping the JSON and the C++ in
@@ -22,7 +22,7 @@ sync means the browser UI and the on-device validator agree about every pin.
   "identifier": "esp32-s3-devkitc-1",   // stable id, matches profile.board.profile
   "displayName": "ESP32-S3-DevKitC-1",
   "description": "…",
-  "reference": "cahier des charges.md sections 11.4 / 11.5",
+  "reference": "SPECIFICATION.md sections 11.4 / 11.5",
   "recommendedAssignment": { … },        // default auto-assign table (§11.5)
   "pins": [ { …PinCapability… }, … ]
 }
@@ -30,8 +30,8 @@ sync means the browser UI and the on-device validator agree about every pin.
 
 ### `recommendedAssignment`
 
-The default, conflict-free assignment the "Attribuer automatiquement les
-broches" button proposes (cahier des charges §11.5). Array fields are indexed by
+The default, conflict-free assignment the "Assign pins automatically"
+button proposes (SPECIFICATION.md §11.5). Array fields are indexed by
 string number (1..6); the first *N* entries are used for an *N*-string
 instrument.
 
@@ -46,7 +46,7 @@ instrument.
 | `SERVO_OE` | PCA9685 `/OE` safety line | `47` |
 
 This is a starting profile, not a universal rule — the UI can override every
-line (cahier des charges §11.5).
+line (SPECIFICATION.md §11.5).
 
 ### `pins[]` — `PinCapability`
 
@@ -69,7 +69,7 @@ Each entry describes one physical GPIO. Fields match
 | `preference` | string | UI category: `"recommended"`, `"caution"`, or `"reserved"`. |
 | `note` | string | Human-readable reason, shown in the UI. |
 
-`preference` maps to the UI colours of cahier des charges §11.2:
+`preference` maps to the UI colours of SPECIFICATION.md §11.2:
 
 * `recommended` → green — offered to beginners by default.
 * `caution` → yellow — advanced mode only, shown with the `note` explanation.
@@ -80,7 +80,7 @@ property, so it does not appear here.)
 
 ## ESP32-S3-DevKitC-1 specifics
 
-The profile encodes the ESP32-S3 restrictions of cahier des charges §11.4:
+The profile encodes the ESP32-S3 restrictions of SPECIFICATION.md §11.4:
 
 * **Strapping (reserved):** GPIO0 (also BOOT), GPIO3, GPIO45, GPIO46.
 * **Native USB (reserved):** GPIO19 (D−), GPIO20 (D+) — kept free for a future

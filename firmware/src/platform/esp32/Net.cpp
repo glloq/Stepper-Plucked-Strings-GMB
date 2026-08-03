@@ -76,7 +76,7 @@ bool Net::pollStation(uint32_t nowMs) {
     if (nowMs - attemptStartMs_ > 8000) {
         connecting_ = false;
         if (++failures_ >= 3) {
-            startAccessPoint(true);  // fall back to AP (cahier des charges §8.1)
+            startAccessPoint(true);  // fall back to AP (spec §8.1)
             lastStationRetryMs_ = nowMs;
         }
     }

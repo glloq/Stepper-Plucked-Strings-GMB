@@ -4,7 +4,7 @@
 // (src/platform/esp32/). The core is unit-tested on the host; this file is the
 // hardware integration and runs only on device.
 //
-// Boot sequence (cahier des charges §21.1 / §13): power-on safe → validate
+// Boot sequence (spec §21.1 / §13): power-on safe → validate
 // profile → home every axis (non-blocking) → only then arm for play.
 #if defined(ARDUINO)
 
@@ -51,8 +51,6 @@ WebApi g_web;
 enum class AppPhase { Boot, Reconfiguring, Homing, Ready };
 AppPhase g_phase = AppPhase::Boot;
 bool g_degraded = false;  // Ready but with one or more axes disabled by a fault
-uint32_t g_lastSharedStrumMs = 0;    // time of the last shared-strum sweep
-uint32_t g_lastStrumGroupFired = 0;  // strum group already swept (one sweep/group)
 
 // Pre-homing finger-lift: homing must not move a carriage while a finger is still
 // pressed on the string. beginHoming() commands every finger to rest and waits
@@ -82,14 +80,21 @@ std::vector<TestNoteOff> g_testOffs;
 // Per-string non-blocking playback scheduler.
 struct StringSched {
     enum Phase { Idle, WaitStopped, ReleasingFinger, MovingToFret, PressingFinger,
-                 Settling, Ready }
+                 Settling, Ready, StrumLiftDown, StrumLiftHold }
         phase = Idle;
     uint32_t phaseStartMs = 0;
     uint32_t commandId = 0;
     int fingerIndex = -1;
-    uint32_t readySinceMs = 0;  // when this string reached Ready (shared-strum sync)
     uint32_t dampUntilMs = 0;   // don't move until the damper has acted (replace)
     uint32_t moveDeadlineMs = 0;  // fault the axis if the move isn't done by then
+    int liftIndex = -1;    // engaged strum-lift servo during a stroke (-1 = none)
+    int strikeIndex = -1;  // striker to fire once the lift has lowered
+    uint32_t executeAtMs = 0;   // earliest time the note may sound (fixed delay)
+    bool executeAnchored = false;  // executeAtMs fixed at the Note-On instant
+    uint32_t estArriveMs = 0;   // estimated carriage arrival time (finger lead)
+    bool fingerPressStarted = false;  // finger descent already begun (lead)
+    uint32_t liftStartMs = 0;   // when the strum lift began lowering
+    bool liftStarted = false;   // strum lift descent already begun (lead)
 };
 
 // Estimate a trapezoidal/triangular move time (ms) for a distance at a given max
@@ -120,7 +125,7 @@ std::vector<StringSched> g_sched;
 // here; loop() is the SOLE owner of the mechanical state and drains the queue
 // sequentially. Read-only handlers take g_stateMutex so a reallocation in loop()
 // (profile reload, capability rebuild) can never be seen half-done.
-enum class CmdType : uint8_t { Panic, Reset, ActivateProfile, TestNote, TestServo };
+enum class CmdType : uint8_t { Panic, Reset, ActivateProfile, TestNote, TestServo, Jog };
 struct AppCommand {
     CmdType type;
     uint32_t id = 0;             // for result tracking (GET /api/commands)
@@ -129,6 +134,8 @@ struct AppCommand {
     uint16_t durationMs = 0;
     int16_t servoIndex = -1;
     bool servoActive = false;
+    int16_t axisIndex = -1;      // Jog: which axis to nudge
+    float jogDeltaMm = 0.0f;     // Jog: signed distance (mm)
 };
 
 // Result registry so a 202-accepted command can be followed up by the web UI:
@@ -305,7 +312,16 @@ void faultRuntimeAxis(size_t i, const char* reason, uint32_t nowMs) {
     if (i >= g_instrument.stringCount()) return;
     g_steppers.emergencyStop(i);
     g_instrument.faultString(i);
-    if (i < g_sched.size()) g_sched[i] = StringSched{};
+    // Physically release any servo this axis had engaged BEFORE wiping the sched,
+    // so a single-axis fault never leaves the finger clamped or the strum lift
+    // pressed on the string (finger/strum leads can engage them before arrival).
+    // This mirrors the Note Off / note-replacement release paths.
+    if (i < g_sched.size()) {
+        int fi = g_servos.fingerIndex(static_cast<int>(i));
+        if (fi >= 0) g_servos.release(fi);
+        if (g_sched[i].liftIndex >= 0) g_servos.release(g_sched[i].liftIndex);
+        g_sched[i] = StringSched{};
+    }
     if (i < g_anchored.size()) g_anchored[i] = false;
     if (i < g_axisFaulted.size()) g_axisFaulted[i] = true;
     g_safety.recordFault("axis", std::string(reason) + " on axis " + std::to_string(i),
@@ -328,7 +344,7 @@ bool safetyLocked() {
 
 // Start homing only when it is safe to move. Refuses if a panic/E-stop is
 // latched, if the profile is invalid, or if a required motor could not attach a
-// hardware step generator (cahier des charges §13/§21).
+// hardware step generator (spec §13/§21).
 bool beginHoming(uint32_t nowMs) {
     if (safetyLocked()) return false;
     // Never enable drivers while a hardware E-stop is physically asserted, even
@@ -478,7 +494,7 @@ void doHoming(uint32_t nowMs) {
     g_phase = AppPhase::Ready;
     g_safety.arm(true, true);  // profile already validated before homing
     if (faulted > 0) {
-        // Announce only the axes that actually work (cahier des charges §13.2).
+        // Announce only the axes that actually work (spec §13.2).
         rebuildRuntimeCapabilities();
         notifyCapabilitiesChanged();
         g_safety.recordFault("homing",
@@ -608,6 +624,25 @@ bool doTestServo(int index, bool active) {
     return true;
 }
 
+// Web jog: nudge one axis by a small signed delta (manual bring-up, checking the
+// motor direction, positioning for fret calibration). Only when Ready, actuators
+// armed, the axis homed & not faulted, and idle (no live note) so it can never
+// fight the playback scheduler. moveToMm clamps to the axis travel.
+bool doJog(int axis, double deltaMm, uint32_t nowMs) {
+    (void)nowMs;
+    if (g_phase != AppPhase::Ready) return false;
+    if (!g_safety.actuatorsAllowed()) return false;
+    if (axis < 0 || axis >= static_cast<int>(g_instrument.stringCount())) return false;
+    if (axis < static_cast<int>(g_axisFaulted.size()) && g_axisFaulted[axis]) return false;
+    if (g_instrument.target(axis).active) return false;         // don't fight a live note
+    if (g_sched[axis].phase != StringSched::Idle) return false;  // axis busy
+    if (g_steppers.isRunning(axis)) return false;                // still moving
+    if (deltaMm > 25.0) deltaMm = 25.0;                          // bound one nudge
+    if (deltaMm < -25.0) deltaMm = -25.0;
+    g_steppers.moveToMm(axis, g_steppers.positionMm(axis) + deltaMm);
+    return true;
+}
+
 // Discard every queued command without executing it (used after a panic so a
 // stale profile activation / test can't fire once the STOP has latched).
 void purgeCommands() {
@@ -651,6 +686,9 @@ void drainCommands(uint32_t nowMs) {
             case CmdType::TestServo:
                 ok = doTestServo(c->servoIndex, c->servoActive);
                 break;
+            case CmdType::Jog:
+                ok = doJog(c->axisIndex, c->jogDeltaMm, nowMs);
+                break;
         }
         setCommandResult(c->id, ok ? 1 : 2);  // succeeded / refused
         delete c->profile;  // owned copy (null for non-profile commands)
@@ -658,27 +696,13 @@ void drainCommands(uint32_t nowMs) {
     }
 }
 
-// Does a given string rely on the shared strummer (shared modes, or no
-// individual plectrum of its own)?
-bool usesSharedStrum(size_t i) {
-    PluckMode mode = g_profile.instrument.pluckMode;
-    int pi = g_servos.pluckIndex(static_cast<int>(i));
-    return (mode == PluckMode::SharedStrum || mode == PluckMode::Both) || pi < 0;
-}
-
-// Shared-strum barrier: every OTHER active string in the SAME chord (strum group)
-// that the shared strummer will sweep must have reached its fret position before
-// the sweep fires — one sweep per chord, and a prepared or unrelated note (a
-// different group) never blocks it.
-bool sharedGroupPositioned(uint32_t group) {
-    if (group == 0) return true;
-    for (size_t j = 0; j < g_instrument.stringCount(); ++j) {
-        const StringTarget& t = g_instrument.target(j);
-        if (!t.active || t.strumGroup != group) continue;
-        if (!usesSharedStrum(j)) continue;
-        if (g_sched[j].phase != StringSched::Ready) return false;  // still travelling
-    }
-    return true;
+// The per-string striker: the plectrum ('pluck') if present, otherwise the
+// per-string strum servo ('strum'). Both name the same physical per-string
+// striker, so an instrument may wire either one. There is no shared strummer —
+// every string is plucked/strummed on its own.
+int perStringStrikeIndex(size_t i) {
+    int p = g_servos.pluckIndex(static_cast<int>(i));
+    return p >= 0 ? p : g_servos.strumIndex(static_cast<int>(i));
 }
 
 // Per-axis endstop safety scan, run for EVERY axis each tick BEFORE any musical
@@ -720,6 +744,8 @@ void tickString(size_t i, uint32_t nowMs) {
             g_steppers.stop(i);
             int fi = g_servos.fingerIndex(static_cast<int>(i));
             if (fi >= 0) g_servos.release(fi);
+            if (sch.liftIndex >= 0) { g_servos.release(sch.liftIndex); sch.liftIndex = -1; }
+            sch.liftStarted = false;
             int di = g_servos.damperIndex(static_cast<int>(i));
             if (di >= 0) g_servos.strike(di);
             sch.phase = StringSched::WaitStopped;
@@ -748,6 +774,17 @@ void tickString(size_t i, uint32_t nowMs) {
                 sch.dampUntilMs = nowMs + g_servos.travelMs(di) + g_servos.settleMs(di);
             }
         }
+        // A strum lift engaged for the previous note is raised before anything else.
+        if (sch.liftIndex >= 0) { g_servos.release(sch.liftIndex); sch.liftIndex = -1; }
+        // Fixed reception -> sound delay. A directly-played note is received now,
+        // so anchor the delay here. A merely-PREPARED (anticipated) note is not
+        // "received" until its Note On triggers it, so leave it unanchored and
+        // re-anchor at the trigger instant in the Ready state below.
+        sch.executeAtMs = nowMs + g_profile.midi.noteExecutionDelayMs;
+        sch.executeAnchored = sc.willArmOnSettle();
+        sch.fingerPressStarted = false;
+        sch.liftStarted = false;
+        sch.strikeIndex = -1;
         // Lift the finger and WAIT for it to travel up before moving the carriage,
         // so the finger never drags along the string (§16).
         sch.commandId = tgt.commandId;
@@ -774,17 +811,36 @@ void tickString(size_t i, uint32_t nowMs) {
                 g_steppers.moveToMm(i, tgt.positionMm);
                 sch.phase = StringSched::MovingToFret;
                 sch.phaseStartMs = nowMs;
+                sch.estArriveMs = nowMs + est;
                 sch.moveDeadlineMs = nowMs + 500u + 3u * est;
             }
             break;
         case StringSched::MovingToFret:
+            // Finger lead: begin the finger descent up to fingerLeadMs before the
+            // estimated arrival so the finger reaches the string around arrival,
+            // trimming the post-arrival latency. Opt-in (0 = press only on arrival);
+            // set too large it can drag, so it is the user's to tune.
+            if (!sc.openString() && sch.fingerIndex >= 0 && !sch.fingerPressStarted &&
+                g_profile.midi.fingerLeadMs > 0 &&
+                static_cast<int32_t>(nowMs - sch.estArriveMs) +
+                        static_cast<int32_t>(g_profile.midi.fingerLeadMs) >= 0) {
+                if (!g_servos.press(sch.fingerIndex)) {
+                    faultRuntimeAxis(i, "finger servo write failed", nowMs);
+                    break;
+                }
+                sch.fingerPressStarted = true;
+                sch.phaseStartMs = nowMs;  // finger travel timer starts now
+            }
             // Arrived only when the carriage is stopped AND actually at the fret
             // position (a refused/interrupted move must not be read as "reached").
             if (g_steppers.reachedTarget(i)) {
                 sc.motionReached();
                 if (sc.openString() || sch.fingerIndex < 0) {
                     sch.phase = StringSched::Ready;  // no finger press for open string
-                    sch.readySinceMs = nowMs;
+                } else if (sch.fingerPressStarted) {
+                    // Finger already descending (lead) — keep its running travel
+                    // timer (phaseStartMs) instead of restarting the press.
+                    sch.phase = StringSched::PressingFinger;
                 } else if (!g_servos.press(sch.fingerIndex)) {
                     // The finger servo could not be driven (LEDC re-attach / PCA
                     // failure): fault the axis rather than play a wrong pitch with a
@@ -808,47 +864,90 @@ void tickString(size_t i, uint32_t nowMs) {
                 sch.phaseStartMs = nowMs;
             }
             break;
-        case StringSched::Settling:
+        case StringSched::Settling: {
+            // Strum lead: begin lowering the strum lift up to strumLeadMs before the
+            // string is Ready, so the strummer is already engaged when the strike
+            // time comes (overlaps the lift travel with the finger settle). Skip it
+            // for a merely-prepared note — it must not rest on (and mute) the string
+            // through the whole pre-trigger window; its lift lowers after trigger.
+            if (!sch.liftStarted && sc.willArmOnSettle() && g_profile.midi.strumLeadMs > 0) {
+                int pi = perStringStrikeIndex(i);
+                int li = pi >= 0 ? g_servos.strumLiftIndex(static_cast<int>(i)) : -1;
+                uint32_t settle = g_servos.settleMs(sch.fingerIndex);
+                if (li >= 0 &&
+                    (nowMs - sch.phaseStartMs) + g_profile.midi.strumLeadMs >= settle) {
+                    g_servos.press(li);  // start lowering the lift early
+                    sch.liftIndex = li;
+                    sch.strikeIndex = pi;
+                    sch.liftStartMs = nowMs;
+                    sch.liftStarted = true;
+                }
+            }
             if (nowMs - sch.phaseStartMs >= g_servos.settleMs(sch.fingerIndex)) {
                 sc.settled();
                 sch.phase = StringSched::Ready;
-                sch.readySinceMs = nowMs;
-            }
-            break;
-        case StringSched::Ready: {
-            if (!sc.pluckArmed()) break;  // not armed (prepared / already plucked)
-            PluckMode mode = g_profile.instrument.pluckMode;
-            int pi = g_servos.pluckIndex(static_cast<int>(i));
-            bool doIndividual = (mode == PluckMode::Individual ||
-                                 mode == PluckMode::Both) && pi >= 0;
-            bool doShared = usesSharedStrum(i);
-            // Shared-strum barrier: wait until the whole active shared group is in
-            // position (or a bounded timeout, so a stuck string can't deadlock the
-            // chord) before firing — one synchronised sweep per chord.
-            if (doShared) {
-                static constexpr uint32_t kMaxStrumWaitMs = 250;
-                if (!sharedGroupPositioned(tgt.strumGroup) &&
-                    nowMs - sch.readySinceMs < kMaxStrumWaitMs) {
-                    break;  // stay armed in Ready, keep waiting for the chord group
-                }
-            }
-            if (!sc.executePluck(tgt.commandId)) break;
-            if (doIndividual) g_servos.strike(pi, tgt.intensity);
-            if (doShared) {
-                int si = g_servos.sharedStrumIndex();
-                // Exactly one sweep PER GROUP: keyed on the chord's strum group, not
-                // a global time window. A late member of the same group can't fire a
-                // second sweep, and a genuinely different chord fires even within a
-                // few ms of the previous one (audit P0-5).
-                if (si >= 0 && tgt.strumGroup != 0 &&
-                    tgt.strumGroup != g_lastStrumGroupFired) {
-                    g_servos.strike(si, tgt.intensity);
-                    g_lastStrumGroupFired = tgt.strumGroup;
-                    g_lastSharedStrumMs = nowMs;
-                }
             }
             break;
         }
+        case StringSched::Ready: {
+            // An anticipated note is "received" when its Note On triggers it: the
+            // fixed delay must run from that instant, not from prepare time. The
+            // arm transitioning true here IS that trigger, so anchor now.
+            if (!sch.executeAnchored && sc.pluckArmed()) {
+                sch.executeAtMs = nowMs + g_profile.midi.noteExecutionDelayMs;
+                sch.executeAnchored = true;
+            }
+            if (!sc.pluckArmed()) break;  // not armed (prepared / already plucked)
+            int pi = perStringStrikeIndex(i);
+            // Fixed reception -> sound delay: stay ready but silent until the
+            // scheduled execution time. The mechanics have been preparing (and any
+            // anticipated strum lift has been lowering) during this window.
+            if (static_cast<int32_t>(nowMs - sch.executeAtMs) < 0) break;
+            if (!sc.executePluck(tgt.commandId)) break;
+            // Per-string strike: every string is plucked/strummed on its own — there
+            // is no shared strummer. An optional strum-lift lowers the strum servo
+            // onto the string for the stroke, then raises it.
+            if (pi >= 0) {
+                // Use the lift already lowering (strum lead) if there is one,
+                // otherwise start it now.
+                int li = sch.liftStarted ? sch.liftIndex
+                                         : g_servos.strumLiftIndex(static_cast<int>(i));
+                if (li >= 0) {
+                    if (!sch.liftStarted) {
+                        g_servos.press(li);  // lower / engage the strum servo now
+                        sch.liftIndex = li;
+                        sch.strikeIndex = pi;
+                        sch.liftStartMs = nowMs;
+                        sch.liftStarted = true;
+                    }
+                    sch.phase = StringSched::StrumLiftDown;
+                    break;
+                }
+                g_servos.strike(pi, tgt.intensity);
+            }
+            break;
+        }
+        case StringSched::StrumLiftDown:
+            // Strum once the lift has lowered the strum servo onto the string
+            // (travel + engage delay from when the descent STARTED — which may have
+            // been anticipated during the settle via strumLeadMs).
+            if (static_cast<int32_t>(nowMs - (sch.liftStartMs +
+                    g_servos.travelMs(sch.liftIndex) +
+                    g_servos.engageDelayMs(sch.liftIndex))) >= 0) {
+                g_servos.strike(sch.strikeIndex, tgt.intensity);
+                sch.phase = StringSched::StrumLiftHold;
+                sch.phaseStartMs = nowMs;
+            }
+            break;
+        case StringSched::StrumLiftHold:
+            // Hold the lift down until the strum stroke has completed, then raise it.
+            if (nowMs - sch.phaseStartMs >= g_servos.travelMs(sch.strikeIndex)) {
+                g_servos.release(sch.liftIndex);  // raise / disengage
+                sch.liftIndex = -1;
+                sch.strikeIndex = -1;
+                sch.phase = StringSched::Ready;
+            }
+            break;
         case StringSched::WaitStopped:
         case StringSched::Idle:
             break;
@@ -859,7 +958,7 @@ void tickString(size_t i, uint32_t nowMs) {
 
 void setup() {
     Serial.begin(115200);
-    g_safety.boot();  // drivers off, servos neutralised (cahier des charges §21.1)
+    g_safety.boot();  // drivers off, servos neutralised (spec §21.1)
 
     // Web -> loop() command channel + shared-state mutex, created before the web
     // server so the first request is already safe.
@@ -931,6 +1030,12 @@ void setup() {
         AppCommand c{CmdType::TestServo};
         c.servoIndex = static_cast<int16_t>(index);
         c.servoActive = active;
+        return enqueueCommand(c);
+    };
+    ctx.onJog = [](int axis, double deltaMm) -> uint32_t {
+        AppCommand c{CmdType::Jog};
+        c.axisIndex = static_cast<int16_t>(axis);
+        c.jogDeltaMm = static_cast<float>(deltaMm);
         return enqueueCommand(c);
     };
     ctx.commandState = [](uint32_t id) -> std::string { return commandStateStr(id); };
@@ -1032,7 +1137,7 @@ void loop() {
     if (!panicked) drainCommands(nowMs);
     servicePendingActivation(nowMs);  // phase 2 of a deferred profile activation
 
-    // Wi-Fi loss policy (cahier des charges §21.4, default): cancel pending
+    // Wi-Fi loss policy (spec §21.4, default): cancel pending
     // commands and release notes in a controlled way, but stay armed/READY.
     static bool wasConnected = false;
     bool nowConnected = g_net.connected() && !g_net.accessPointActive();

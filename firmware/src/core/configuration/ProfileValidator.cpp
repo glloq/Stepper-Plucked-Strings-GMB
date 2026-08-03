@@ -118,6 +118,7 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
         finite(a.maxAccelMmS2, t + ".maxAccelMmS2");
         finite(a.minPositionMm, t + ".minPositionMm");
         finite(a.maxPositionMm, t + ".maxPositionMm");
+        finite(a.fretOffsetMm, t + ".fretOffsetMm");
         finite(a.beltPitchMm, t + ".beltPitchMm");
         finite(a.leadPerRevolutionMm, t + ".leadPerRevolutionMm");
         finite(a.customStepsPerMm, t + ".customStepsPerMm");
@@ -135,19 +136,24 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
                 err(t + ".travelSteps", "Travel in motor steps exceeds the 32-bit range");
         }
 
-        // Ensure the calculated span physically fits. A highest fret beyond the
-        // travel is a hard error: clampToLimits() would otherwise silently play a
-        // different position than the requested fret (audit P1-8).
+        // Ensure the calculated span physically fits. Fret targets are absolute
+        // axis coordinates = fretOffsetMm + (nut-relative spacing), so the check
+        // must fold in the offset; otherwise clampToLimits() would silently play a
+        // different position than the requested fret (audit P1-8). The nut (fret 0)
+        // sits at fretOffsetMm and must be within the travel too.
         double lastFret = gmb::fretPositionMm(a.scaleLengthMm, a.maxFret);
-        if (lastFret > a.maxPositionMm - a.minPositionMm + 0.001) {
-            err(t + ".travel", "Highest fret position exceeds the configured travel");
-        }
+        if (a.fretOffsetMm < a.minPositionMm - 0.001)
+            err(t + ".fretOffsetMm", "Fret offset places fret 0 before the minimum travel");
+        if (a.fretOffsetMm + lastFret > a.maxPositionMm + 0.001)
+            err(t + ".travel", "Highest fret position (offset + spacing) exceeds the configured travel");
 
-        // Calibrated fret table must be monotonic and inside the travel.
+        // Calibrated fret table must be monotonic and inside the travel. Values are
+        // stored nut-relative, so compare the ABSOLUTE target (offset + value).
         double prev = -1e9;
         for (size_t f = 0; f < a.calibratedFretMm.size(); ++f) {
             double v = a.calibratedFretMm[f];
-            if (v < a.minPositionMm - 1e-6 || v > a.maxPositionMm + 1e-6)
+            double abs = a.fretOffsetMm + v;
+            if (abs < a.minPositionMm - 1e-6 || abs > a.maxPositionMm + 1e-6)
                 err(t + ".calibratedFretMm[" + std::to_string(f) + "]",
                     "Calibrated fret position is outside the axis travel");
             if (v < prev - 1e-6)
@@ -224,7 +230,8 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
 
             // Per-string roles must reference an existing string.
             bool perString = s.function == "finger" || s.function == "pluck" ||
-                             s.function == "strum" || s.function == "damper";
+                             s.function == "strum" || s.function == "strumLift" ||
+                             s.function == "damper";
             if (perString) {
                 if (s.stringIndex < 0 || s.stringIndex >= (int)p.strings.size())
                     err(tag + ".stringIndex",
@@ -237,6 +244,14 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
                 err(tag + ".restUs", "Rest pulse is outside the servo's min/max range");
             if (s.activeUs < s.pulseMinUs || s.activeUs > s.pulseMaxUs)
                 err(tag + ".activeUs", "Active pulse is outside the servo's min/max range");
+            if (s.activeAltUs != 0 &&
+                (s.activeAltUs < s.pulseMinUs || s.activeAltUs > s.pulseMaxUs))
+                err(tag + ".activeAltUs",
+                    "Alternate active pulse is outside the servo's min/max range");
+            if (s.minStrikeUs != 0 &&
+                (s.minStrikeUs < s.pulseMinUs || s.minStrikeUs > s.pulseMaxUs))
+                err(tag + ".minStrikeUs",
+                    "Minimum strike pulse is outside the servo's min/max range");
 
             if (s.source == ServoSource::Pca) {
                 if (s.pcaBoard > 3)
@@ -267,33 +282,30 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
         }
     }
 
-    // Pluck-mode servo presence (cahier des charges §5.3).
+    // Pluck-mode servo presence (spec §5.3).
     {
         auto hasServoRole = [&](const std::string& fn, int strIdx) {
             for (const auto& s : p.servos)
                 if (s.enabled && s.function == fn && s.stringIndex == strIdx) return true;
             return false;
         };
-        bool needIndividual = p.instrument.pluckMode == PluckMode::Individual ||
-                              p.instrument.pluckMode == PluckMode::Both;
-        bool needShared = p.instrument.pluckMode == PluckMode::SharedStrum ||
-                          p.instrument.pluckMode == PluckMode::Both;
-        if (needIndividual) {
-            for (size_t i = 0; i < p.strings.size(); ++i)
-                if (p.strings[i].enabled &&
-                    !hasServoRole("pluck", static_cast<int>(i)))
-                    err("servos.pluck",
-                        "String " + std::to_string(i) +
-                            " needs a pluck servo for the individual pluck mode");
-        }
-        if (needShared) {
-            bool found = false;
-            for (const auto& s : p.servos)
-                if (s.enabled && s.function == "sharedStrum") found = true;
-            if (!found)
-                err("servos.sharedStrum",
-                    "A sharedStrum servo is required for the shared-strum pluck mode");
-        }
+        // Strumming is per string: every enabled string needs its own striker —
+        // a pluck (plectrum) or a strum servo. There is no shared strummer.
+        for (size_t i = 0; i < p.strings.size(); ++i)
+            if (p.strings[i].enabled &&
+                !hasServoRole("pluck", static_cast<int>(i)) &&
+                !hasServoRole("strum", static_cast<int>(i)))
+                err("servos.pluck",
+                    "String " + std::to_string(i) +
+                        " needs a pluck or strum servo to be plucked");
+        // A per-string strum lift only makes sense paired with a striker to lift.
+        for (size_t i = 0; i < p.strings.size(); ++i)
+            if (hasServoRole("strumLift", static_cast<int>(i)) &&
+                !hasServoRole("pluck", static_cast<int>(i)) &&
+                !hasServoRole("strum", static_cast<int>(i)))
+                err("servos.strumLift",
+                    "String " + std::to_string(i) +
+                        " has a strum-lift servo but no pluck/strum servo to lift");
         // A fretted string (maxFret > 0) MUST have a finger servo: without one the
         // scheduler would treat every note as an open string and pluck a wrong
         // pitch. An open-only course (maxFret == 0) legitimately needs no finger.
@@ -377,7 +389,6 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
     auto enumOk = [&](int v, int maxInclusive, const std::string& field) {
         if (v < 0 || v > maxInclusive) err(field, "Value is out of range");
     };
-    enumOk(static_cast<int>(p.instrument.pluckMode), 2, "instrument.pluckMode");
     enumOk(static_cast<int>(p.midi.velocityCurve), 4, "midi.velocityCurve");
     enumOk(static_cast<int>(p.midi.saturationStrategy), 5, "midi.saturationStrategy");
     enumOk(static_cast<int>(p.selector.mode), 2, "selector.mode");

@@ -2,7 +2,7 @@
 //
 // Serialises the pure-core Profile to/from the JSON schema documented in
 // docs/ and the example instrument-profiles/. Stores at least 8 profiles plus
-// the id of the start-up profile (cahier des charges §20). The Wi-Fi password is
+// the id of the start-up profile (spec §20). The Wi-Fi password is
 // never written to an ordinary export.
 #pragma once
 

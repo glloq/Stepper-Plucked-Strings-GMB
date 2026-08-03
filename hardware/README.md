@@ -3,7 +3,7 @@
 Reference electronics for **Stepper-Plucked-Strings-GMB**, the ESP32-S3 MIDI
 machine that drives one stepper-positioned finger per string on plucked- or
 strummed-string instruments (1–6 strings). This document describes the reference
-architecture of cahier des charges §7; the wiring guide, bill of materials and
+architecture of SPECIFICATION.md §7; the wiring guide, bill of materials and
 Phase 5 CAD deliverables live alongside it.
 
 ## Directory
@@ -79,7 +79,7 @@ channel map:
 | -------- | --- |
 | 0–5 | finger press (one per string) |
 | 6–11 | individual pluck (one per string) |
-| 12–15 | dampers, shared strummer, or auxiliary functions |
+| 12–15 | dampers or auxiliary functions |
 
 The PCA9685 `/OE` (output-enable) pin must be tied to a **safety GPIO**
 (`SERVO_OE`, GPIO47 by default) so all servos can be neutralised instantly on

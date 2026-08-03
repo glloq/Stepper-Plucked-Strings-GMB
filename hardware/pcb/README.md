@@ -1,7 +1,7 @@
 # PCB — Phase 5 deliverable
 
 The integrated PCB is a **Phase 5 (dedicated hardware)** deliverable of the
-cahier des charges (§24, §26). It is not yet designed; this directory is a
+SPECIFICATION.md (§24, §26). It is not yet designed; this directory is a
 placeholder. The prototype build uses an ESP32-S3-DevKitC-1 with **pluggable
 TMC2209 driver modules** and a PCA9685 breakout (§7.2) rather than a custom
 board.

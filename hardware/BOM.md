@@ -1,7 +1,7 @@
-# Bill of materials (nomenclature)
+# Bill of materials
 
-Reference bill of materials for **Stepper-Plucked-Strings-GMB** (cahier des
-charges §26). Quantities scale with the string count *N* (1–6). This is the
+Reference bill of materials for **Stepper-Plucked-Strings-GMB**
+(SPECIFICATION.md §26). Quantities scale with the string count *N* (1–6). This is the
 prototype/reference build with **pluggable driver modules** (§7.2); the
 integrated PCB variant is a Phase 5 deliverable (see `hardware/pcb/`).
 
@@ -23,7 +23,7 @@ Part numbers are indicative references, not a mandated sourcing list.
 | M1..M*N* | *N* | Stepper motor (NEMA, 1.8°, 200 steps/rev) | one per string; size to axis load |
 | SV_F | *N* | Servo — finger press | PCA9685 channels 0..N−1 |
 | SV_P | 0–*N* | Servo — individual pluck | PCA9685 channels 6..6+N−1 |
-| SV_A | 0–4 | Servo — damper / shared strummer / aux | PCA9685 channels 12–15 |
+| SV_A | 0–4 | Servo — damper / aux | PCA9685 channels 12–15 |
 
 ## Sensors
 
@@ -40,7 +40,7 @@ Part numbers are indicative references, not a mandated sourcing list.
 | — | 1 | Transmission set | GT2 belt + 20T pulley + idler, **or** lead screw + nut, **or** rack, **or** cable |
 | — | 1 | Carriage / finger assembly | single movable finger |
 | — | 1 | Finger-press mechanism | servo-actuated |
-| — | 1 | Pluck mechanism (or shared strummer for the machine) | individual pick or shared |
+| — | 1 per string | Pluck/strum mechanism per string | individual pick per string |
 | — | 1 | HOME sensor mount + flag | reference datum |
 
 ## Power

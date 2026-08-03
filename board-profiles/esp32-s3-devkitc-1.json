@@ -2,7 +2,7 @@
   "identifier": "esp32-s3-devkitc-1",
   "displayName": "ESP32-S3-DevKitC-1",
   "description": "GPIO capability map for the Espressif ESP32-S3-DevKitC-1 reference board, mirroring firmware/src/core/board/BoardProfile.cpp (makeEsp32S3DevKitC1). GPIO22-25 do not exist on the ESP32-S3 and are omitted.",
-  "reference": "cahier des charges.md sections 11.4 / 11.5",
+  "reference": "SPECIFICATION.md sections 11.4 / 11.5",
   "recommendedAssignment": {
     "STEP": [
       4,

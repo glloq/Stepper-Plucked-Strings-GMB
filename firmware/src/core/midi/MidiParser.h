@@ -1,6 +1,6 @@
 // Streaming MIDI byte parser -> MidiEvent + complete SysEx buffers.
 //
-// Transport-independent (cahier des charges §8.2): any byte source (UDP,
+// Transport-independent (spec §8.2): any byte source (UDP,
 // WebSocket, BLE, DIN) feeds bytes in and reads decoded events/SysEx out.
 // Handles running status.
 #pragma once

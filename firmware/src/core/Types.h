@@ -8,7 +8,7 @@
 
 namespace gmb {
 
-// Hard capacity limits derived from the cahier des charges (section 6).
+// Hard capacity limits derived from the spec (section 6).
 constexpr uint8_t kMaxStrings = 6;      // 1..6 strings / stepper axes / fingers
 constexpr uint8_t kMaxServoOutputs = 16; // PCA9685 channels
 constexpr uint8_t kMaxAuxPower = 8;
@@ -22,7 +22,7 @@ constexpr uint8_t kMaxAssignableCc = 119;
 constexpr int8_t kNoPin = -1;
 
 // Convert a fret index to the theoretical position along the vibrating string.
-// position = scaleLengthMm * (1 - 2^(-fret/12))    (cahier des charges 14.2)
+// position = scaleLengthMm * (1 - 2^(-fret/12))    (spec 14.2)
 double fretPositionMm(double scaleLengthMm, int fret);
 
 // Equal-tempered MIDI note produced by an open string at a given fret.

@@ -1,6 +1,6 @@
 /*
- * midiselect.js — MIDI page: string/fret selection (spec "selection corde et
- * frette") plus the general MIDI parameters (cahier des charges 18).
+ * midiselect.js — MIDI page: string/fret selection (string/fret selection spec)
+ * plus the general MIDI parameters (spec 18).
  *
  * Contains: the simplified selection panel (section 14) with the GMB preset
  * button (section 3); advanced settings (CC numbers, min/max/offset, numbering,
@@ -20,7 +20,7 @@
     var p = GMB.state.profile;
     var sfs = p.stringFretSelection;
 
-    // ---- General MIDI parameters (cahier des charges 18) --------------------
+    // ---- General MIDI parameters (spec 18) --------------------
     host.appendChild(h('div.card', [
       h('h2', 'MIDI parameters'),
       h('div.form-grid', [
@@ -36,7 +36,33 @@
           // so offering it would silently behave like 'linear' (audit P1-12).
           type: 'select', options: ['linear', 'soft', 'hard', 'exponential']
         })),
-        GMB.field('Sustain pedal (CC64)', GMB.input(p.midi, 'sustainPedal', { type: 'checkbox' }))
+        GMB.field('Sustain pedal', GMB.input(p.midi, 'sustainPedal', { type: 'checkbox', onChange: function () { GMB.render(); } })),
+        p.midi.sustainPedal
+          ? GMB.field('Sustain CC number', GMB.input(p.midi, 'sustainCc', { type: 'number', min: 0, max: 119 }), 'Default 64 (sustain pedal).')
+          : null,
+        GMB.field('Chord saturation strategy', GMB.input(p.midi, 'saturationStrategy', {
+          type: 'select', options: [
+            { value: 'priorityLow', label: 'Keep lowest notes' },
+            { value: 'priorityHigh', label: 'Keep highest notes' },
+            { value: 'priorityFirst', label: 'Keep first-arriving' },
+            { value: 'replaceOldest', label: 'Replace oldest' },
+            { value: 'ignoreExtra', label: 'Ignore extra notes' },
+            { value: 'monophonic', label: 'Monophonic (one note)' }]
+        }), 'What happens when more notes arrive than there are strings.')
+      ])
+    ]));
+
+    // ---- Playback timing / latency -----------------------------------------
+    host.appendChild(h('div.card', [
+      h('h2', 'Playback timing'),
+      h('p.muted', 'Manage the delay between receiving a note and hearing it, and how early the mechanics anticipate.'),
+      h('div.form-grid', [
+        GMB.field('Note execution delay (ms)', GMB.input(p.midi, 'noteExecutionDelayMs', { type: 'number', min: 0, max: 500 }),
+          'Fixed delay from Note On to the note actually sounding, giving the finger a constant window to reach the fret.'),
+        GMB.field('Finger lead (ms)', GMB.input(p.midi, 'fingerLeadMs', { type: 'number', min: 0, max: 500 }),
+          'Start the finger descent this long before the carriage is estimated to arrive (0 = press only on arrival). Tune to avoid dragging.'),
+        GMB.field('Strum lead (ms)', GMB.input(p.midi, 'strumLeadMs', { type: 'number', min: 0, max: 500 }),
+          'Start lowering the strum lift this long before the string is ready, so it is engaged when the strike time comes.')
       ])
     ]));
 

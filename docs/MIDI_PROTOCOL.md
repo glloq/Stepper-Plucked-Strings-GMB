@@ -1,173 +1,171 @@
-# Protocole MIDI — Stepper-Plucked-Strings-GMB
+# MIDI Protocol — Stepper-Plucked-Strings-GMB
 
-> Sources : `cahier des charges.md` §8 · `selection corde et frette.md` (intégral) · `Communication automatique des capacités par SysEx.md` (intégral).
-> Code : `firmware/src/core/midi/{MidiEvent.h, StringFretSelector.*}`, `core/gmb/{GmbSysEx.*, Capabilities.*}`.
-> Documents liés : [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`WEB_INTERFACE.md`](WEB_INTERFACE.md).
+> Sources: `SPECIFICATION.md` §8 · `STRING_FRET_SELECTION.md` (full) · `SYSEX_CAPABILITIES.md` (full).
+> Code: `firmware/src/core/midi/{MidiEvent.h, StringFretSelector.*}`, `core/gmb/{GmbSysEx.*, Capabilities.*}`.
+> Related documents: [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`WEB_INTERFACE.md`](WEB_INTERFACE.md).
 
-Ce document couvre trois volets :
+This document covers three areas:
 
-1. le transport MIDI Wi-Fi et l'événement interne `MidiEvent` (§8.2) ;
-2. la sélection explicite corde/frette par CC (spec « selection corde et frette ») ;
-3. le protocole de capacités SysEx GMB (spec « SysEx »).
+1. the Wi-Fi MIDI transport and the internal `MidiEvent` event (§8.2);
+2. explicit string/fret selection via CC (the `STRING_FRET_SELECTION.md` spec);
+3. the GMB SysEx capabilities protocol (the `SYSEX_CAPABILITIES.md` spec).
 
 ---
 
-## 1. Transport MIDI Wi-Fi et `MidiEvent` (§8.2)
+## 1. Wi-Fi MIDI transport and `MidiEvent` (§8.2)
 
-La couche de transport est **séparée** du moteur MIDI interne. En première
-version, les entrées Wi-Fi peuvent être :
+The transport layer is **separate** from the internal MIDI engine. In the first
+version, the Wi-Fi inputs can be:
 
-* WebSocket binaire ;
-* RTP-MIDI ;
-* protocole UDP configurable ;
-* commandes de test depuis l'interface Web.
+* binary WebSocket;
+* RTP-MIDI;
+* a configurable UDP protocol;
+* test commands from the Web interface.
 
-Tous les transports produisent un **événement interne commun** :
+All transports produce a **common internal event**:
 
 ```cpp
 struct MidiEvent {
     uint32_t timestampUs = 0;
     uint8_t source;    // MidiSource (WifiWebSocket, WifiRtp, WifiUdp, WebUiTest, Ble, Usb, Din, Serial…)
     uint8_t type;      // MidiType : NoteOff 0x80, NoteOn 0x90, ControlChange 0xB0, SysEx 0xF0…
-    uint8_t channel;   // 0..15 (interne, base 0)
+    uint8_t channel;   // 0..15 (internal, base 0)
     uint8_t data1;
     uint8_t data2;
-    bool isNoteOn()  const;  // NoteOn avec vélocité > 0
-    bool isNoteOff() const;  // NoteOff, OU NoteOn vélocité 0 (running status)
+    bool isNoteOn()  const;  // NoteOn with velocity > 0
+    bool isNoteOff() const;  // NoteOff, OR NoteOn velocity 0 (running status)
     bool isControlChange() const;
 };
 ```
 
-Extensions futures possibles sans modifier le cœur : BLE MIDI, USB MIDI, MIDI DIN,
-liaison série, CAN/RS485. GPIO19/GPIO20 restent réservés pour l'USB natif.
+Possible future extensions without modifying the core: BLE MIDI, USB MIDI, MIDI DIN,
+serial link, CAN/RS485. GPIO19/GPIO20 remain reserved for native USB.
 
 ---
 
-## 2. Sélection explicite de la corde et de la frette par CC
+## 2. Explicit string and fret selection via CC
 
-Code : `core/midi/StringFretSelector.{h,cpp}`.
+Code: `core/midi/StringFretSelector.{h,cpp}`.
 
-### 2.1 Objectif et convention
+### 2.1 Purpose and convention
 
-Le contrôleur peut recevoir une indication explicite de corde et de frette avant
-un `Note On`, permettant à General-Midi-Boop de transmettre une position de
-tablature :
+The controller can receive an explicit string and fret indication before a
+`Note On`, allowing General-Midi-Boop to transmit a tablature position:
 
 ```text
-CC20 (corde) → CC21 (frette) → Note On
+CC20 (string) → CC21 (fret) → Note On
 ```
 
-Convention par défaut : **CC20 = numéro de corde**, **CC21 = numéro de frette**.
-Exemple : `CC20=3`, `CC21=5`, `Note On 60 vél 100` → jouer la note 60 sur la corde
-physique 3, frette 5, vélocité 100.
+Default convention: **CC20 = string number**, **CC21 = fret number**.
+Example: `CC20=3`, `CC21=5`, `Note On 60 vel 100` → play note 60 on physical
+string 3, fret 5, velocity 100.
 
-Aucun numéro de CC ni aucune valeur n'est codé en dur : tout est modifiable depuis
-l'interface Web.
+No CC number and no value is hard-coded: everything is configurable from the Web
+interface.
 
-### 2.2 Modes de sélection
+### 2.2 Selection modes
 
-| Mode | `SelectionMode` | Comportement |
-| ---- | --------------- | ------------ |
-| **Automatique** | `Automatic` (0) | ignore les CC, alloue toujours automatiquement ; compatible fichiers MIDI standards |
-| **Explicite** | `Explicit` (1) | corde et frette imposées par les CC reçus avant le Note On |
-| **Hybride** | `Hybrid` (2) | **par défaut** : CC si complets et valides et jouables, sinon repli sur l'allocation automatique |
+| Mode | `SelectionMode` | Behavior |
+| ---- | --------------- | -------- |
+| **Automatic** | `Automatic` (0) | ignores CCs, always allocates automatically; compatible with standard MIDI files |
+| **Explicit** | `Explicit` (1) | string and fret imposed by the CCs received before the Note On |
+| **Hybrid** | `Hybrid` (2) | **default**: CCs if complete, valid and playable, otherwise fall back to automatic allocation |
 
-Le mode hybride est le défaut car il lit à la fois des fichiers MIDI standards,
-des fichiers enrichis, les commandes de General-Midi-Boop et les notes de l'UI.
+Hybrid mode is the default because it reads standard MIDI files, enriched files,
+General-Midi-Boop commands, and notes from the UI all at once.
 
-### 2.3 Préréglage General-Midi-Boop (`applyGmbPreset()`)
+### 2.3 General-Midi-Boop preset (`applyGmbPreset()`)
 
-| Paramètre | Valeur |
-| --------- | -----: |
-| Sélection explicite activée | oui |
-| CC corde | 20 |
-| CC frette | 21 |
-| Première corde | valeur 1 |
-| Première frette | valeur 0 |
-| Offset corde / frette | 0 / 0 |
-| Mode de consommation | prochaine note |
-| Sélection par canal MIDI | oui |
-| Allocation de secours | automatique |
-| Préparation dès réception des CC | oui |
+| Parameter | Value |
+| --------- | ----: |
+| Explicit selection enabled | yes |
+| String CC | 20 |
+| Fret CC | 21 |
+| First string | value 1 |
+| First fret | value 0 |
+| String / fret offset | 0 / 0 |
+| Consumption mode | next note |
+| Selection per MIDI channel | yes |
+| Fallback allocation | automatic |
+| Preparation as soon as CCs are received | yes |
 
-Les maxima sont adaptés au profil actif : CC corde 1…nombre de cordes, CC frette
-0…frette maximale de l'instrument.
+The maxima are adapted to the active profile: string CC 1…number of strings, fret
+CC 0…maximum fret of the instrument.
 
-### 2.4 Réglages (`SelectorConfig`)
+### 2.4 Settings (`SelectorConfig`)
 
 ```cpp
 struct SelectorConfig {
     bool enabled = true;
     SelectionMode mode = SelectionMode::Hybrid;
     bool perMidiChannel = true;
-    uint32_t selectionTimeoutMs = 100;   // plage 5..2000 ms
+    uint32_t selectionTimeoutMs = 100;   // range 5..2000 ms
     bool prepareOnCompleteSelection = true;
     uint16_t queueDepth = 32;            // >= 16
-    StringSelectionConfig string;        // ccNumber=20, min=1, max=nbCordes, offset, numbering, reverseOrder, mapping[]
-    FretSelectionConfig fret;            // ccNumber=21, min=0, max=frette, offset, invalidValuePolicy
+    StringSelectionConfig string;        // ccNumber=20, min=1, max=stringCount, offset, numbering, reverseOrder, mapping[]
+    FretSelectionConfig fret;            // ccNumber=21, min=0, max=fret, offset, invalidValuePolicy
     NotePositionPolicy notePositionPolicy = CcPriorityWithWarning;
     InvalidValuePolicy missingSelectionPolicy = AutomaticFallback;
     InvalidValuePolicy expiredSelectionPolicy = AutomaticFallback;
 };
 ```
 
-### 2.5 Transformation des valeurs
+### 2.5 Value transformation
 
-* **Corde** : `corde logique = valeur CC + offset`, puis validée, limitée à la
-  plage, convertie vers l'indice interne (0-based) et associée à un axe. La
-  numérotation (`ZeroBased`/`OneBased`), l'ordre (normal/inversé) et une table
-  `mapping[]` personnalisée (indice logique → axe physique) sont appliqués.
-  `mapStringValue(rawValue)` renvoie l'indice d'axe physique ou -1.
-* **Frette** : `frette logique = valeur CC + offset`. `mapFretValue(rawValue)`
-  renvoie la frette ou -1. **La frette 0 entraîne automatiquement : doigt relevé,
-  aucun appui, pincement de la corde à vide.**
+* **String**: `logical string = CC value + offset`, then validated, clamped to
+  range, converted to the internal (0-based) index and associated with an axis.
+  The numbering (`ZeroBased`/`OneBased`), the order (normal/reversed) and a
+  custom `mapping[]` table (logical index → physical axis) are applied.
+  `mapStringValue(rawValue)` returns the physical axis index or -1.
+* **Fret**: `logical fret = CC value + offset`. `mapFretValue(rawValue)` returns
+  the fret or -1. **Fret 0 automatically results in: finger raised, no press,
+  plucking the open string.**
 
-Exemple ordre normal vs inversé (4 cordes) :
+Normal vs. reversed order example (4 strings):
 
-| Valeur CC | Normal → corde physique | Inversé → corde physique |
-| --------: | ----------------------: | -----------------------: |
+| CC value | Normal → physical string | Reversed → physical string |
+| -------: | -----------------------: | -------------------------: |
 | 1 | 1 | 4 |
 | 2 | 2 | 3 |
 | 3 | 3 | 2 |
 | 4 | 4 | 1 |
 
-### 2.6 Délai de validité (timeout)
+### 2.6 Validity delay (timeout)
 
-Une sélection ne reste pas active indéfiniment : `selectionTimeoutMs` (défaut
-100 ms, plage 5–2000 ms). Si aucun `Note On` correspondant n'arrive dans ce
-délai, la sélection est supprimée (`expire(nowUs)` à appeler périodiquement).
+A selection does not stay active indefinitely: `selectionTimeoutMs` (default
+100 ms, range 5–2000 ms). If no matching `Note On` arrives within this delay, the
+selection is removed (`expire(nowUs)` to be called periodically).
 
-### 2.7 Gestion fiable des accords — file FIFO
+### 2.7 Reliable chord handling — FIFO queue
 
-Le firmware **ne conserve pas** seulement « dernière corde / dernière frette
-reçue » : cette méthode échouerait sur les accords. Il utilise une **file FIFO**
-de sélections (`PendingStringSelection`), profondeur ≥ 16, recommandée 32.
+The firmware does **not** keep only "last string / last fret received": this
+method would fail on chords. It uses a **FIFO queue** of selections
+(`PendingStringSelection`), depth ≥ 16, recommended 32.
 
 ```cpp
 struct PendingStringSelection {
     uint8_t midiChannel;
     bool hasString, hasFret;
-    uint8_t stringValue;   // indice d'axe physique (déjà mappé)
+    uint8_t stringValue;   // physical axis index (already mapped)
     uint8_t fretValue;
     uint32_t receivedAtUs, expiresAtUs;
     bool complete() const { return hasString && hasFret; }
 };
 ```
 
-Exemple : `CC20=1, CC20=3, CC20=4, CC21=2, CC21=5, CC21=7, NoteOn 42, 55, 64`
-reconstruit : sélection1 = corde 1/frette 2, sélection2 = corde 3/frette 5,
-sélection3 = corde 4/frette 7 ; puis Note 42 → sél1, Note 55 → sél2, Note 64 → sél3.
+Example: `CC20=1, CC20=3, CC20=4, CC21=2, CC21=5, CC21=7, NoteOn 42, 55, 64`
+reconstructs: selection1 = string 1/fret 2, selection2 = string 3/fret 5,
+selection3 = string 4/fret 7; then Note 42 → sel1, Note 55 → sel2, Note 64 → sel3.
 
-### 2.8 Algorithme d'association
+### 2.8 Association algorithm
 
-* **CC de corde** (`onControlChange`) : lire, appliquer offset, convertir en corde
-  physique, vérifier la plage, **créer** une nouvelle sélection en attente.
-* **CC de frette** (`onControlChange`) : lire, offset, vérifier la plage,
-  chercher la **plus ancienne sélection sans frette**, y ajouter la frette,
-  marquer complète.
-* **Note On** (`onNoteOn`) : chercher la **plus ancienne sélection complète du
-  canal**, associer la note, valider la cohérence, retirer de la file, préparer le
-  moteur, programmer appui et pincement. Renvoie :
+* **String CC** (`onControlChange`): read, apply offset, convert to physical
+  string, check the range, **create** a new pending selection.
+* **Fret CC** (`onControlChange`): read, offset, check the range, look for the
+  **oldest selection without a fret**, add the fret to it, mark it complete.
+* **Note On** (`onNoteOn`): look for the **oldest complete selection on the
+  channel**, associate the note, validate consistency, remove it from the queue,
+  prepare the engine, schedule the press and pluck. Returns:
 
 ```cpp
 struct NoteResolution {
@@ -175,34 +173,34 @@ struct NoteResolution {
     ResolveSource source;   // Explicit / Automatic / Rejected
     uint8_t stringIndex, fret;
     uint32_t noteInstanceId;
-    std::string warning;    // note non fatale (ex. incohérence note/frette)
+    std::string warning;    // non-fatal note (e.g. note/fret inconsistency)
 };
 ```
 
-### 2.9 Préparation anticipée
+### 2.9 Early preparation
 
-Si `prepareOnCompleteSelection` (défaut activé), dès qu'une paire corde/frette est
-complète, le contrôleur peut commencer la préparation mécanique (relâchement du
-doigt, déplacement du moteur) **sans attendre le Note On**. Le Note On conserve
-son rôle de déclenchement musical. Si le moteur n'a pas atteint la frette au
-moment du Note On : le pincement est mis en attente, le moteur termine, le doigt
-appuie, puis le pincement s'exécute — **aucun pincement anticipé**.
+If `prepareOnCompleteSelection` (enabled by default), as soon as a string/fret
+pair is complete, the controller can start the mechanical preparation (finger
+release, motor movement) **without waiting for the Note On**. The Note On retains
+its role as the musical trigger. If the motor has not reached the fret at the
+moment of the Note On: the pluck is queued, the motor finishes, the finger
+presses, then the pluck executes — **no early plucking**.
 
-### 2.10 Cohérence note / corde / frette (`NotePositionPolicy`)
+### 2.10 Note / string / fret consistency (`NotePositionPolicy`)
 
-Note attendue = `note à vide + numéro de frette + capo + transposition`.
+Expected note = `open note + fret number + capo + transposition`.
 
-| Politique | Comportement |
-| --------- | ------------ |
-| `CcPriorityWithWarning` (0) | **défaut** : corde/frette des CC utilisées, la différence avec le Note On est seulement signalée |
-| `NotePriority` (1) | la frette est recalculée depuis la note MIDI |
-| `Strict` (2) | la note est refusée si les informations sont incohérentes |
+| Policy | Behavior |
+| ------ | -------- |
+| `CcPriorityWithWarning` (0) | **default**: string/fret from the CCs are used, the difference with the Note On is only reported |
+| `NotePriority` (1) | the fret is recalculated from the MIDI note |
+| `Strict` (2) | the note is rejected if the information is inconsistent |
 
-### 2.11 Gestion du Note Off
+### 2.11 Note Off handling
 
-L'affectation réelle de chaque Note On est mémorisée. Le Note Off **n'utilise pas**
-la dernière valeur de CC reçue : il retrouve l'affectation enregistrée
-(`onNoteOff` renvoie l'`ActiveNote`).
+The actual assignment of each Note On is stored. The Note Off does **not** use the
+last CC value received: it retrieves the recorded assignment (`onNoteOff` returns
+the `ActiveNote`).
 
 ```cpp
 struct ActiveNote {
@@ -211,35 +209,35 @@ struct ActiveNote {
 };
 ```
 
-Cela relâche la bonne corde, gère plusieurs cordes simultanées et les accords, et
-empêche qu'une nouvelle sélection modifie une note déjà active. Pour les notes
-répétées de même hauteur, une pile d'instances est utilisée.
+This releases the correct string, handles multiple simultaneous strings and
+chords, and prevents a new selection from modifying an already active note. For
+repeated notes of the same pitch, a stack of instances is used.
 
-### 2.12 Valeurs invalides (`InvalidValuePolicy`)
+### 2.12 Invalid values (`InvalidValuePolicy`)
 
-| Politique | Comportement |
-| --------- | ------------ |
-| `Reject` (0) | refuser la commande |
-| `Clamp` (1) | limiter à la plage autorisée |
-| `AutomaticFallback` (2) | **défaut** : allocation automatique + avertissement |
-| `LastValid` (3) | utiliser la dernière valeur valide |
+| Policy | Behavior |
+| ------ | -------- |
+| `Reject` (0) | reject the command |
+| `Clamp` (1) | clamp to the allowed range |
+| `AutomaticFallback` (2) | **default**: automatic allocation + warning |
+| `LastValid` (3) | use the last valid value |
 
-Cas invalides : corde inexistante, frette hors capacité, axe désactivé, corde en
-défaut, frette non calibrée, sélection expirée, paire CC incomplète.
+Invalid cases: nonexistent string, fret beyond capacity, disabled axis, faulted
+string, uncalibrated fret, expired selection, incomplete CC pair.
 
-### 2.13 Validation de la configuration (§18)
+### 2.13 Configuration validation (§18)
 
-* CC corde et CC frette compris entre 0 et 119 (les **CC120–127** = messages de
-  mode de canal, jamais proposés — cf. `kMaxAssignableCc = 119`) ;
-* deux numéros de CC différents ;
-* pas de conflit avec une autre fonction configurée ;
-* plages corde/frette compatibles avec le profil ;
-* profondeur de file suffisante (≥ 16) ;
-* délai de validité non nul.
+* String CC and fret CC between 0 and 119 (**CC120–127** = channel mode messages,
+  never offered — cf. `kMaxAssignableCc = 119`);
+* two different CC numbers;
+* no conflict with another configured function;
+* string/fret ranges compatible with the profile;
+* sufficient queue depth (≥ 16);
+* nonzero validity delay.
 
-CC20 et CC21 sont présentés comme choix recommandés.
+CC20 and CC21 are presented as recommended choices.
 
-### 2.14 Profil JSON (§17)
+### 2.14 JSON profile (§17)
 
 ```json
 {
@@ -262,195 +260,194 @@ CC20 et CC21 sont présentés comme choix recommandés.
 }
 ```
 
-Le moniteur MIDI Web (§15) et l'outil de test (§16) sont décrits dans
+The Web MIDI monitor (§15) and the test tool (§16) are described in
 [`WEB_INTERFACE.md`](WEB_INTERFACE.md).
 
 ---
 
-## 3. Protocole SysEx GMB
+## 3. GMB SysEx protocol
 
-Code : `core/gmb/GmbSysEx.{h,cpp}` (encodeur/décodeur) et `core/gmb/Capabilities.{h,cpp}`
-(construction du snapshot). Le service est **indépendant du transport** : il ne
-manipule que des buffers d'octets MIDI complets.
+Code: `core/gmb/GmbSysEx.{h,cpp}` (encoder/decoder) and `core/gmb/Capabilities.{h,cpp}`
+(snapshot construction). The service is **transport-independent**: it only
+manipulates complete MIDI byte buffers.
 
-### 3.1 En-tête
+### 3.1 Header
 
 ```text
 F0 7D 00 <bloc> <direction> ... F7
 ```
 
-| Octet | Fonction |
-| ----- | -------- |
-| `F0` | début SysEx (`kStart`) |
-| `7D` | identifiant SysEx expérimental/éducatif (`kManufacturer`) |
-| `00` | identifiant General-Midi-Boop (`kGmbId`) |
-| `<bloc>` | type d'information (1/5/6/7/8) |
-| `<direction>` | `00` requête, `01` réponse, `02` notification spontanée |
-| `F7` | fin SysEx (`kEnd`) |
+| Byte | Function |
+| ---- | -------- |
+| `F0` | SysEx start (`kStart`) |
+| `7D` | experimental/educational SysEx identifier (`kManufacturer`) |
+| `00` | General-Midi-Boop identifier (`kGmbId`) |
+| `<bloc>` | information type (1/5/6/7/8) |
+| `<direction>` | `00` request, `01` response, `02` spontaneous notification |
+| `F7` | SysEx end (`kEnd`) |
 
-Taille maximale d'un message : `kMaxMessage = 512` octets.
+Maximum message size: `kMaxMessage = 512` bytes.
 
-### 3.2 Blocs implémentés
+### 3.2 Implemented blocks
 
-| Bloc | `SysExBlock` | Obligatoire | Rôle |
-| ---- | ------------ | ----------- | ---- |
-| 1 | `Identity` | oui | identité de l'appareil |
-| 5 | `Descriptor` | recommandé | description de l'instrument |
-| 6 | `Capabilities` | oui | capacités (plage jouable, polyphonie, CC…) |
-| 7 | `StringConfig` | oui | configuration des cordes (v1 + v2) |
-| 8 | `Notification` | extension | notification de modification (Capabilities Changed) |
+| Block | `SysExBlock` | Mandatory | Role |
+| ----- | ------------ | --------- | ---- |
+| 1 | `Identity` | yes | device identity |
+| 5 | `Descriptor` | recommended | instrument description |
+| 6 | `Capabilities` | yes | capabilities (playable range, polyphony, CCs…) |
+| 7 | `StringConfig` | yes | string configuration (v1 + v2) |
+| 8 | `Notification` | extension | change notification (Capabilities Changed) |
 
-### 3.3 Bloc 1 — Identité
+### 3.3 Block 1 — Identity
 
-Requête : `F0 7D 00 01 00 F7`. Réponse :
+Request: `F0 7D 00 01 00 F7`. Response:
 
 ```text
 F0 7D 00 01 01 <version> <device_id[5]> <device_name[32]> <firmware[3]> <features[5]> F7
 ```
 
-* Nom tronqué/complété à 32 octets 7 bits.
+* Name truncated/padded to 32 bytes, 7-bit.
 * `firmware` = {major, minor, patch}.
-* `features` (drapeaux) : `INSTRUMENT_CAPABILITIES 0x10 | STRING_CONFIG 0x20`
-  → `0x30` ; avec le bloc 5, ajouter `INSTRUMENT_DESCRIPTOR 0x08` → `0x38`
-  (valeur utilisée par `buildSnapshot`).
-* Identifiant stable après redémarrage (ID matériel ESP32 et/ou valeur aléatoire
-  sauvegardée). Un bouton avancé permet de le régénérer.
+* `features` (flags): `INSTRUMENT_CAPABILITIES 0x10 | STRING_CONFIG 0x20`
+  → `0x30`; with block 5, add `INSTRUMENT_DESCRIPTOR 0x08` → `0x38`
+  (value used by `buildSnapshot`).
+* Identifier stable across restarts (ESP32 hardware ID and/or a saved random
+  value). An advanced button allows regenerating it.
 
-### 3.4 Bloc 5 — Descripteur (instrument unique)
+### 3.4 Block 5 — Descriptor (single instrument)
 
-Requête : `F0 7D 00 05 00 F7`. Réponse :
+Request: `F0 7D 00 05 00 F7`. Response:
 
 ```text
-F0 7D 00 05 01 01 01 <canal> <programme_gm> <type_id> F7
+F0 7D 00 05 01 01 01 <channel> <gm_program> <type_id> F7
 ```
 
-Exemple guitare nylon (GM 24 = `0x18`, type `0x04`) : `F0 7D 00 05 01 01 01 01 18 04 F7`.
+Nylon guitar example (GM 24 = `0x18`, type `0x04`): `F0 7D 00 05 01 01 01 01 18 04 F7`.
 
-### 3.5 Bloc 6 — Capacités
+### 3.5 Block 6 — Capabilities
 
-Requête : `F0 7D 00 06 00 <canal> F7`. Réponse (`encodeCapabilities`) :
+Request: `F0 7D 00 06 00 <channel> F7`. Response (`encodeCapabilities`):
 
 ```text
 F0 7D 00 06 01
-<version> <canal> <programme_gm> <type_id> <sous_type> <mode_notes>
-<note_min> <note_max> <polyphonie>
+<version> <channel> <gm_program> <type_id> <sub_type> <notes_mode>
+<note_min> <note_max> <polyphony>
 <nombre_notes_discretes> <notes_discretes...>
 <nombre_cc> <cc_supportes...>
 <longueur_nom> <nom...>
 F7
 ```
 
-#### Plage jouable (§5) — calcul automatique
+#### Playable range (§5) — automatic calculation
 
-`buildSnapshot()` ne saisit pas la plage manuellement : pour chaque corde active,
-`note min = note à vide + capo + transpose`, `note max = note min + frettes max de
-la corde`. L'**union** de toutes les notes jouables est construite (bornée 0–127).
+`buildSnapshot()` does not enter the range manually: for each active string,
+`min note = open note + capo + transpose`, `max note = min note + max frets of the
+string`. The **union** of all playable notes is built (bounded 0–127).
 
-* **Mode plage continue** (`mode_notes = 0`) : si **toutes** les notes entre min
-  et max sont jouables sur au moins une corde. Le bloc porte `note_min`,
+* **Continuous range mode** (`notes_mode = 0`): if **all** notes between min and
+  max are playable on at least one string. The block carries `note_min`,
   `note_max`, `nombre_notes_discretes = 0`.
-* **Mode notes discrètes** (`mode_notes = 1`) : si certaines notes intermédiaires
-  ne sont jouables sur aucune corde (accordages particuliers, peu de frettes,
-  frettes inégales, cordes désactivées…). La liste exacte des notes jouables est
-  transmise.
+* **Discrete notes mode** (`notes_mode = 1`): if some intermediate notes are not
+  playable on any string (unusual tunings, few frets, uneven frets, disabled
+  strings…). The exact list of playable notes is transmitted.
 
-#### Polyphonie (§6)
+#### Polyphony (§6)
 
-`polyphonie = nombre de cordes actives et fonctionnelles` par défaut, ou valeur
-personnalisée (`polyphonyOverride ≥ 0`). Exemples : 6 cordes à médiators
-individuels → 6 ; 6 cordes avec contraintes limitant à 4 → configurée à 4.
+`polyphony = number of active and functional strings` by default, or a custom
+value (`polyphonyOverride ≥ 0`). Examples: 6 strings with individual picks → 6;
+6 strings with constraints limiting to 4 → configured to 4.
 
-#### Contrôleurs annoncés (§7)
+#### Announced controllers (§7)
 
-Seuls les CC **réellement activés** sont annoncés, triés :
+Only the CCs that are **actually enabled** are announced, sorted:
 
-| CC | Fonction | Condition |
+| CC | Function | Condition |
 | -: | -------- | --------- |
-| 7 | volume | toujours |
-| 11 | expression | toujours |
-| CC corde | sélection corde | si `selector.enabled` (numéro configuré, ex. 24) |
-| CC frette | sélection frette | si `selector.enabled` (ex. 25) |
-| 64 | maintien | si `midi.sustainPedal` |
-| 120 | arrêt sonore immédiat | toujours |
-| 123 | arrêt de toutes les notes | toujours |
+| 7 | volume | always |
+| 11 | expression | always |
+| String CC | string selection | if `selector.enabled` (configured number, e.g. 24) |
+| Fret CC | fret selection | if `selector.enabled` (e.g. 25) |
+| 64 | sustain | if `midi.sustainPedal` |
+| 120 | immediate sound off | always |
+| 123 | all notes off | always |
 
-Un CC désactivé n'est pas annoncé.
+A disabled CC is not announced.
 
-### 3.6 Bloc 7 — Configuration des cordes
+### 3.6 Block 7 — String configuration
 
-Requête : `F0 7D 00 07 00 <canal> F7`.
+Request: `F0 7D 00 07 00 <channel> F7`.
 
-#### Version 1 (compatible GMB) — `encodeStringConfigV1`
+#### Version 1 (GMB-compatible) — `encodeStringConfigV1`
 
 ```text
 F0 7D 00 07 01
-01 <canal> <nombre_cordes> <nombre_frettes> <is_fretless> <capo>
-<cc_active> <cc_corde> <cc_frette>
-<accordage...>
+01 <channel> <string_count> <fret_count> <is_fretless> <capo>
+<cc_active> <cc_string> <cc_fret>
+<tuning...>
 F7
 ```
 
-`is_fretless = 0` (toujours pour ce projet). Accordage transmis dans l'ordre
-**grave → aigu** (ordre GMB). La v1 ne transmet pas : frettes par corde, min/max
-des CC, offsets, ordre inversé, table personnalisée, mode de sélection.
+`is_fretless = 0` (always for this project). Tuning transmitted in
+**low → high** order (GMB order). V1 does not transmit: frets per string, CC
+min/max, offsets, reversed order, custom table, selection mode.
 
 #### Version 2 (extension) — `encodeStringConfigV2`
 
 ```text
 F0 7D 00 07 01
-02 <canal> <nombre_cordes> <nombre_frettes_global> <is_fretless> <capo>
-<cc_active> <cc_corde> <cc_frette>
-<cc_corde_min> <cc_corde_max> <cc_corde_offset_encode>
-<cc_frette_min> <cc_frette_max> <cc_frette_offset_encode>
-<mode_selection> <ordre_cordes>
-<accordage[num]> <frettes_par_corde[num]> <mapping_cordes[num]>
+02 <channel> <string_count> <fret_count_global> <is_fretless> <capo>
+<cc_active> <cc_string> <cc_fret>
+<cc_string_min> <cc_string_max> <cc_string_offset_encode>
+<cc_fret_min> <cc_fret_max> <cc_fret_offset_encode>
+<selection_mode> <string_order>
+<tuning[num]> <frets_per_string[num]> <string_mapping[num]>
 F7
 ```
 
-* **Mode de sélection** : 0 auto / 1 explicite / 2 hybride.
-* **Ordre des cordes** : 0 normal / 1 inversé / 2 correspondance personnalisée.
-* **Offsets signés** : encodés `valeur_transmise = offset + 64` (plage −64…+63),
-  décodés `offset = valeur_transmise − 64` — pour rester en 7 bits.
+* **Selection mode**: 0 auto / 1 explicit / 2 hybrid.
+* **String order**: 0 normal / 1 reversed / 2 custom mapping.
+* **Signed offsets**: encoded as `transmitted_value = offset + 64` (range
+  −64…+63), decoded as `offset = transmitted_value − 64` — to stay within 7 bits.
 
-Compatibilité : le firmware répond en **v1** tant que General-Midi-Boop ne
-supporte pas la v2 (`respond(req, snap, useV2=false)` par défaut).
+Compatibility: the firmware responds in **v1** as long as General-Midi-Boop does
+not support v2 (`respond(req, snap, useV2=false)` by default).
 
-### 3.7 Bloc 8 — Notification de modification
+### 3.7 Block 8 — Change notification
 
-`encodeNotification` :
+`encodeNotification`:
 
 ```text
 F0 7D 00 08 02
-01 <canal> <revision_configuration[5]> <flags_modification>
+01 <channel> <config_revision[5]> <modification_flags>
 F7
 ```
 
-* La révision est encodée sur **5 octets 7 bits big-endian** (capacité 35 bits).
-* Drapeaux (`ChangeFlag`) :
+* The revision is encoded on **5 bytes, 7-bit big-endian** (35-bit capacity).
+* Flags (`ChangeFlag`):
 
-| Bit | `ChangeFlag` | Signification |
-| --: | ------------ | ------------- |
-| 0 | `kIdentityChanged` | identité modifiée |
-| 1 | `kDescriptorChanged` | descripteur modifié |
-| 2 | `kCapabilitiesChanged` | capacités générales modifiées |
-| 3 | `kStringConfigChanged` | configuration des cordes modifiée |
-| 4 | `kCcMappingChanged` | mapping CC modifié |
-| 5 | `kRestartRequired` | redémarrage ou nouveau homing requis |
-| 6 | réservé | — |
+| Bit | `ChangeFlag` | Meaning |
+| --: | ------------ | ------- |
+| 0 | `kIdentityChanged` | identity changed |
+| 1 | `kDescriptorChanged` | descriptor changed |
+| 2 | `kCapabilitiesChanged` | general capabilities changed |
+| 3 | `kStringConfigChanged` | string configuration changed |
+| 4 | `kCcMappingChanged` | CC mapping changed |
+| 5 | `kRestartRequired` | restart or new homing required |
+| 6 | reserved | — |
 
-La notification ne transporte pas toutes les capacités : elle invite GMB à
-relancer sa découverte (Bloc 1 → 6 → 7, et 5 si nécessaire). GMB ne remplace la
-configuration que si toutes les réponses sont valides ; sinon l'ancienne reste
-active avec un avertissement.
+The notification does not carry all the capabilities: it prompts GMB to restart
+its discovery (Block 1 → 6 → 7, and 5 if necessary). GMB only replaces the
+configuration if all responses are valid; otherwise the old one stays active with
+a warning.
 
-### 3.8 Numéro de révision (§13)
+### 3.8 Revision number (§13)
 
-`capabilitiesRevision` (dans `Profile`) est incrémenté à chaque sauvegarde valide,
-persistant, inclus dans la notification Bloc 8, affiché dans l'UI, et sert à
-éviter les actualisations inutiles. Un simple redémarrage sans modification ne
-l'incrémente pas nécessairement.
+`capabilitiesRevision` (in `Profile`) is incremented on each valid save,
+persistent, included in the Block 8 notification, displayed in the UI, and serves
+to avoid unnecessary refreshes. A simple restart without modification does not
+necessarily increment it.
 
-### 3.9 Snapshot immuable (§19)
+### 3.9 Immutable snapshot (§19)
 
 ```cpp
 struct CapabilitySnapshot {
@@ -465,40 +462,41 @@ struct CapabilitySnapshot {
 CapabilitySnapshot buildSnapshot(const Profile& p, int polyphonyOverride = -1);
 ```
 
-Une réponse SysEx utilise **un seul** snapshot : une modification pendant l'envoi
-ne peut jamais mélanger deux versions du profil. Une configuration en brouillon
-n'est **jamais** publiée — seul le profil validé et activé l'est.
+A SysEx response uses a **single** snapshot: a modification during transmission
+can never mix two versions of the profile. A draft configuration is **never**
+published — only the validated and activated profile is.
 
-### 3.10 Sécurité du protocole (§20)
+### 3.10 Protocol safety (§20)
 
-`isWellFormed()` et `parseRequest()` appliquent :
+`isWellFormed()` and `parseRequest()` apply:
 
-* vérification de l'en-tête (`F0 7D 00`) et du trailer (`F7`) ;
-* longueur minimale 6 octets, maximale 512 ;
-* tous les octets internes limités à 7 bits (rejet si bit 0x80 posé) ;
-* blocs 6 et 7 : octet de canal requis avant `F7` ;
-* directions inconnues ignorées ; blocs inconnus ignorés (`respond` renvoie `{}`) ;
-* aucune allocation dynamique pendant le traitement, réponses limitées en
-  fréquence, canaux inexistants refusés ;
-* **jamais** de mot de passe Wi-Fi ni de données sensibles transmis.
+* header (`F0 7D 00`) and trailer (`F7`) verification;
+* minimum length 6 bytes, maximum 512;
+* all internal bytes limited to 7 bits (rejected if bit 0x80 is set);
+* blocks 6 and 7: channel byte required before `F7`;
+* unknown directions ignored; unknown blocks ignored (`respond` returns `{}`);
+* no dynamic allocation during processing, rate-limited responses, nonexistent
+  channels rejected;
+* **never** transmits the Wi-Fi password or sensitive data.
 
-Les messages SysEx inconnus sont ignorés sans affecter le fonctionnement musical.
+Unknown SysEx messages are ignored without affecting musical operation.
 
-### 3.11 Indépendance du transport (§21)
+### 3.11 Transport independence (§21)
 
 ```text
 Wi-Fi MIDI ─┐
 BLE MIDI ───┤
 USB MIDI ───┼──► MidiMessageRouter ─► GmbSysExService
 MIDI DIN ───┤
-série ──────┘
+serial ─────┘
 ```
 
-Les futures versions Bluetooth/filaires réutilisent exactement les mêmes blocs,
-encodeur, décodeur, snapshot et tests. La première version utilise le Wi-Fi.
+Future Bluetooth/wired versions reuse exactly the same blocks, encoder, decoder,
+snapshot and tests. The first version uses Wi-Fi.
 
-### 3.12 Compatibilité initiale (§22)
+### 3.12 Initial compatibility (§22)
 
-Première version : Bloc 1 v1, Bloc 5 v1 (recommandé), Bloc 6 v1, Bloc 7 v1.
-Extension coordonnée ultérieure : Bloc 7 v2 + Bloc 8. Tant que le Bloc 8 n'est pas
-supporté côté GMB, l'interface fournit un bouton « Réannoncer les capacités ».
+First version: Block 1 v1, Block 5 v1 (recommended), Block 6 v1, Block 7 v1.
+Later coordinated extension: Block 7 v2 + Block 8. As long as Block 8 is not
+supported on the GMB side, the interface provides a "Re-announce capabilities"
+button.

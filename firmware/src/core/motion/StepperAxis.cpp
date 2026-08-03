@@ -39,15 +39,15 @@ double StepperAxis::stepsToMm(long steps) const {
 
 double StepperAxis::fretPositionMm(int fret) const {
     if (fret < 0) fret = 0;
-    // Calibrated positions are already absolute axis coordinates.
-    if (fret < static_cast<int>(cfg_.calibratedFretMm.size())) {
-        return cfg_.calibratedFretMm[fret];
-    }
-    // Theoretical positions are measured from the nut (0). Add the mechanical
-    // offset so the nut sits at minPositionMm instead of being clamped there —
-    // otherwise the open string and the first frets all collapse onto
-    // minPositionMm when it is non-zero (audit P1-12).
-    return cfg_.minPositionMm + gmb::fretPositionMm(cfg_.scaleLengthMm, fret);
+    // Both the calibrated table and the theoretical spacing are measured from
+    // the nut (fret 0 = 0). fretOffsetMm then places the nut relative to the
+    // HOME endstop (the FDC), so the absolute axis target is offset + nut-value.
+    // A single per-string offset shifts every fret at once, and calibration is
+    // decoupled from the travel limits (minPositionMm), fixing audit P1-12.
+    double nutRelative = (fret < static_cast<int>(cfg_.calibratedFretMm.size()))
+        ? cfg_.calibratedFretMm[fret]
+        : gmb::fretPositionMm(cfg_.scaleLengthMm, fret);
+    return cfg_.fretOffsetMm + nutRelative;
 }
 
 double StepperAxis::clampToLimits(double mm) const {

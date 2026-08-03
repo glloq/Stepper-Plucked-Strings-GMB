@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 #include "../src/core/configuration/Profile.h"
 #include "../src/core/configuration/ProfileValidator.h"
+#include "../src/core/configuration/ServoStroke.h"
 #include "../src/core/motion/StepperAxis.h"
 
 using namespace gmb;
@@ -91,6 +92,134 @@ TEST(pca_board_range) {
     CHECK(!ProfileValidator::isActivatable(p));
 }
 
+// A per-string strum-lift servo paired with the string's pluck servo validates.
+TEST(strum_lift_with_striker_is_valid) {
+    Profile p = uke();
+    ServoConfig lift;
+    lift.enabled = true;
+    lift.function = "strumLift";
+    lift.stringIndex = 0;
+    lift.source = ServoSource::Pca;
+    lift.pcaBoard = 0;
+    lift.channel = 12;  // free channel (finger 0..5, pluck 6..11)
+    p.servos.push_back(lift);
+    CHECK(ProfileValidator::isActivatable(p));
+}
+
+// A per-string strum servo counts as the string's striker (no pluck required).
+TEST(per_string_strum_satisfies_striker) {
+    Profile p = uke();
+    for (auto& s : p.servos)
+        if (s.function == "pluck" && s.stringIndex == 0) s.function = "strum";
+    CHECK(ProfileValidator::isActivatable(p));
+}
+
+// Every enabled string needs its own striker — there is no shared strummer.
+TEST(string_without_striker_rejected) {
+    Profile p = uke();
+    for (auto it = p.servos.begin(); it != p.servos.end();) {
+        if (it->function == "pluck" && it->stringIndex == 0) it = p.servos.erase(it);
+        else ++it;
+    }
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
+// A strum lift with no striker to lift on its string is rejected.
+TEST(strum_lift_without_striker_rejected) {
+    Profile p = uke();
+    // Drop string 0's pluck so it has no striker, then give it a strum lift.
+    for (auto it = p.servos.begin(); it != p.servos.end();) {
+        if (it->function == "pluck" && it->stringIndex == 0) it = p.servos.erase(it);
+        else ++it;
+    }
+    ServoConfig lift;
+    lift.enabled = true;
+    lift.function = "strumLift";
+    lift.stringIndex = 0;
+    lift.source = ServoSource::Pca;
+    lift.pcaBoard = 0;
+    lift.channel = 13;
+    p.servos.push_back(lift);
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
+// --- Strum stroke shaping (servoStrikeTargetUs) ---------------------------
+
+static ServoConfig strumServo() {
+    ServoConfig s;
+    s.function = "strum";
+    s.pulseMinUs = 500;
+    s.pulseMaxUs = 2500;
+    s.restUs = 1000;
+    s.activeUs = 1800;
+    return s;
+}
+
+// Velocity scales the strike depth linearly between rest and active.
+TEST(strike_depth_follows_velocity) {
+    ServoConfig s = strumServo();
+    CHECK_EQ((int)servoStrikeTargetUs(s, 0.0, false), 1000);   // rest
+    CHECK_EQ((int)servoStrikeTargetUs(s, 1.0, false), 1800);   // active
+    CHECK_EQ((int)servoStrikeTargetUs(s, 0.5, false), 1400);   // midpoint
+}
+
+// minStrikeUs guarantees a floor depth so soft notes still catch the string.
+TEST(min_strike_depth_floor) {
+    ServoConfig s = strumServo();
+    s.minStrikeUs = 1300;
+    CHECK_EQ((int)servoStrikeTargetUs(s, 0.0, false), 1300);   // floored up
+    CHECK_EQ((int)servoStrikeTargetUs(s, 1.0, false), 1800);   // full still reaches active
+}
+
+// Alternate direction: the up-stroke uses activeAltUs when provided.
+TEST(alternate_stroke_uses_alt_endpoint) {
+    ServoConfig s = strumServo();
+    s.alternateDirection = true;
+    s.activeAltUs = 600;
+    CHECK_EQ((int)servoStrikeTargetUs(s, 1.0, false), 1800);   // down-stroke
+    CHECK_EQ((int)servoStrikeTargetUs(s, 1.0, true), 600);     // up-stroke
+}
+
+// activeAltUs == 0 mirrors the active pulse about rest for a symmetric up-stroke.
+TEST(alternate_stroke_mirrors_when_alt_zero) {
+    ServoConfig s = strumServo();
+    s.alternateDirection = true;   // activeAltUs stays 0
+    // mirror of 1800 about rest 1000 = 2*1000 - 1800 = 200, clamped to pulseMin 500.
+    CHECK_EQ((int)servoStrikeTargetUs(s, 1.0, true), 500);
+}
+
+// An out-of-window alternate/min pulse is rejected by validation.
+TEST(strum_alt_pulse_out_of_range_rejected) {
+    Profile p = uke();
+    ServoConfig strum = strumServo();
+    strum.enabled = true;
+    strum.stringIndex = 0;
+    strum.source = ServoSource::Pca;
+    strum.pcaBoard = 0;
+    strum.channel = 12;
+    strum.activeAltUs = 3000;  // > pulseMaxUs
+    p.servos.push_back(strum);
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
+// A valid strum with alternation + floor + custom stroke time validates.
+TEST(strum_stroke_fields_valid) {
+    Profile p = uke();
+    ServoConfig strum = strumServo();
+    strum.enabled = true;
+    strum.stringIndex = 0;
+    strum.source = ServoSource::Pca;
+    strum.pcaBoard = 0;
+    strum.channel = 12;
+    strum.alternateDirection = true;
+    strum.activeAltUs = 700;
+    strum.minStrikeUs = 1200;
+    strum.strokeMs = 40;
+    strum.engageDelayMs = 15;
+    p.servos.push_back(strum);
+    CHECK(ProfileValidator::isActivatable(p));
+}
+
 // Adjustable per-fret positions: the calibrated table overrides theory and is
 // what the web fret editor writes.
 TEST(adjustable_fret_positions) {
@@ -103,4 +232,53 @@ TEST(adjustable_fret_positions) {
     StepperAxis axis(cfg);
     CHECK_NEAR(axis.fretPositionMm(1), 19.5, 1e-9);           // manual override
     CHECK_NEAR(axis.fretPositionMm(2), gmb::fretPositionMm(330.0, 2), 1e-9);
+}
+
+// The per-string fret offset (nut position from the FDC) shifts every fret; the
+// theoretical spacing is measured from the nut.
+TEST(fret_offset_shifts_all_frets) {
+    AxisConfig cfg;
+    cfg.scaleLengthMm = 330.0;
+    cfg.maxFret = 3;
+    cfg.fretOffsetMm = 25.0;
+    StepperAxis axis(cfg);
+    CHECK_NEAR(axis.fretPositionMm(0), 25.0, 1e-9);                                 // nut at the offset
+    CHECK_NEAR(axis.fretPositionMm(1), 25.0 + gmb::fretPositionMm(330.0, 1), 1e-9); // + spacing
+}
+
+// The offset applies on top of a nut-relative calibrated table too.
+TEST(fret_offset_applies_to_calibrated) {
+    AxisConfig cfg;
+    cfg.scaleLengthMm = 330.0;
+    cfg.maxFret = 2;
+    cfg.fretOffsetMm = 10.0;
+    cfg.calibratedFretMm = {0.0, 19.5, 37.0};  // nut-relative
+    StepperAxis axis(cfg);
+    CHECK_NEAR(axis.fretPositionMm(0), 10.0, 1e-9);
+    CHECK_NEAR(axis.fretPositionMm(1), 10.0 + 19.5, 1e-9);
+}
+
+// The travel-fit validator must fold in fretOffsetMm (absolute target), else a
+// too-large offset would be silently clamped at play time (audit P1-8 regression).
+TEST(fret_offset_beyond_travel_rejected) {
+    Profile p = uke();  // scale 330, maxFret 12 -> lastFret 165; maxPositionMm 400
+    p.strings[0].fretOffsetMm = 300.0;  // 300 + 165 = 465 > 400
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+TEST(fret_offset_within_travel_valid) {
+    Profile p = uke();
+    p.strings[0].fretOffsetMm = 20.0;   // 20 + 165 = 185 < 400
+    CHECK(ProfileValidator::isActivatable(p));
+}
+TEST(negative_fret_offset_before_travel_rejected) {
+    Profile p = uke();
+    p.strings[0].fretOffsetMm = -10.0;  // fret 0 target below minPositionMm (0)
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+// A calibrated value is nut-relative, so the range check must add the offset.
+TEST(calibrated_plus_offset_out_of_travel_rejected) {
+    Profile p = uke();
+    p.strings[0].fretOffsetMm = 350.0;
+    p.strings[0].calibratedFretMm = {0.0, 60.0};  // absolute: 350, 410 > 400
+    CHECK(!ProfileValidator::isActivatable(p));
 }

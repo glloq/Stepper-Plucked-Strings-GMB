@@ -1,5 +1,7 @@
 #include "ServoBank.h"
 
+#include "../../core/configuration/ServoStroke.h"
+
 #if defined(ARDUINO)
 #include <Wire.h>
 #endif
@@ -183,14 +185,14 @@ void ServoBank::release(int index) {
 void ServoBank::strike(int index, double intensity) {
     if (index < 0 || index >= (int)servos_.size()) return;
     const ServoConfig& s = servos_[index];
-    if (intensity < 0.0) intensity = 0.0;
-    if (intensity > 1.0) intensity = 1.0;
-    // Velocity shapes the strike depth between rest and active.
-    int span = static_cast<int>(s.activeUs) - static_cast<int>(s.restUs);
-    uint16_t us = static_cast<uint16_t>(s.restUs + intensity * span);
-    writeMicros(index, us);
+    // Velocity shapes the strike depth; on an alternate stroke the up-stroke
+    // endpoint is used. The maths lives in servoStrikeTargetUs (unit-tested).
+    bool upStroke = s.alternateDirection && rt_[index].strokeParity;
+    writeMicros(index, servoStrikeTargetUs(s, intensity, upStroke));
     rt_[index].mode = Mode::Striking;
     rt_[index].returnAtMs = 0;
+    // Flip the stroke direction for the next strike on this servo.
+    if (s.alternateDirection) rt_[index].strokeParity = !rt_[index].strokeParity;
 }
 
 void ServoBank::update(uint32_t nowMs) {
@@ -199,7 +201,10 @@ void ServoBank::update(uint32_t nowMs) {
         Rt& r = rt_[i];
         switch (r.mode) {
             case Mode::Striking:
-                if (r.returnAtMs == 0) r.returnAtMs = nowMs + s.travelMs;
+                // strokeMs (when set) is how long the stroke stays engaged before
+                // returning; travelMs remains the fallback and the settle base.
+                if (r.returnAtMs == 0)
+                    r.returnAtMs = nowMs + (s.strokeMs ? s.strokeMs : s.travelMs);
                 if ((int32_t)(nowMs - r.returnAtMs) >= 0) {
                     toRest(static_cast<int>(i));
                     r.mode = Mode::Rest;

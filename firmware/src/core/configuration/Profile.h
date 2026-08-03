@@ -1,4 +1,4 @@
-// Instrument configuration profile (cahier des charges section 20).
+// Instrument configuration profile (spec section 20).
 //
 // This is the single source of truth for the firmware. The web UI edits a draft
 // which is validated and then atomically activated; SysEx capabilities and the
@@ -17,7 +17,6 @@
 
 namespace gmb {
 
-enum class PluckMode : uint8_t { Individual = 0, SharedStrum = 1, Both = 2 };
 enum class NetworkMode : uint8_t { AccessPoint = 0, Station = 1 };
 
 enum class VelocityCurve : uint8_t { Linear, Soft, Hard, Exponential, Custom };
@@ -31,7 +30,6 @@ struct InstrumentInfo {
     uint8_t typeId = 0x04;    // GMB instrument type id (guitar)
     int8_t capo = 0;
     int8_t transpose = 0;
-    PluckMode pluckMode = PluckMode::Individual;
 };
 
 struct NetworkConfig {
@@ -46,11 +44,28 @@ struct MidiConfig {
     uint8_t globalChannel = 0;   // zero-based internal channel
     bool omni = false;
     int8_t transpose = 0;
-    uint8_t chordWindowMs = 3;   // grouping window (cahier des charges 17.2)
+    uint8_t chordWindowMs = 3;   // grouping window (spec 17.2)
     VelocityCurve velocityCurve = VelocityCurve::Linear;
     bool sustainPedal = true;
     uint8_t sustainCc = 64;
     SaturationStrategy saturationStrategy = SaturationStrategy::PriorityLow;
+
+    // Playback timing / latency management.
+    //   noteExecutionDelayMs : fixed delay between receiving a Note On and the
+    //                          note actually sounding, so the mechanics have a
+    //                          predictable, constant window to get in position.
+    //   fingerLeadMs         : begin the finger descent up to this long before
+    //                          the carriage is estimated to reach the fret, so
+    //                          the finger arrives on the string around the same
+    //                          time (overlaps descent with the approach).
+    //   strumLeadMs          : begin lowering the strum lift up to this long
+    //                          before the string is ready, so the strummer is
+    //                          already engaged when the strike time comes.
+    // The two leads shrink the minimum achievable noteExecutionDelayMs; both
+    // default to 0 (no anticipation — the safe, strictly-sequential behaviour).
+    uint16_t noteExecutionDelayMs = 0;
+    uint16_t fingerLeadMs = 0;
+    uint16_t strumLeadMs = 0;
 };
 
 // Where a servo's PWM signal comes from. The system must work with OR without a
@@ -61,10 +76,12 @@ enum class ServoSource : uint8_t { Pca = 0, DirectGpio = 1 };
 // Servo roles. Per-string roles carry a stringIndex; shared roles use -1.
 //   finger : presses the string at the fret            (per string)
 //   pluck  : individual plectrum                       (per string)
-//   strum  : per-string strum/grattage servo           (per string)
-//   damper : per-string damper/silencieux (étouffoir)  (per string)
-//   sharedStrum / sharedDamper : one mechanism across several strings
+//   strum  : per-string strum servo                    (per string)
+//   strumLift : lowers/raises the strum servo per stroke (per string)
+//   damper : per-string damper (mute)                  (per string)
+//   sharedDamper : one damper mechanism across several strings
 //   aux    : any auxiliary actuator
+// (Strumming is per string only — there is no shared strummer role.)
 // (Function is kept as a string so the web UI can offer new roles without a
 // firmware change.)
 struct ServoConfig {
@@ -87,6 +104,25 @@ struct ServoConfig {
     uint16_t travelMs = 120;
     uint16_t settleMs = 30;
     bool disableAtRest = true;
+
+    // Strum / pluck stroke shaping.
+    //   engageDelayMs      : for a strumLift, extra pause after the lift is down,
+    //                        before the strum stroke fires (0 = none).
+    //   alternateDirection : alternate the stroke endpoint on successive strikes
+    //                        (down-stroke, up-stroke, down-stroke…).
+    //   activeAltUs        : the up-stroke active pulse (0 = mirror activeUs about
+    //                        restUs). Only used when alternateDirection is set.
+    //   strokeMs           : time the stroke stays engaged before it returns to
+    //                        rest (0 = use travelMs). Lets the stroke "speed" be
+    //                        set independently of the return/settle timing.
+    //   minStrikeUs        : guaranteed minimum strike depth toward the active side
+    //                        so a low-velocity note still catches the string
+    //                        (0 = disabled, depth follows velocity only).
+    uint16_t engageDelayMs = 0;
+    bool alternateDirection = false;
+    uint16_t activeAltUs = 0;
+    uint16_t strokeMs = 0;
+    uint16_t minStrikeUs = 0;
 };
 
 struct Profile {

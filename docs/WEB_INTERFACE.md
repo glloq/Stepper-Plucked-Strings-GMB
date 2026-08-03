@@ -1,191 +1,195 @@
-# Interface Web — Stepper-Plucked-Strings-GMB
+# Web Interface — Stepper-Plucked-Strings-GMB
 
-> Sources : `cahier des charges.md` §9, §10, §18, §19, §20 · `selection corde et frette.md` §14–16 · `Communication automatique des capacités par SysEx.md` §17–18.
-> Documents liés : [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md) · [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) · [`FIRST_CONFIGURATION.md`](FIRST_CONFIGURATION.md).
+> Sources: `SPECIFICATION.md` §9, §10, §18, §19, §20 · `STRING_FRET_SELECTION.md` §14–16 · `SYSEX_CAPABILITIES.md` §17–18.
+> Related documents: [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md) · [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) · [`FIRST_CONFIGURATION.md`](FIRST_CONFIGURATION.md).
 
-L'interface Web permet à un débutant de configurer l'instrument sans modifier le
-code source, depuis un ordinateur, une tablette ou un téléphone. Aucune
-application dédiée n'est nécessaire.
+The Web interface lets a beginner configure the instrument without modifying the
+source code, from a computer, a tablet or a phone. No dedicated application is
+required.
 
 ---
 
-## 1. Deux niveaux d'interface (§9.2)
+## 1. Two interface levels (§9.2)
 
-### Mode simplifié (débutant)
+### Simplified mode (beginner)
 
-Assistant étape par étape, valeurs recommandées, attribution automatique des
-broches, schémas de branchement, boutons de test, validation automatique, messages
-d'erreur compréhensibles. Ne montre par défaut que les GPIO **verts** (voir
+Step-by-step wizard, recommended values, automatic pin assignment, wiring
+diagrams, test buttons, automatic validation, understandable error messages. By
+default it shows only the **green** GPIOs (see
 [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md)).
 
-### Mode avancé (mise au point)
+### Advanced mode (fine-tuning)
 
-Attribution manuelle des GPIO (y compris les broches **jaunes** avec explication),
-réglage des vitesses/accélérations/délais, courbes de vélocité, diagnostics,
-édition des paramètres détaillés, import/export JSON.
+Manual GPIO assignment (including the **yellow** pins, with an explanation),
+adjustment of speeds/accelerations/delays, velocity curves, diagnostics, editing
+of detailed parameters, JSON import/export.
 
 ---
 
-## 2. Assistant de première configuration — 9 étapes (§10)
+## 2. First-configuration wizard — 9 steps (§10)
 
-| Étape | Titre | Contenu |
+| Step | Title | Content |
 | ----- | ----- | ------- |
-| 1 | **Identification** | nom, description, nombre de cordes, type d'instrument, accordage proposé, nombre max de frettes |
-| 2 | **Choix de la carte** | modèle ESP32, révision, Flash, PSRAM, variante → détermine GPIO disponibles/réservés/recommandés (profil `esp32-s3-devkitc-1`) |
-| 3 | **Attribution automatique** | bouton « Attribuer automatiquement les broches » (nb cordes, interfaces, carte, USB futur, port diagnostic, I²C, capteurs) |
-| 4 | **Configuration mécanique** | par corde : note à vide, frettes max, longueur vibrante, transmission, pas/tour, microstepping, déplacement/tour, inversion, vitesse/accélération max, position de repos |
-| 5 | **Homing** | par axe : capteur activé, GPIO, NO/NC, niveau actif, direction, vitesses rapide/lente, recul, offset, timeout, distance max |
-| 6 | **Calibration des servos** | par servo : canal PCA9685, repos, actif, limites, inversion, temps de déplacement/stabilisation, désactivation au repos |
-| 7 | **Calibration des notes** | calcul automatique des frettes **ou** calibration manuelle de chaque position |
-| 8 | **Test** | tester chaque moteur, capteur, doigt, médiator, note, corde, un accord, l'arrêt général |
-| 9 | **Validation** | « Configuration valide » ou liste précise des problèmes ; aucun actionneur activé tant que les erreurs critiques ne sont pas corrigées |
+| 1 | **Identification** | name, description, number of strings, instrument type, proposed tuning, max frets (applied to all strings), **capo** |
+| 2 | **Board selection** | ESP32 model → available/reserved/recommended GPIOs (`esp32-s3-devkitc-1` profile); plus a **Network** panel: Wi-Fi mode (AP/station), SSID, hostname, AP name |
+| 3 | **Automatic assignment** | "Assign pins automatically" button (number of strings, interfaces, board, future USB, diagnostic port, I²C, sensors) |
+| 4 | **Mechanical configuration** | per string: axis enabled, vibrating length, transmission, motor wiring polarity (invert direction), **max speed & acceleration** (now in the simplified view), and Advanced geometry; a **jog ±1/±5 mm** control to check the motor direction live; **Copy mechanics to all strings** |
+| 5 | **Homing** | per axis: HOME GPIO, active level, homing search direction, **zero offset / rest position (FDC)**; Advanced adds speeds, back-off, timeout, LIMIT GPIO & level; **Home all axes now** and **Copy homing to all** |
+| 6 | **Servo calibration** | per servo: source/channel, rest, active, travel/settle, disable at rest; **strum/stroke motion** for strike roles — alternate stroke direction (+ up-stroke pulse), stroke time, minimum strike depth; **engage delay** for a strum lift; a **Test strike** pulse |
+| 7 | **Note calibration** | per string a **Fret offset from FDC** (nut position) that shifts every fret; automatic fret computation **or** manual calibration — move the axis and **Capture position** records the live motor position; an **Abs (FDC)** column; **Copy scale + calibration to all** |
+| 8 | **Test** | test each motor, sensor, finger, pick, note, string, a chord, the emergency stop |
+| 9 | **Validation** | "Valid configuration" or a precise list of problems; no actuator is enabled until the critical errors are fixed |
 
-Le détail pas à pas est dans [`FIRST_CONFIGURATION.md`](FIRST_CONFIGURATION.md).
-Les calculs des étapes 4–7 sont dans [`CALIBRATION.md`](CALIBRATION.md).
+The per-string steps (4–7) show **one string at a time** via a string-tab strip,
+so a 6-string instrument stays navigable. General MIDI parameters (sustain CC,
+chord **saturation strategy**, velocity curve…) and a **Playback timing** card
+(fixed note-execution delay, finger lead, strum lead) live on the **MIDI** page.
+
+The step-by-step detail is in [`FIRST_CONFIGURATION.md`](FIRST_CONFIGURATION.md).
+The computations for steps 4–7 are in [`CALIBRATION.md`](CALIBRATION.md).
 
 ---
 
-## 3. Pages de l'interface
+## 3. Interface pages
 
-### 3.1 Tableau de bord (§19)
+### 3.1 Dashboard (§19)
 
-Page principale — état général :
-
-```text
-état général · connexion Wi-Fi · source MIDI · profil actif ·
-nombre de cordes prêtes · notes jouées · défauts actifs ·
-températures · tensions · bouton STOP
-```
-
-Par corde : état (machine d'état), note actuelle, fret actuel, position moteur,
-position cible, distance restante, état HOME, état LIMIT, état du doigt, état du
-médiator, dernier défaut.
-
-### 3.2 Page MIDI — sélection corde/frette (selection corde et frette §14–16)
-
-Écran **simplifié** (§14) :
+Main page — overall status:
 
 ```text
-[✓] Activer la sélection corde/frette
-Système utilisé : [ General-Midi-Boop ]
-CC de corde : [ 20 ]      CC de frette : [ 21 ]
-Numérotation des cordes : [ 1 à 6 ]
-Ordre des cordes : [ Normal ]
-En cas de CC absent : [ Choisir automatiquement ]
+overall state · Wi-Fi connection · MIDI source · active profile ·
+strings-ready count · notes playing · active faults ·
+temperatures · voltages · STOP button
 ```
 
-Boutons : Appliquer le préréglage · Tester la réception · Envoyer un test · Voir
-les valeurs reçues. Les réglages avancés (offsets, tables, politiques) restent
-masqués dans « Réglages avancés » (voir [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) §2).
+Per string: status (state machine), current note, current fret, motor position,
+target position, remaining distance, HOME state, LIMIT state, finger state, pick
+state, last fault.
 
-**Moniteur MIDI Web (§15)** — temps réel :
+### 3.2 MIDI page — string/fret selection (STRING_FRET_SELECTION §14–16)
 
-| Temps | Canal | Message | Valeur | Interprétation |
+**Simplified** screen (§14):
+
+```text
+[✓] Enable string/fret selection
+System used: [ General-Midi-Boop ]
+String CC: [ 20 ]      Fret CC: [ 21 ]
+String numbering: [ 1 to 6 ]
+String order: [ Normal ]
+When CC is absent: [ Choose automatically ]
+```
+
+Buttons: Apply preset · Test reception · Send a test · View received values. The
+advanced settings (offsets, tables, policies) stay hidden under "Advanced
+settings" (see [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) §2).
+
+**Web MIDI monitor (§15)** — real time:
+
+| Time | Channel | Message | Value | Interpretation |
 | ----: | ----: | ------- | -----: | -------------- |
-| 0 ms | 1 | CC20 | 3 | corde 3 |
-| 1 ms | 1 | CC21 | 5 | frette 5 |
-| 2 ms | 1 | Note On 60 | 100 | corde 3, frette 5 |
+| 0 ms | 1 | CC20 | 3 | string 3 |
+| 1 ms | 1 | CC21 | 5 | fret 5 |
+| 2 ms | 1 | Note On 60 | 100 | string 3, fret 5 |
 
-Affiche aussi : sélection complète / en attente / expirée, valeur invalide,
-allocation automatique utilisée, incohérence note/frette, corde physique réelle.
-Bouton pour vider le journal.
+Also displays: complete / pending / expired selection, invalid value, automatic
+allocation used, note/fret mismatch, actual physical string. A button to clear
+the log.
 
-**Outil de test intégré (§16)** — choisir corde, frette, note MIDI, vélocité,
-canal ; envoie automatiquement CC corde → CC frette → Note On → Note Off après une
-durée choisie, et affiche chaque étape (CC reçu, sélection validée, axe en
-déplacement, position atteinte, doigt appuyé, corde pincée).
+**Built-in test tool (§16)** — choose string, fret, MIDI note, velocity,
+channel; automatically sends string CC → fret CC → Note On → Note Off after a
+chosen duration, and displays each step (CC received, selection validated, axis
+moving, position reached, finger pressed, string plucked).
 
-### 3.3 Page MIDI — Identité et capacités GMB (SysEx §17–18)
+### 3.3 MIDI page — GMB identity and capabilities (SysEx §17–18)
 
-Chemin : `MIDI > Identité et capacités GMB`.
+Path: `MIDI > GMB identity and capabilities`.
 
-**Mode simplifié (§17.1)** : activation de la détection GMB, nom, type, préréglage
-d'instrument, programme GM, canal MIDI, boutons « Publier les capacités » et
-« Tester la communication », état de la dernière détection. Capacités calculées en
-lecture seule :
+**Simplified mode (§17.1)**: enabling GMB detection, name, type, instrument
+preset, GM program, MIDI channel, "Publish capabilities" and "Test
+communication" buttons, status of the last detection. Computed capabilities,
+read-only:
 
 ```text
-Cordes : 4 · Frettes : 12 · Plage MIDI : 40 à 76 · Polyphonie : 4
-CC corde : 20 · CC frette : 21 · Accordage : E2 A2 D3 G3 · Révision : 7
+Strings: 4 · Frets: 12 · MIDI range: 40 to 76 · Polyphony: 4
+String CC: 20 · Fret CC: 21 · Tuning: E2 A2 D3 G3 · Revision: 7
 ```
 
-**Mode avancé (§17.2)** : activation des blocs 5/6/7, choix de la version du bloc 7,
-surcharge de la polyphonie, plage continue ou notes discrètes, visualisation des
-CC annoncés et des octets SysEx, envoi manuel de chaque réponse, envoi de la
-notification, réinitialisation de l'identifiant, export du snapshot.
+**Advanced mode (§17.2)**: enabling blocks 5/6/7, choice of the block 7 version,
+polyphony override, continuous range or discrete notes, viewing the announced CCs
+and the SysEx bytes, manual sending of each response, sending the notification,
+resetting the identifier, exporting the snapshot.
 
-**Testeur SysEx (§18)** : simuler « Demander identité / descripteur / capacités /
-configuration des cordes / Notifier une modification / Découverte complète ». Pour
-chaque test : message envoyé, message reçu, décodage des champs, validité 7 bits,
-longueur, erreur éventuelle, durée de réponse. Détails du protocole dans
+**SysEx tester (§18)**: simulate "Request identity / descriptor / capabilities /
+string configuration / Notify a change / Full discovery". For each test: message
+sent, message received, decoding of fields, 7-bit validity, length, possible
+error, response time. Protocol details in
 [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) §3.
 
-### 3.4 Paramètres MIDI (§18)
+### 3.4 MIDI settings (§18)
 
-Canal global, mode Omni, canal par corde, transposition générale/par corde, plage
-de notes, courbe de vélocité (linéaire / douce / forte / exponentielle /
-personnalisée), comportement Note Off, pédale de maintien, délai de regroupement
-des accords (défaut 3 ms), stratégie de saturation (voir `NoteAllocator`,
-[`ARCHITECTURE.md`](ARCHITECTURE.md)). La vélocité peut agir sur la course/vitesse
-du médiator, le délai d'attaque, le profil de pincement.
+Global channel, Omni mode, per-string channel, general/per-string transposition,
+note range, velocity curve (linear / soft / hard / exponential / custom), Note
+Off behavior, sustain pedal, chord grouping delay (default 3 ms), saturation
+strategy (see `NoteAllocator`, [`ARCHITECTURE.md`](ARCHITECTURE.md)). Velocity can
+act on the pick travel/speed, the attack delay, the plucking profile.
 
-### 3.5 Profils (§20)
+### 3.5 Profiles (§20)
 
-Au moins **8 profils**. Fonctions : créer, copier, renommer, supprimer, exporter,
-importer, restaurer, définir le profil de démarrage. Format d'échange **JSON** :
+At least **8 profiles**. Functions: create, copy, rename, delete, export, import,
+restore, set the startup profile. **JSON** exchange format:
 
 ```json
 {
   "project": "Stepper-Plucked-Strings-GMB",
   "profileVersion": 1,
-  "instrument": { "name": "Ukulele 4 cordes", "stringCount": 4, "pluckMode": "individual" },
+  "instrument": { "name": "Ukulele 4 strings", "stringCount": 4 },
   "board": { "profile": "esp32-s3-devkitc-1", "reserveUsb": true, "automaticPinAssignment": true },
   "network": { "mode": "station", "hostname": "gmb-ukulele" },
   "strings": []
 }
 ```
 
-Le mot de passe Wi-Fi n'apparaît **jamais** dans les exports ordinaires (sauf
-option explicite).
+The Wi-Fi password **never** appears in ordinary exports (unless an explicit
+option is set).
 
 ---
 
-## 4. API REST / WebSocket (adaptateur `web/`)
+## 4. REST / WebSocket API (`web/` adapter)
 
-> API supposée pour la couche Web (module §23 `web/RestApi`, `web/WebSocketStatus`,
-> `communication/WebSocketMidi`). Elle expose le cœur `Profile` / `PinManager` /
-> `SafetyManager` / `GmbSysEx` décrits dans [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> API assumed for the Web layer (module §23 `web/RestApi`, `web/WebSocketStatus`,
+> `communication/WebSocketMidi`). It exposes the `Profile` / `PinManager` /
+> `SafetyManager` / `GmbSysEx` core described in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-### 4.1 Endpoints REST
+### 4.1 REST endpoints
 
-| Méthode | Endpoint | Rôle |
+| Method | Endpoint | Role |
 | ------- | -------- | ---- |
-| `GET` | `/api/status` | état global + par corde (tableau de bord §19) |
-| `GET` | `/api/profile` | profil actif (JSON) |
-| `PUT` | `/api/profile` | remplacer le profil (brouillon → validation → activation) |
-| `GET` | `/api/profiles` | liste des profils sauvegardés |
-| `POST` | `/api/profiles` | créer / copier / importer un profil |
-| `GET` | `/api/board/{id}` | profil de carte + capacités des GPIO (couleurs, filtrage) |
-| `POST` | `/api/pins/auto` | attribution automatique (`PinRequest`) → assignations |
-| `POST` | `/api/pins/validate` | validation des broches → liste de `PinError` |
-| `POST` | `/api/panic` | panic logiciel (`SafetyManager::panic`) |
-| `POST` | `/api/test/note` | jouer une note de test (corde, frette, note, vélocité, canal) |
-| `POST` | `/api/sysex/request` | simuler une requête SysEx GMB → réponse décodée |
-| `GET` | `/api/capabilities` | snapshot de capacités courant (lecture seule) |
+| `GET` | `/api/status` | overall status + per string (dashboard §19) |
+| `GET` | `/api/profile` | active profile (JSON) |
+| `PUT` | `/api/profile` | replace the profile (draft → validation → activation) |
+| `GET` | `/api/profiles` | list of saved profiles |
+| `POST` | `/api/profiles` | create / copy / import a profile |
+| `GET` | `/api/board/{id}` | board profile + GPIO capabilities (colors, filtering) |
+| `POST` | `/api/pins/auto` | automatic assignment (`PinRequest`) → assignments |
+| `POST` | `/api/pins/validate` | pin validation → list of `PinError` |
+| `POST` | `/api/panic` | software panic (`SafetyManager::panic`) |
+| `POST` | `/api/test/note` | play a test note (string, fret, note, velocity, channel) |
+| `POST` | `/api/sysex/request` | simulate a GMB SysEx request → decoded response |
+| `GET` | `/api/capabilities` | current capabilities snapshot (read-only) |
 
 ### 4.2 WebSocket
 
-| Canal | Rôle |
+| Channel | Role |
 | ----- | ---- |
-| `WS /ws/midi` | flux MIDI entrant/sortant (moniteur MIDI §15, transport WebSocket binaire) |
-| `WS /ws/status` | statut temps réel du tableau de bord et par corde (§19) |
+| `WS /ws/midi` | inbound/outbound MIDI stream (MIDI monitor §15, binary WebSocket transport) |
+| `WS /ws/status` | real-time dashboard and per-string status (§19) |
 
-Notes :
+Notes:
 
-* `PUT /api/profile` suit le flux brouillon → `ProfileValidator` → sauvegarde
-  atomique → incrément `capabilitiesRevision` → reconstruction du snapshot →
-  notification Bloc 8 (voir [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) §3.7). Une
-  configuration en brouillon n'est **jamais** publiée.
-* `POST /api/pins/auto` et `/api/pins/validate` correspondent directement à
-  `PinManager::autoAssign` / `validate` (voir [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md)).
-* `POST /api/panic` et l'état de sécurité : voir [`SAFETY.md`](SAFETY.md).
+* `PUT /api/profile` follows the draft → `ProfileValidator` → atomic save →
+  `capabilitiesRevision` increment → snapshot rebuild → Block 8 notification flow
+  (see [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) §3.7). A draft configuration is
+  **never** published.
+* `POST /api/pins/auto` and `/api/pins/validate` map directly to
+  `PinManager::autoAssign` / `validate` (see [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md)).
+* `POST /api/panic` and the safety state: see [`SAFETY.md`](SAFETY.md).

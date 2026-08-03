@@ -17,7 +17,7 @@
   var GMB = global.GMB || (global.GMB = {});
 
   // ---------------------------------------------------------------------------
-  // ESP32-S3-DevKitC-1 board profile (cahier des charges 11.4 / 11.5).
+  // ESP32-S3-DevKitC-1 board profile (spec 11.4 / 11.5).
   //
   // Mirrors firmware/src/core/board/BoardProfile.h PinCapability. `preference`:
   //   recommended | caution | reserved   (grey "used" is a runtime state).
@@ -74,7 +74,7 @@
       pins.push(pin(g, { adc: true, highSpeedOutput: true, preference: 'recommended',
         note: 'General purpose (ADC2) — recommended for DIR.' }));
     });
-    // Native USB — reserved by default (cahier des charges 8.3 / 11.3).
+    // Native USB — reserved by default (spec 8.3 / 11.3).
     pins.push(pin(19, { usb: true, preference: 'reserved',
       note: 'USB-JTAG / native USB (D-). Reserved for future USB MIDI.' }));
     pins.push(pin(20, { usb: true, preference: 'reserved',
@@ -124,7 +124,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Default recommended pin assignment (cahier des charges 11.5). Signal names
+  // Default recommended pin assignment (spec 11.5). Signal names
   // match firmware PinAssignment.signal ("STEP1", "HOME3", "SDA"...).
   // ---------------------------------------------------------------------------
   var RECOMMENDED = {
@@ -142,7 +142,7 @@
   };
   GMB.SIGNAL_KIND = SIGNAL_KIND;
 
-  // Can a pin (statically) carry a given signal kind? (cahier des charges 11.3)
+  // Can a pin (statically) carry a given signal kind? (spec 11.3)
   GMB.pinSupports = function (p, kind) {
     if (!p || !p.exposed || p.reserved || p.preference === 'reserved') return false;
     switch (kind) {
@@ -166,10 +166,11 @@
   // ---------------------------------------------------------------------------
   function ukuleleString(openNote) {
     return {
+      enabled: true,
       openNote: openNote, maxFret: 12, scaleLengthMm: 330,
       transmission: 'beltGt2', stepsPerRevolution: 200, microsteps: 16,
       pulleyTeeth: 20, beltPitchMm: 2, leadPerRevolutionMm: 8, customStepsPerMm: 80,
-      invertDirection: false, minPositionMm: 0, maxPositionMm: 300,
+      invertDirection: false, minPositionMm: 0, maxPositionMm: 300, fretOffsetMm: 0,
       maxSpeedMmS: 200, maxAccelMmS2: 2000, calibratedFretMm: [],
       homing: {
         direction: -1, fastSpeedMmS: 40, slowSpeedMmS: 5, backoffMm: 3, offsetMm: 0,
@@ -197,14 +198,28 @@
       inverted: !!opts.inverted,
       travelMs: opts.travelMs || 120,
       settleMs: opts.settleMs || 30,
-      disableAtRest: opts.disableAtRest !== false
+      disableAtRest: opts.disableAtRest !== false,
+      // Strum / pluck stroke shaping (matches firmware ServoConfig).
+      engageDelayMs: opts.engageDelayMs || 0,
+      alternateDirection: !!opts.alternateDirection,
+      activeAltUs: opts.activeAltUs || 0,
+      strokeMs: opts.strokeMs || 0,
+      minStrikeUs: opts.minStrikeUs || 0
     };
   }
   GMB.servoDefaults = servo;
 
-  // Theoretical fret position (cahier des charges 14.2): scale·(1−2^(−fret/12)).
+  // Theoretical fret position (spec 14.2), measured from the nut (fret 0 = 0):
+  // scale·(1−2^(−fret/12)). The per-string fret offset (nut → FDC) is applied by
+  // the firmware; the editor stores nut-relative values and shows the absolute.
   GMB.fretTheoreticalMm = function (s, fret) {
     return (s.scaleLengthMm || 0) * (1 - Math.pow(2, -fret / 12));
+  };
+  // Absolute fret position from the FDC = fret offset + nut-relative value.
+  GMB.fretAbsoluteMm = function (s, fret) {
+    var cal = s.calibratedFretMm && s.calibratedFretMm[fret];
+    var nut = (cal === undefined || cal === null) ? GMB.fretTheoreticalMm(s, fret) : cal;
+    return (s.fretOffsetMm || 0) + nut;
   };
 
   function sampleProfile() {
@@ -213,7 +228,7 @@
       instrument: {
         name: 'Ukulele GCEA', description: '4-string soprano ukulele',
         stringCount: 4, type: 'ukulele', gmProgram: 24, typeId: 4,
-        capo: 0, transpose: 0, pluckMode: 'individual'
+        capo: 0, transpose: 0
       },
       board: { profile: 'esp32-s3-devkitc-1', reserveUsb: true, automaticPinAssignment: true },
       pins: [
@@ -232,7 +247,9 @@
       },
       midi: {
         globalChannel: 0, omni: false, transpose: 0, chordWindowMs: 3,
-        velocityCurve: 'linear', sustainPedal: true
+        velocityCurve: 'linear', sustainPedal: true, sustainCc: 64,
+        saturationStrategy: 'priorityLow',
+        noteExecutionDelayMs: 0, fingerLeadMs: 0, strumLeadMs: 0
       },
       stringFretSelection: {
         enabled: true, mode: 'hybrid', preset: 'general-midi-boop', perMidiChannel: true,
@@ -259,8 +276,7 @@
         servo('pluck', 0, { channel: 6, activeUs: 1700, travelMs: 90, settleMs: 20 }),
         servo('pluck', 1, { channel: 7, activeUs: 1700, travelMs: 90, settleMs: 20 }),
         servo('pluck', 2, { channel: 8, activeUs: 1700, travelMs: 90, settleMs: 20 }),
-        servo('pluck', 3, { channel: 9, activeUs: 1700, travelMs: 90, settleMs: 20 }),
-        servo('sharedStrum', -1, { source: 'gpio', gpio: 2, activeUs: 1700, travelMs: 90, settleMs: 20 })
+        servo('pluck', 3, { channel: 9, activeUs: 1700, travelMs: 90, settleMs: 20 })
       ]
     };
   }
@@ -313,7 +329,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Live status (dashboard, cahier des charges 19). Mock evolves over time.
+  // Live status (dashboard, spec 19). Mock evolves over time.
   // ---------------------------------------------------------------------------
   function sampleStatus() {
     var p = MOCK.profile;
@@ -399,7 +415,7 @@
     return { pins: pins, errors: [] };
   }
 
-  // Mock validation (cahier des charges 11.6). Mirrors the firmware contract:
+  // Mock validation (spec 11.6). Mirrors the firmware contract:
   // decodes the full profile and returns { ok, issues:[{field,message,severity}] }.
   function mockValidatePins(profile) {
     var pins = (profile && profile.pins) || [];
@@ -785,6 +801,13 @@
       return this._call('/api/test/servo', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wire)
       }, function () { return mockTestServo(payload); });
+    },
+    // POST /api/test/jog -> { ok } (409 if not armed). Body: { axis, deltaMm }.
+    jog: function (payload) {
+      var wire = { axis: payload.axis | 0, deltaMm: Number(payload.deltaMm) || 0 };
+      return this._call('/api/test/jog', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wire)
+      }, function () { return { ok: true, note: 'jog ' + wire.deltaMm + ' mm (mock)' }; });
     },
     // POST /api/test/endstop -> { ok:true, home:Bool, limit:Bool }. Body: { axis }.
     testEndstop: function (payload) {

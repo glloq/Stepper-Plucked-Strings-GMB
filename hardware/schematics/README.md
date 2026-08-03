@@ -1,12 +1,12 @@
 # Schematics — Phase 5 deliverable
 
 The electronic schematic is a **Phase 5 (dedicated hardware)** deliverable of the
-cahier des charges (§24, §26). It is not yet drawn; this directory is a
+SPECIFICATION.md (§24, §26). It is not yet drawn; this directory is a
 placeholder.
 
 Until then, the reference wiring is fully described in text:
 
-* Electronics overview — `../README.md` (cahier des charges §7)
+* Electronics overview — `../README.md` (SPECIFICATION.md §7)
 * Connection guide, pinout and power rails — `../wiring/WIRING.md` (§7 / §22)
 * Bill of materials — `../BOM.md`
 * Default GPIO map — `../../board-profiles/esp32-s3-devkitc-1.json` (§11.5)

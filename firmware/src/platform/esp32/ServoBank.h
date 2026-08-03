@@ -1,8 +1,9 @@
 // Servo bank supporting PCA9685 (up to four boards) AND direct-GPIO servos,
 // mixable per servo (user requirement: work with or without a PCA). Roles:
-// finger / pluck / strum / damper per string, plus shared and aux actuators.
+// finger / pluck / strum / strumLift / damper per string, plus a shared damper
+// and aux actuators. There is no shared strummer — strumming is per string.
 // The PCA /OE line is tied to a safety pin so all PCA servos can be neutralised
-// instantly (cahier des charges §21.2); direct servos are detached on stop.
+// instantly (spec §21.2); direct servos are detached on stop.
 #pragma once
 
 #include <cstdint>
@@ -53,8 +54,10 @@ public:
     int fingerIndex(int stringIndex) const { return servoIndex("finger", stringIndex); }
     int pluckIndex(int stringIndex) const { return servoIndex("pluck", stringIndex); }
     int strumIndex(int stringIndex) const { return servoIndex("strum", stringIndex); }
+    // Optional per-string lift that lowers (engages) the strum/pluck servo onto
+    // the string for a stroke, then raises (disengages) it: rest = raised.
+    int strumLiftIndex(int stringIndex) const { return servoIndex("strumLift", stringIndex); }
     int damperIndex(int stringIndex) const { return servoIndex("damper", stringIndex); }
-    int sharedStrumIndex() const { return servoIndex("sharedStrum", -1); }
 
     // True if any configured direct-GPIO servo failed to attach an LEDC channel.
     bool directAttachFault() const { return directAttachFault_; }
@@ -80,6 +83,10 @@ public:
     uint16_t settleMs(int index) const {
         return (index >= 0 && index < (int)servos_.size()) ? servos_[index].settleMs : 0;
     }
+    // Extra pause after a strum lift is down before the stroke fires (strumLift).
+    uint16_t engageDelayMs(int index) const {
+        return (index >= 0 && index < (int)servos_.size()) ? servos_[index].engageDelayMs : 0;
+    }
 
 private:
     enum class Mode : uint8_t { Rest, Active, Striking };
@@ -88,6 +95,7 @@ private:
         uint32_t returnAtMs = 0;  // when a strike returns to rest
         uint32_t restAtMs = 0;    // when a resting servo may cut its PWM
         bool pwmOff = false;
+        bool strokeParity = false;  // toggles per strike for alternateDirection
     };
     std::vector<Rt> rt_;
 

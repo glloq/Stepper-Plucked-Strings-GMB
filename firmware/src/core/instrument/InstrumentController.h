@@ -1,4 +1,4 @@
-// Ties the MIDI pipeline together (cahier des charges §16/§17/§18, selection spec).
+// Ties the MIDI pipeline together (spec §16/§17/§18, selection spec).
 //
 // transport -> MidiEvent -> [channel filter] -> [selection] -> [chord grouping +
 // allocation] -> per-string state machine -> motion/servo targets.
@@ -24,10 +24,6 @@ struct StringTarget {
     uint32_t commandId = 0;
     uint8_t velocity = 0;    // raw MIDI velocity
     double intensity = 0.0;  // shaped 0..1 (velocity curve)
-    // Notes started together (one chord / one automatic flush) share a strum
-    // group so the shared strummer sweeps once for the whole chord and a prepared
-    // or unrelated note never blocks it. 0 = none.
-    uint32_t strumGroup = 0;
 };
 
 class InstrumentController {
@@ -40,7 +36,7 @@ public:
     // Flush pending chord groups whose window has elapsed. Call every loop.
     void tick(uint32_t nowUs);
 
-    // Emergency stop everything (cahier des charges §21.3).
+    // Emergency stop everything (spec §21.3).
     void panic();
 
     // Take a string out of service at runtime (failed homing, etc.): fault its
@@ -103,21 +99,15 @@ private:
     std::vector<int> preparedFret_;        // per string, -1 = none
     std::vector<uint32_t> preparedId_;     // per string, 0 = none
     std::vector<uint32_t> preparedExpiryUs_; // per string, when the prepare expires
-    uint32_t nextStrumGroup_ = 1;          // monotonic chord/strum group id
-    uint32_t explicitGroup_ = 0;           // current explicit-chord strum group
-    uint32_t explicitGroupAtUs_ = 0;       // when the explicit group opened
 
     bool accepts(uint8_t channel) const { return omni_ || channel == channel_; }
-    // Explicit notes arriving within the chord window share ONE strum group so the
-    // shared strummer sweeps them as a single chord (audit P0-5).
-    uint32_t explicitStrumGroup(uint32_t nowUs);
     void prepareString(int stringIndex, int fret, uint32_t expiresAtUs);
     // Trigger a previously prepared string for this Note On. Returns false if the
     // string was not prepared for this fret (the caller then starts a fresh note).
     bool triggerPreparedNote(int stringIndex, int fret, uint8_t channel,
-                             uint8_t note, uint8_t velocity, uint32_t strumGroup);
+                             uint8_t note, uint8_t velocity);
     void startNote(int stringIndex, int fret, uint8_t channel, uint8_t note,
-                   uint8_t velocity, uint32_t strumGroup);
+                   uint8_t velocity);
     void stopString(int stringIndex);
     int findActive(uint8_t channel, uint8_t note) const;
     void removeActiveByString(int stringIndex);

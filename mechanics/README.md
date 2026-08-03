@@ -1,7 +1,7 @@
 # Mechanics — reference architecture
 
-Reference mechanical architecture for **Stepper-Plucked-Strings-GMB** (cahier des
-charges §5), and how each mechanical parameter maps to the instrument-profile
+Reference mechanical architecture for **Stepper-Plucked-Strings-GMB**
+(SPECIFICATION.md §5), and how each mechanical parameter maps to the instrument-profile
 fields (`firmware/src/core/motion/StepperAxis.h`, `instrument-profiles/`).
 
 ## 1. One independent channel per string (§5.1)
@@ -46,23 +46,22 @@ advanced option can instead press "fret 0" for specific mechanics.
 
 ## 3. Setting the string vibrating (§5.3)
 
-Two modes, which may be combined on the same instrument:
+Each string is set vibrating by **its own** actuator — there is no shared
+strummer; strumming is per string:
 
 * **Individual pluck** — one pluck actuator per string (servo `function: "pluck"`,
   PCA9685 channels 6–11). Enables chords, repeated notes, per-string tremolo and
   velocity, and precise per-string triggering.
-* **Shared strummer** — one common mechanism sweeping several strings
-  (servo `function: "strummer"`/`aux`, channels 12–15). Supports up/down strokes,
-  adjustable speed, adjustable string range, string exclusion, return-to-rest and
-  synchronisation with the fingers.
+* **Per-string strum** — a per-string strum servo (`function: "strum"`) with an
+  optional `strumLift` that lowers the strum servo onto the string for a stroke
+  and raises it after. Supports up/down alternating strokes, adjustable stroke
+  speed and depth, and an engage delay — all per string.
 
-The profile field `instrument.pluckMode` selects `individual`, `sharedStrum`, or
-`both`.
-
-Per string, up to four servo roles can be defined: `finger` (press), `pluck`
-(individual plectrum), `strum` (per-string strum / grattage) and `damper`
-(per-string mute / silencieux / étouffoir). Each string also has its own endstop
-(FDC): the `HOME` reference sensor, plus an optional `LIMIT` switch at the far
+Per string, several servo roles can be defined: `finger` (press), `pluck`
+(individual plectrum), `strum` (per-string strum), `strumLift` (an optional
+servo that lowers the strum servo onto the string for a stroke, then raises it)
+and `damper` (per-string mute). Each string also has its own endstop
+: the `HOME` reference sensor, plus an optional `LIMIT` switch at the far
 end.
 
 ## 3.1 Servo signal source: PCA9685 or direct GPIO
@@ -110,7 +109,7 @@ A calibrated table (`calibratedFretMm`) overrides theory when present (§14.3).
 
 ## 6. Parameter → profile-field mapping
 
-`stepsPerMm` is computed from the transmission (cahier des charges §12.1):
+`stepsPerMm` is computed from the transmission (SPECIFICATION.md §12.1):
 
 **Belt (GT2):**
 

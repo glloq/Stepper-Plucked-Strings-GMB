@@ -1,118 +1,117 @@
-# Ouvrir et compiler le projet dans l'IDE Arduino
+# Opening and compiling the project in the Arduino IDE
 
-Le firmware peut être construit **soit avec PlatformIO, soit avec l'IDE
-Arduino** — c'est le même code source. Cette page décrit la voie Arduino IDE.
+The firmware can be built **either with PlatformIO or with the Arduino IDE** —
+it is the same source code. This page describes the Arduino IDE path.
 
-Le dossier `firmware/` est un *sketch* Arduino : il contient
-[`firmware.ino`](../firmware/firmware.ino) (point d'entrée, du même nom que le
-dossier) et un sous-dossier **`src/`** que la compilation Arduino traite
-**récursivement**. Tout le firmware (cœur C++ pur + adaptateurs ESP32) est donc
-compilé automatiquement. `setup()` et `loop()` se trouvent dans
-`src/main.cpp` ; le fichier `.ino` reste volontairement vide. Le dossier
-`test/` (tests natifs) est ignoré par l'IDE Arduino.
+The `firmware/` folder is an Arduino *sketch*: it contains
+[`firmware.ino`](../firmware/firmware.ino) (entry point, with the same name as
+the folder) and a **`src/`** subfolder that the Arduino build processes
+**recursively**. All of the firmware (pure C++ core + ESP32 adapters) is
+therefore compiled automatically. `setup()` and `loop()` are in
+`src/main.cpp`; the `.ino` file is intentionally left empty. The `test/` folder
+(native tests) is ignored by the Arduino IDE.
 
 ---
 
-## 1. Pré-requis
+## 1. Prerequisites
 
-* **Arduino IDE 2.x** (recommandé) — <https://www.arduino.cc/en/software>.
-* La carte de référence **ESP32-S3-DevKitC-1** (ou une carte ESP32-S3
-  équivalente).
+* **Arduino IDE 2.x** (recommended) — <https://www.arduino.cc/en/software>.
+* The reference board **ESP32-S3-DevKitC-1** (or an equivalent ESP32-S3
+  board).
 
-## 2. Installer le support des cartes ESP32
+## 2. Install ESP32 board support
 
-1. `Fichier ▸ Préférences`.
-2. Dans **« URL de gestionnaire de cartes supplémentaires »**, ajoutez :
+1. `File ▸ Preferences`.
+2. In **"Additional boards manager URLs"**, add:
    ```
    https://espressif.github.io/arduino-esp32/package_esp32_index.json
    ```
-3. `Outils ▸ Type de carte ▸ Gestionnaire de cartes…`, cherchez **esp32** et
-   installez **« esp32 » par Espressif Systems** (version 3.x recommandée : le
-   pilote LEDC des servos et l'API `ledcAttach` utilisés ici en dépendent).
+3. `Tools ▸ Board ▸ Boards Manager…`, search for **esp32** and install
+   **"esp32" by Espressif Systems** (version 3.x recommended: the servo LEDC
+   driver and the `ledcAttach` API used here depend on it).
 
-## 3. Installer les bibliothèques
+## 3. Install the libraries
 
-`Outils ▸ Gérer les bibliothèques…`, puis installez :
+`Tools ▸ Manage Libraries…`, then install:
 
-| Bibliothèque | Auteur / fork | Rôle |
+| Library | Author / fork | Role |
 | ------------ | ------------- | ---- |
-| **ArduinoJson** (v7) | Benoît Blanchon | Profils JSON |
+| **ArduinoJson** (v7) | Benoît Blanchon | JSON profiles |
 | **Adafruit PWM Servo Driver Library** | Adafruit | Servos via PCA9685 |
-| **ESPAsyncWebServer** | ESP32Async (ou `mathieucarbou`) | Interface Web |
-| **AsyncTCP** | ESP32Async | Dépendance de ESPAsyncWebServer |
+| **ESPAsyncWebServer** | ESP32Async (or `mathieucarbou`) | Web interface |
+| **AsyncTCP** | ESP32Async | ESPAsyncWebServer dependency |
 
-> Les servos en **GPIO direct** n'utilisent que le cœur ESP32 (LEDC) ; Adafruit
-> PCA9685 n'est nécessaire que si vous utilisez au moins un PCA9685. Les autres
-> bibliothèques restent requises pour compiler.
+> Servos in **direct GPIO** mode use only the ESP32 core (LEDC); Adafruit
+> PCA9685 is required only if you use at least one PCA9685. The other libraries
+> are still required to compile.
 
-## 4. Ouvrir le sketch
+## 4. Open the sketch
 
-`Fichier ▸ Ouvrir…` puis sélectionnez **`firmware/firmware.ino`**.
-L'IDE ouvre le sketch et affiche `firmware.ino` ainsi que l'arborescence
-`src/`.
+`File ▸ Open…` then select **`firmware/firmware.ino`**.
+The IDE opens the sketch and shows `firmware.ino` as well as the `src/` tree.
 
-## 5. Choisir la carte et ses options
+## 5. Choose the board and its options
 
-`Outils ▸ Type de carte ▸ esp32 ▸ **ESP32S3 Dev Module**`, puis réglez :
+`Tools ▸ Board ▸ esp32 ▸ **ESP32S3 Dev Module**`, then set:
 
-| Option | Valeur conseillée |
+| Option | Recommended value |
 | ------ | ----------------- |
-| USB CDC On Boot | **Enabled** (console série sur l'USB natif) |
-| Flash Size | **8MB** (ou selon votre module) |
-| Partition Scheme | un schéma **avec système de fichiers**, ex. *« 8M with spiffs (3MB APP/1.5MB SPIFFS) »* |
-| PSRAM | selon la variante du module (OPI PSRAM si présente) |
+| USB CDC On Boot | **Enabled** (serial console on the native USB) |
+| Flash Size | **8MB** (or according to your module) |
+| Partition Scheme | a scheme **with a filesystem**, e.g. *"8M with spiffs (3MB APP/1.5MB SPIFFS)"* |
+| PSRAM | according to the module variant (OPI PSRAM if present) |
 | Upload Mode | UART0 / Hardware CDC |
 
-> **Broches réservées** : GPIO19/20 (USB natif), 43/44 (UART0), 0/3/45/46
-> (strapping), 48 (LED), 26–32 & 35–37 (Flash/PSRAM). Le firmware et l'interface
-> Web les excluent automatiquement — voir [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md).
+> **Reserved pins**: GPIO19/20 (native USB), 43/44 (UART0), 0/3/45/46
+> (strapping), 48 (LED), 26–32 & 35–37 (Flash/PSRAM). The firmware and the Web
+> interface exclude them automatically — see [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md).
 
-## 6. Compiler et téléverser le firmware
+## 6. Compile and upload the firmware
 
-Cliquez sur **Vérifier** (✓) pour compiler, puis **Téléverser** (→) carte
-connectée en USB.
+Click **Verify** (✓) to compile, then **Upload** (→) with the board connected
+via USB.
 
-## 7. Téléverser l'interface Web (LittleFS)
+## 7. Upload the Web interface (LittleFS)
 
-L'interface est servie depuis LittleFS (`/www`). Elle se téléverse séparément :
+The interface is served from LittleFS (`/www`). It is uploaded separately:
 
-1. Générez l'image du système de fichiers depuis `web-interface/` :
+1. Generate the filesystem image from `web-interface/`:
    ```bash
    cd firmware
    ./sync_web_data.sh        # copie web-interface/ -> firmware/data/www
    ```
-   (Sous Windows sans Bash : copiez manuellement le contenu de `web-interface/`
-   dans `firmware/data/www/`.)
-2. Installez le plugin **arduino-littlefs-upload**
-   (<https://github.com/earlephilhower/arduino-littlefs-upload>) : placez le
-   `.vsix` dans `~/.arduinoIDE/plugins/` puis redémarrez l'IDE.
+   (On Windows without Bash: manually copy the contents of `web-interface/`
+   into `firmware/data/www/`.)
+2. Install the **arduino-littlefs-upload** plugin
+   (<https://github.com/earlephilhower/arduino-littlefs-upload>): place the
+   `.vsix` in `~/.arduinoIDE/plugins/` then restart the IDE.
 3. `Ctrl/Cmd + Shift + P ▸ **Upload LittleFS to Pico/ESP8266/ESP32**`.
 
-## 8. Premier démarrage
+## 8. First startup
 
-À la mise sous tension, l'ESP32 crée le point d'accès Wi-Fi
-**`Stepper-Plucked-Strings-GMB`**. Connectez-vous et ouvrez
-`http://192.168.4.1` pour lancer l'assistant de configuration
-(voir [`FIRST_CONFIGURATION.md`](FIRST_CONFIGURATION.md)).
+At power-on, the ESP32 creates the Wi-Fi access point
+**`Stepper-Plucked-Strings-GMB`**. Connect to it and open
+`http://192.168.4.1` to launch the configuration wizard
+(see [`FIRST_CONFIGURATION.md`](FIRST_CONFIGURATION.md)).
 
 ---
 
-## Dépannage
+## Troubleshooting
 
-| Symptôme | Cause / solution |
+| Symptom | Cause / solution |
 | -------- | ---------------- |
-| `fatal error: ArduinoJson.h: No such file or directory` | Bibliothèque non installée — voir §3. |
-| `ledcAttach was not declared` | Cœur ESP32 en version 2.x — mettez à jour vers 3.x (§2). |
-| Interface Web vide / 404 | Image LittleFS non téléversée — refaites §7 après `sync_web_data.sh`. |
-| `Sketch too big` / pas de FS | Choisissez un *Partition Scheme* avec système de fichiers (§5). |
-| Le sketch ne compile pas les fichiers de `src/` | Ouvrez bien `firmware/firmware.ino` (le `src/` doit être **à côté** du `.ino`). |
-| Tests unitaires | Ils ne se compilent **pas** dans l'IDE Arduino ; utilisez `cd firmware/test && make` (voir [`ARCHITECTURE.md`](ARCHITECTURE.md)). |
+| `fatal error: ArduinoJson.h: No such file or directory` | Library not installed — see §3. |
+| `ledcAttach was not declared` | ESP32 core is version 2.x — update to 3.x (§2). |
+| Empty Web interface / 404 | LittleFS image not uploaded — redo §7 after `sync_web_data.sh`. |
+| `Sketch too big` / no FS | Choose a *Partition Scheme* with a filesystem (§5). |
+| The sketch does not compile the files in `src/` | Make sure you open `firmware/firmware.ino` (the `src/` must be **next to** the `.ino`). |
+| Unit tests | They do **not** compile in the Arduino IDE; use `cd firmware/test && make` (see [`ARCHITECTURE.md`](ARCHITECTURE.md)). |
 
-## Équivalence PlatformIO
+## PlatformIO equivalence
 
-| Étape | Arduino IDE | PlatformIO |
+| Step | Arduino IDE | PlatformIO |
 | ----- | ----------- | ---------- |
-| Compiler | Vérifier (✓) | `pio run` |
-| Téléverser | Téléverser (→) | `pio run -t upload` |
-| Système de fichiers | plugin LittleFS (§7) | `pio run -t uploadfs` |
-| Moniteur série | Moniteur série | `pio device monitor` |
+| Compile | Verify (✓) | `pio run` |
+| Upload | Upload (→) | `pio run -t upload` |
+| Filesystem | LittleFS plugin (§7) | `pio run -t uploadfs` |
+| Serial monitor | Serial Monitor | `pio device monitor` |

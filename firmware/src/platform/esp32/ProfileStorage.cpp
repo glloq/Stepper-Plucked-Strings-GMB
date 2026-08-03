@@ -178,9 +178,6 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
     in["typeId"] = p.instrument.typeId;
     in["capo"] = p.instrument.capo;
     in["transpose"] = p.instrument.transpose;
-    in["pluckMode"] = p.instrument.pluckMode == PluckMode::Individual ? "individual"
-                      : p.instrument.pluckMode == PluckMode::SharedStrum ? "sharedStrum"
-                                                                         : "both";
 
     JsonObject bo = doc["board"].to<JsonObject>();
     bo["profile"] = p.boardIdentifier;
@@ -211,6 +208,9 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
     mi["sustainCc"] = p.midi.sustainCc;
     mi["velocityCurve"] = velocityCurveName(p.midi.velocityCurve);
     mi["saturationStrategy"] = saturationName(p.midi.saturationStrategy);
+    mi["noteExecutionDelayMs"] = p.midi.noteExecutionDelayMs;
+    mi["fingerLeadMs"] = p.midi.fingerLeadMs;
+    mi["strumLeadMs"] = p.midi.strumLeadMs;
 
     JsonObject sf = doc["stringFretSelection"].to<JsonObject>();
     sf["enabled"] = p.selector.enabled;
@@ -259,6 +259,7 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
         o["invertDirection"] = a.invertDirection;
         o["minPositionMm"] = a.minPositionMm;
         o["maxPositionMm"] = a.maxPositionMm;
+        o["fretOffsetMm"] = a.fretOffsetMm;
         o["maxSpeedMmS"] = a.maxSpeedMmS;
         o["maxAccelMmS2"] = a.maxAccelMmS2;
         JsonArray cal = o["calibratedFretMm"].to<JsonArray>();
@@ -296,6 +297,11 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
         o["travelMs"] = s.travelMs;
         o["settleMs"] = s.settleMs;
         o["disableAtRest"] = s.disableAtRest;
+        o["engageDelayMs"] = s.engageDelayMs;
+        o["alternateDirection"] = s.alternateDirection;
+        o["activeAltUs"] = s.activeAltUs;
+        o["strokeMs"] = s.strokeMs;
+        o["minStrikeUs"] = s.minStrikeUs;
     }
 }
 
@@ -315,10 +321,6 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
     out.instrument.typeId = in["typeId"] | 4;
     out.instrument.capo = in["capo"] | 0;
     out.instrument.transpose = in["transpose"] | 0;
-    std::string pm = in["pluckMode"] | "individual";
-    out.instrument.pluckMode = pm == "sharedStrum" ? PluckMode::SharedStrum
-                               : pm == "both"       ? PluckMode::Both
-                                                    : PluckMode::Individual;
 
     JsonObjectConst bo = doc["board"];
     out.boardIdentifier = bo["profile"] | "esp32-s3-devkitc-1";
@@ -354,6 +356,9 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
     out.midi.sustainCc = mi["sustainCc"] | 64;
     out.midi.velocityCurve = velocityCurveFrom(mi["velocityCurve"], &enumsOk);
     out.midi.saturationStrategy = saturationFrom(mi["saturationStrategy"], &enumsOk);
+    out.midi.noteExecutionDelayMs = mi["noteExecutionDelayMs"] | 0;
+    out.midi.fingerLeadMs = mi["fingerLeadMs"] | 0;
+    out.midi.strumLeadMs = mi["strumLeadMs"] | 0;
 
     JsonObjectConst sf = doc["stringFretSelection"];
     out.selector.enabled = sf["enabled"] | true;
@@ -411,6 +416,7 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
         a.invertDirection = o["invertDirection"] | false;
         a.minPositionMm = o["minPositionMm"] | 0.0;
         a.maxPositionMm = o["maxPositionMm"] | 400.0;
+        a.fretOffsetMm = o["fretOffsetMm"] | 0.0;
         a.maxSpeedMmS = o["maxSpeedMmS"] | 200.0;
         a.maxAccelMmS2 = o["maxAccelMmS2"] | 2000.0;
         a.calibratedFretMm.clear();
@@ -451,6 +457,11 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
         s.travelMs = o["travelMs"] | 120;
         s.settleMs = o["settleMs"] | 30;
         s.disableAtRest = o["disableAtRest"] | true;
+        s.engageDelayMs = o["engageDelayMs"] | 0;
+        s.alternateDirection = o["alternateDirection"] | false;
+        s.activeAltUs = o["activeAltUs"] | 0;
+        s.strokeMs = o["strokeMs"] | 0;
+        s.minStrikeUs = o["minStrikeUs"] | 0;
         out.servos.push_back(s);
     }
     // Reject the whole profile if any enum string was unknown (never silently map
@@ -461,7 +472,7 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
 std::string ProfileStorage::exportJson(const Profile& p, bool /*includeSecrets*/) const {
     JsonDocument doc;
     toJson(p, doc);
-    // Ordinary exports never contain the Wi-Fi password (cahier des charges §20);
+    // Ordinary exports never contain the Wi-Fi password (spec §20);
     // the password is not part of the in-memory Profile at all here.
     std::string out;
     serializeJsonPretty(doc, out);

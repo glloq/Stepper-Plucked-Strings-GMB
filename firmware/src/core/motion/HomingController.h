@@ -1,4 +1,4 @@
-// Non-blocking homing state machine (cahier des charges section 13).
+// Non-blocking homing state machine (spec section 13).
 //
 // One controller per axis. It never blocks: each tick it reads the sensor and
 // the current position, and returns the motion command the axis should apply.

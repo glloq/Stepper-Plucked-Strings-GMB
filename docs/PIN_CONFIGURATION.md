@@ -1,23 +1,23 @@
-# Configuration des GPIO — Stepper-Plucked-Strings-GMB
+# GPIO configuration — Stepper-Plucked-Strings-GMB
 
-> Source : `cahier des charges.md` §11 · Code : `firmware/src/core/board/BoardProfile.{h,cpp}`, `PinManager.{h,cpp}`.
-> Documents liés : [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`WEB_INTERFACE.md`](WEB_INTERFACE.md) · [`CALIBRATION.md`](CALIBRATION.md).
+> Source: `SPECIFICATION.md` §11 · Code: `firmware/src/core/board/BoardProfile.{h,cpp}`, `PinManager.{h,cpp}`.
+> Related documents: [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`WEB_INTERFACE.md`](WEB_INTERFACE.md) · [`CALIBRATION.md`](CALIBRATION.md).
 
-Le firmware ne doit **jamais** utiliser une liste globale de broches identique
-pour toutes les cartes. Chaque carte possède un profil qui décrit les capacités
-de chaque GPIO exposé, ce qui permet à l'interface Web de filtrer les choix par
-signal et par variante de carte, et au validateur de bloquer les conflits.
+The firmware must **never** use a single global pin list that is identical for
+all boards. Each board has a profile describing the capabilities of every exposed
+GPIO, which lets the Web interface filter choices by signal and by board variant,
+and lets the validator block conflicts.
 
 ---
 
-## 1. Modèle de capacités (§11.1)
+## 1. Capability model (§11.1)
 
-Chaque carte fournit un `BoardProfile` ; chaque GPIO y est décrit par une
+Each board provides a `BoardProfile`; each GPIO in it is described by a
 `PinCapability`.
 
 ```cpp
 struct BoardProfile {
-    std::string identifier;              // ex. "esp32-s3-devkitc-1"
+    std::string identifier;              // e.g. "esp32-s3-devkitc-1"
     std::string displayName;
     std::vector<PinCapability> pins;
     const PinCapability* find(int8_t gpio) const;
@@ -27,166 +27,165 @@ struct BoardProfile {
 
 struct PinCapability {
     int8_t gpio = -1;
-    bool exposed;            // broché sur le connecteur de la carte
+    bool exposed;            // broken out on the board's connector
     bool input;
     bool output;
     bool interrupt;
-    bool highSpeedOutput;    // adapté à STEP / commutation rapide
+    bool highSpeedOutput;    // suitable for STEP / fast switching
     bool internalPullUp;
     bool internalPullDown;
     bool adc;
-    bool reserved;           // réservé par politique firmware (ex. futur USB)
-    bool strapping;          // broche de strapping (boot)
-    bool usb;                // USB-JTAG / USB natif
-    bool onboardPeripheral;  // câblé à un périphérique embarqué (LED, UART…)
+    bool reserved;           // reserved by firmware policy (e.g. future USB)
+    bool strapping;          // strapping pin (boot)
+    bool usb;                // USB-JTAG / native USB
+    bool onboardPeripheral;  // wired to an onboard peripheral (LED, UART…)
     PinPreference preference;
-    std::string note;        // raison lisible, affichée dans l'UI
+    std::string note;        // human-readable reason, shown in the UI
 };
 ```
 
 ---
 
-## 2. Catégories de couleur (§11.2)
+## 2. Color categories (§11.2)
 
-L'énumération `PinPreference` pilote l'affichage :
+The `PinPreference` enumeration drives the display:
 
-| `PinPreference` | Couleur | Signification | Accès UI |
+| `PinPreference` | Color | Meaning | UI access |
 | --------------- | ------- | ------------- | -------- |
-| `Recommended` (0) | 🟢 Vert | recommandé | visible pour tous (débutant inclus) |
-| `Caution` (1) | 🟡 Jaune | utilisable avec précaution | **mode avancé uniquement**, avec explication |
-| `Reserved` (2) | 🔴 Rouge | réservé ou incompatible | **non sélectionnable** |
-| `Used` (3) | ⚪ Gris | déjà utilisé (état runtime) | non sélectionnable tant qu'affecté |
+| `Recommended` (0) | 🟢 Green | recommended | visible to everyone (beginner included) |
+| `Caution` (1) | 🟡 Yellow | usable with caution | **advanced mode only**, with explanation |
+| `Reserved` (2) | 🔴 Red | reserved or incompatible | **not selectable** |
+| `Used` (3) | ⚪ Gray | already used (runtime state) | not selectable while assigned |
 
-Règle : un débutant ne voit par défaut que les GPIO **verts**. Les GPIO jaunes
-n'apparaissent qu'en mode avancé, avec une explication. Les GPIO rouges ne
-peuvent jamais être sélectionnés.
+Rule: by default a beginner sees only the **green** GPIOs. Yellow GPIOs appear
+only in advanced mode, with an explanation. Red GPIOs can never be selected.
 
 ---
 
-## 3. Filtrage par signal (§11.3)
+## 3. Filtering by signal (§11.3)
 
-Le type de signal demandé est décrit par `SignalKind`. `BoardProfile::candidatesFor(kind)`
-ne renvoie que les broches légales, dans l'ordre de préférence (recommandées
-d'abord) ; les broches réservées ou non exposées ne sont jamais proposées.
+The requested signal type is described by `SignalKind`. `BoardProfile::candidatesFor(kind)`
+returns only the legal pins, in order of preference (recommended first); reserved
+or non-exposed pins are never offered.
 
-| `SignalKind` | Exige | Ne propose que des GPIO… |
+| `SignalKind` | Requires | Only offers GPIOs… |
 | ------------ | ----- | ------------------------ |
-| `Step` | `output` + `highSpeedOutput` | capables de sortie **rapide**, non réservés, non affectés, compatibles avec le générateur de pas |
-| `Dir` | `output` | sortie simple |
-| `Enable` | `output` | sortie simple |
-| `Home` | `input` + `interrupt` + polarisation | entrée compatible interruptions, avec pull adaptée ou résistance externe, non affectée |
-| `Limit` | `input` + `interrupt` + polarisation | idem `Home` (fin de course opposée) |
-| `Diag` | `input` | entrée (DIAG TMC2209) |
-| `I2cSda` | I²C | broches utilisables en I²C, paire recommandée par défaut, aucune déjà utilisée |
-| `I2cScl` | I²C | idem |
-| `ServoOe` | `output` | sortie de sécurité vers `/OE` du PCA9685 |
-| `Generic` | `output` | toute sortie utilisable |
+| `Step` | `output` + `highSpeedOutput` | capable of **fast** output, not reserved, not assigned, compatible with the step generator |
+| `Dir` | `output` | simple output |
+| `Enable` | `output` | simple output |
+| `Home` | `input` + `interrupt` + biasing | interrupt-capable input, with suitable pull or external resistor, not assigned |
+| `Limit` | `input` + `interrupt` + biasing | same as `Home` (opposite end stop) |
+| `Diag` | `input` | input (TMC2209 DIAG) |
+| `I2cSda` | I²C | pins usable for I²C, recommended pair by default, none already used |
+| `I2cScl` | I²C | same |
+| `ServoOe` | `output` | safety output to the PCA9685's `/OE` |
+| `Generic` | `output` | any usable output |
 
-Pour une interface USB future, GPIO19 et GPIO20 sont automatiquement réservés.
+For a future USB interface, GPIO19 and GPIO20 are automatically reserved.
 
 ---
 
-## 4. Restrictions ESP32-S3 (§11.4)
+## 4. ESP32-S3 restrictions (§11.4)
 
-Le gestionnaire de broches connaît au minimum ces restrictions :
+The pin manager knows at minimum these restrictions:
 
-| GPIO | Restriction | Conséquence par défaut |
+| GPIO | Restriction | Default consequence |
 | ---- | ----------- | ---------------------- |
-| **0, 3, 45, 46** | broches de strapping (boot) | 🔴 réservées |
-| **19, 20** | USB-JTAG / USB natif | 🔴 réservées (futur USB) |
-| **26 – 32** | normalement liées à la Flash / PSRAM | 🔴 réservées |
-| **33 – 37** | peuvent être liées à la mémoire selon la variante | 🔴/🟡 selon variante |
-| **35, 36, 37** | Flash/PSRAM sur certaines variantes DevKitC-1 | 🔴 non proposées sans vérification de variante |
-| **43, 44** | UART principal (programmation/diagnostic) | 🔴 réservées |
-| **48** | LED RGB embarquée (DevKitC-1) | 🔴 réservée |
+| **0, 3, 45, 46** | strapping pins (boot) | 🔴 reserved |
+| **19, 20** | USB-JTAG / native USB | 🔴 reserved (future USB) |
+| **26 – 32** | normally tied to Flash / PSRAM | 🔴 reserved |
+| **33 – 37** | may be tied to memory depending on the variant | 🔴/🟡 depending on variant |
+| **35, 36, 37** | Flash/PSRAM on some DevKitC-1 variants | 🔴 not offered without variant verification |
+| **43, 44** | main UART (programming/diagnostics) | 🔴 reserved |
+| **48** | onboard RGB LED (DevKitC-1) | 🔴 reserved |
 
-> Ces broches ne sont pas nécessairement inutilisables dans tous les cas : elles
-> doivent être classées selon le **profil exact** de la carte sélectionnée.
+> These pins are not necessarily unusable in all cases: they must be classified
+> according to the **exact profile** of the selected board.
 
 ---
 
-## 5. Profil recommandé ESP32-S3-DevKitC-1 (§11.5)
+## 5. Recommended ESP32-S3-DevKitC-1 profile (§11.5)
 
-`makeEsp32S3DevKitC1()` fournit le profil de référence. L'attribution automatique
-(`PinManager::autoAssign`) suit ce plan initial :
+`makeEsp32S3DevKitC1()` provides the reference profile. Automatic assignment
+(`PinManager::autoAssign`) follows this initial plan:
 
-| Fonction | GPIO proposés |
+| Function | Proposed GPIOs |
 | -------- | ------------- |
-| STEP 1 à 6 | 4, 5, 6, 7, 15, 16 |
-| DIR 1 à 6 | 17, 18, 8, 9, 10, 11 |
-| HOME 1 à 6 | 12, 13, 14, 21, 38, 39 |
+| STEP 1 to 6 | 4, 5, 6, 7, 15, 16 |
+| DIR 1 to 6 | 17, 18, 8, 9, 10, 11 |
+| HOME 1 to 6 | 12, 13, 14, 21, 38, 39 |
 | I²C SDA | 40 |
 | I²C SCL | 41 |
-| ENABLE global | 42 |
-| Sortie de sécurité PCA9685 (`/OE`) | 47 |
+| Global ENABLE | 42 |
+| PCA9685 safety output (`/OE`) | 47 |
 
-> Ce plan est un **profil logiciel initial**, pas une règle universelle : il peut
-> être remplacé depuis l'interface (mode avancé).
+> This plan is an **initial software profile**, not a universal rule: it can be
+> replaced from the interface (advanced mode).
 
-### Broches conservées par défaut
+### Pins kept reserved by default
 
-| GPIO | Réservation |
+| GPIO | Reservation |
 | ---- | ----------- |
-| 19, 20 | futur USB |
-| 43, 44 | programmation et diagnostic UART |
-| 0 | démarrage / BOOT |
+| 19, 20 | future USB |
+| 43, 44 | UART programming and diagnostics |
+| 0 | startup / BOOT |
 | 3, 45, 46 | strapping |
-| 48 | LED intégrée |
-| 35, 36, 37 | dépendance à la variante Flash/PSRAM |
+| 48 | onboard LED |
+| 35, 36, 37 | dependence on the Flash/PSRAM variant |
 
 ---
 
-## 6. Attribution automatique (moteur `PinManager`)
+## 6. Automatic assignment (`PinManager` engine)
 
-L'attribution est pilotée par une `PinRequest` :
+Assignment is driven by a `PinRequest`:
 
 ```cpp
 struct PinRequest {
     int stringCount = 1;
-    bool useI2cServos = true;   // PCA9685 présent
-    bool globalEnable = true;   // une seule ligne ENABLE pour tous les drivers
-    bool servoSafetyOe = true;  // /OE du PCA9685 relié à une broche de sécurité
-    bool reserveUsb = true;     // conserver GPIO19/20 libres pour l'USB natif
+    bool useI2cServos = true;   // PCA9685 present
+    bool globalEnable = true;   // a single ENABLE line for all drivers
+    bool servoSafetyOe = true;  // PCA9685 /OE wired to a safety pin
+    bool reserveUsb = true;     // keep GPIO19/20 free for native USB
     bool useLimitSwitches = false;
 };
 ```
 
-`autoAssign()` construit une configuration **sans conflit** en suivant le profil
-recommandé, et bascule sur n'importe quel candidat compatible lorsqu'une broche
-préférée est déjà prise. Il renvoie `false` si un signal requis n'a pas pu être
-placé. Chaque affectation est un `PinAssignment { signal, kind, gpio }`
-(ex. `"STEP1"`, `"HOME3"`, `"SDA"`).
+`autoAssign()` builds a **conflict-free** configuration by following the
+recommended profile, and falls back to any compatible candidate when a preferred
+pin is already taken. It returns `false` if a required signal could not be placed.
+Each assignment is a `PinAssignment { signal, kind, gpio }`
+(e.g. `"STEP1"`, `"HOME3"`, `"SDA"`).
 
 ---
 
-## 7. Détection des conflits (§11.6)
+## 7. Conflict detection (§11.6)
 
-`PinManager::validate(reserveUsb)` renvoie une liste (vide = configuration valide)
-de `PinError`. Le validateur empêche :
+`PinManager::validate(reserveUsb)` returns a list (empty = valid configuration)
+of `PinError`. The validator prevents:
 
-* deux signaux utilisant le même GPIO ;
-* une entrée affectée à une broche indisponible ;
-* un signal `STEP` sur une broche non compatible (sortie rapide) ;
-* l'utilisation d'un GPIO réservé ;
-* l'utilisation de GPIO19/20 lorsque l'USB est réservé ;
-* la sélection d'une broche Flash/PSRAM ;
-* l'utilisation simultanée de la LED intégrée et du même GPIO ;
-* le remplacement involontaire du port de diagnostic (UART).
+* two signals using the same GPIO;
+* an input assigned to an unavailable pin;
+* a `STEP` signal on a pin that is not compatible (fast output);
+* the use of a reserved GPIO;
+* the use of GPIO19/20 when USB is reserved;
+* the selection of a Flash/PSRAM pin;
+* the simultaneous use of the onboard LED and the same GPIO;
+* the inadvertent override of the diagnostic port (UART).
 
-Chaque erreur est explicite :
+Each error is explicit:
 
 ```cpp
 struct PinError {
-    std::string signal;        // ex. "STEP3"
+    std::string signal;        // e.g. "STEP3"
     int8_t gpio;
-    std::string reason;        // pourquoi la broche est incompatible
-    std::string suggestion;    // quelle broche choisir à la place
-    std::string conflictWith;  // quel signal utilise déjà la broche
+    std::string reason;        // why the pin is incompatible
+    std::string suggestion;    // which pin to choose instead
+    std::string conflictWith;  // which signal already uses the pin
 };
 ```
 
-Ainsi chaque erreur indique : **pourquoi** la broche est incompatible, **quelle**
-broche choisir, et **quelle fonction** occupe déjà la broche.
+So each error indicates: **why** the pin is incompatible, **which** pin to
+choose, and **which function** already occupies the pin.
 
-L'API Web correspondante (`POST /api/pins/auto`, `POST /api/pins/validate`,
-`GET /api/board/{id}`) est décrite dans [`WEB_INTERFACE.md`](WEB_INTERFACE.md).
+The corresponding Web API (`POST /api/pins/auto`, `POST /api/pins/validate`,
+`GET /api/board/{id}`) is described in [`WEB_INTERFACE.md`](WEB_INTERFACE.md).

@@ -97,17 +97,9 @@ void InstrumentController::prepareString(int stringIndex, int fret, uint32_t exp
     preparedExpiryUs_[stringIndex] = expiresAtUs;
 }
 
-uint32_t InstrumentController::explicitStrumGroup(uint32_t nowUs) {
-    if (explicitGroup_ != 0 && (nowUs - explicitGroupAtUs_) < chordWindowUs_)
-        return explicitGroup_;  // same chord window -> same group
-    explicitGroup_ = nextStrumGroup_++;
-    explicitGroupAtUs_ = nowUs;
-    return explicitGroup_;
-}
-
 bool InstrumentController::triggerPreparedNote(int stringIndex, int fret,
                                                uint8_t channel, uint8_t note,
-                                               uint8_t velocity, uint32_t strumGroup) {
+                                               uint8_t velocity) {
     if (stringIndex < 0 || stringIndex >= static_cast<int>(strings_.size()))
         return false;
     if (preparedId_[stringIndex] == 0 || preparedFret_[stringIndex] != fret)
@@ -124,7 +116,6 @@ bool InstrumentController::triggerPreparedNote(int stringIndex, int fret,
     t.active = true;
     t.velocity = velocity;
     t.intensity = applyVelocityCurve(velocityCurve_, velocity) * attackGain();
-    t.strumGroup = strumGroup;  // shared with the rest of this explicit chord
     active_.push_back({channel, note, stringIndex, false});
     preparedFret_[stringIndex] = -1;
     preparedId_[stringIndex] = 0;
@@ -132,8 +123,7 @@ bool InstrumentController::triggerPreparedNote(int stringIndex, int fret,
 }
 
 void InstrumentController::startNote(int stringIndex, int fret, uint8_t channel,
-                                     uint8_t note, uint8_t velocity,
-                                     uint32_t strumGroup) {
+                                     uint8_t note, uint8_t velocity) {
     if (stringIndex < 0 || stringIndex >= static_cast<int>(strings_.size())) return;
     removeActiveByString(stringIndex);
     preparedFret_[stringIndex] = -1;  // supersede any anticipated prepare
@@ -153,7 +143,6 @@ void InstrumentController::startNote(int stringIndex, int fret, uint8_t channel,
     t.commandId = id;
     t.velocity = velocity;
     t.intensity = applyVelocityCurve(velocityCurve_, velocity) * attackGain();
-    t.strumGroup = strumGroup;  // shared across an explicit chord (P0-5)
     active_.push_back({channel, note, stringIndex, false});
 }
 
@@ -174,7 +163,7 @@ int InstrumentController::findActive(uint8_t channel, uint8_t note) const {
 }
 
 void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
-    if (!accepts(e.channel)) return;  // channel / omni filter (cahier §18)
+    if (!accepts(e.channel)) return;  // channel / omni filter (spec §18)
 
     if (e.isControlChange()) {
         if (e.data1 == 120 || e.data1 == 123) {  // all sound / notes off
@@ -224,14 +213,11 @@ void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
             strings_[r.stringIndex].state() != StringState::Fault &&
             strings_[r.stringIndex].state() != StringState::Disabled;
         if (r.source == ResolveSource::Explicit && explicitPlayable) {
-            // Explicit notes within one chord window share a strum group so the
-            // shared strummer sweeps them together (audit P0-5).
-            uint32_t group = explicitStrumGroup(nowUs);
             // Reuse the anticipated move if this string was prepared for this fret;
-            // otherwise start a fresh note.
+            // otherwise start a fresh note. Each string is plucked on its own.
             if (!triggerPreparedNote(r.stringIndex, r.fret, e.channel, e.data1,
-                                     e.data2, group))
-                startNote(r.stringIndex, r.fret, e.channel, e.data1, e.data2, group);
+                                     e.data2))
+                startNote(r.stringIndex, r.fret, e.channel, e.data1, e.data2);
         } else {
             // Automatic allocation is deferred to group chord notes (§17.2).
             chordBuffer_.push_back({e.channel, e.data1, e.data2, nowUs});
@@ -276,9 +262,6 @@ void InstrumentController::flushChord() {
     for (const auto& n : chordBuffer_) notes.push_back(n.note);
 
     std::vector<Allocation> alloc = allocator_.allocateChord(notes);
-    // All notes flushed together form ONE chord -> one shared strum group, so the
-    // shared strummer sweeps once when every member is in position.
-    uint32_t group = nextStrumGroup_++;
     for (const auto& a : alloc) {
         if (!a.assigned) continue;
         const PendingNote& src = chordBuffer_[a.index];
@@ -294,7 +277,6 @@ void InstrumentController::flushChord() {
         t.commandId = id;
         t.velocity = src.velocity;
         t.intensity = applyVelocityCurve(velocityCurve_, src.velocity) * attackGain();
-        t.strumGroup = group;
         active_.push_back({src.channel, src.note, a.stringIndex, false});
     }
     chordBuffer_.clear();

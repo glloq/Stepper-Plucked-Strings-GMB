@@ -1,5 +1,5 @@
 // Local web server: serves the static UI from LittleFS and the REST + WebSocket
-// API the interface uses (cahier des charges §9, §19; docs/WEB_INTERFACE.md).
+// API the interface uses (spec §9, §19; docs/WEB_INTERFACE.md).
 #pragma once
 
 #include <functional>
@@ -40,6 +40,7 @@ struct WebContext {
     std::function<uint32_t(const Profile&)> onActivateProfile;  // validate + enqueue
     std::function<uint32_t(uint8_t, uint8_t, uint8_t, uint16_t)> onTestNote;  // ch,note,vel,ms
     std::function<uint32_t(int, bool)> onTestServo;  // enqueue a servo pulse (index, active)
+    std::function<uint32_t(int, double)> onJog;      // enqueue an axis jog (axis, deltaMm)
     std::function<std::string(uint32_t)> commandState;  // queued/succeeded/refused/unknown
     std::function<bool()> onFormatStorage;       // deliberate LittleFS reformat
     // Guard shared state during read-only handlers so a reload in loop() is never

@@ -1,7 +1,7 @@
 /*
  * app.js — application shell: routing between views, shared DOM helpers, the
  * global working-profile state, and the Simplified / Advanced mode toggle
- * (cahier des charges 9.2). Loaded after api.js and before the view modules.
+ * (spec 9.2). Loaded after api.js and before the view modules.
  *
  * Each view module registers itself on GMB.views[name] with a render(container)
  * function. app.js owns navigation, the mode flag, and the draft profile that
@@ -126,7 +126,7 @@
 
   var state = {
     profile: null,      // working draft (edited in place by views)
-    mode: 'simplified', // 'simplified' | 'advanced' (cahier des charges 9.2)
+    mode: 'simplified', // 'simplified' | 'advanced' (spec 9.2)
     dirty: false,
     current: 'dashboard'
   };

@@ -1,4 +1,4 @@
-// Note -> string/fret allocation (cahier des charges section 17).
+// Note -> string/fret allocation (spec section 17).
 //
 // Assigns incoming notes to the string that can play them with the least
 // mechanical work, groups chord notes, and applies a saturation strategy when

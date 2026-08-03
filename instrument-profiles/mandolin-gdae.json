@@ -10,8 +10,7 @@
     "gmProgram": 24,
     "typeId": 4,
     "capo": 0,
-    "transpose": 0,
-    "pluckMode": "sharedStrum"
+    "transpose": 0
   },
   "board": {
     "profile": "esp32-s3-devkitc-1",
@@ -400,23 +399,6 @@
       "travelMs": 60,
       "settleMs": 18,
       "disableAtRest": true
-    },
-    {
-      "enabled": true,
-      "function": "sharedStrum",
-      "stringIndex": -1,
-      "source": "pca",
-      "pcaBoard": 0,
-      "channel": 12,
-      "gpio": -1,
-      "pulseMinUs": 500,
-      "pulseMaxUs": 2500,
-      "restUs": 900,
-      "activeUs": 2100,
-      "inverted": false,
-      "travelMs": 150,
-      "settleMs": 35,
-      "disableAtRest": false
     }
   ]
 }

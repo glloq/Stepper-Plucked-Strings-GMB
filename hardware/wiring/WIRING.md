@@ -1,7 +1,7 @@
 # Wiring guide
 
 Connection guide for the **Stepper-Plucked-Strings-GMB** reference electronics
-(cahier des charges §7 and §22). Default GPIO come from the ESP32-S3-DevKitC-1
+(SPECIFICATION.md §7 and §22). Default GPIO come from the ESP32-S3-DevKitC-1
 board profile (§11.5, `board-profiles/esp32-s3-devkitc-1.json`); every line can
 be reassigned from the web interface.
 
@@ -88,10 +88,10 @@ may also force `/OE` high directly.
 | :-----: | -------- | ----------------------- |
 | 0–5 | finger press (one per string) | `finger` |
 | 6–11 | individual pluck (one per string) | `pluck` |
-| 12–15 | dampers / shared strummer / auxiliary | `damper`, `strummer`, `aux` |
+| 12–15 | dampers / auxiliary | `damper`, `sharedDamper`, `aux` |
 
 In the example profiles: finger servos on channels `0 … N−1`, pluck servos on
-`6 … 6+N−1`, and any shared strummer on channel 12.
+`6 … 6+N−1`.
 
 ## 4. Power rails (§22)
 

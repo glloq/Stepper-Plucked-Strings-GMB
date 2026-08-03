@@ -1,5 +1,5 @@
 /*
- * dashboard.js — main dashboard (cahier des charges section 19).
+ * dashboard.js — main dashboard (spec section 19).
  *
  * Shows the general state, Wi-Fi, MIDI source, active profile, strings-ready
  * count, notes playing, active faults, temperatures/voltages and a big STOP

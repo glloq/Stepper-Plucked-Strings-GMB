@@ -6,12 +6,12 @@ phone, tablet or desktop, with no app to install and no source code to edit.
 
 It implements the interface described in the project specs:
 
-- `cahier des charges.md` — dashboard (§19), setup wizard (§10), configurable
+- `SPECIFICATION.md` — dashboard (§19), setup wizard (§10), configurable
   GPIO management (§11), motor/servo/note config (§12–15), MIDI parameters
   (§18), profile storage (§20), safety/panic (§21).
-- `selection corde et frette.md` — explicit string/fret selection over MIDI CC,
+- `STRING_FRET_SELECTION.md` — explicit string/fret selection over MIDI CC,
   the General-Midi-Boop preset, the MIDI monitor and the integrated test tool.
-- `Communication automatique des capacités par SysEx.md` — GMB identity &
+- `SYSEX_CAPABILITIES.md` — GMB identity &
   capabilities page and the integrated SysEx tester.
 
 ## What it is
@@ -85,7 +85,7 @@ web-interface/
 A toggle in the sidebar switches between **Simplified** (beginner: recommended
 values, hidden fine-tuning, only recommended GPIOs) and **Advanced** (manual
 GPIO assignment including caution pins, detailed motor/servo/homing parameters,
-SysEx block toggles, raw byte views), per cahier des charges §9.2.
+SysEx block toggles, raw byte views), per SPECIFICATION.md §9.2.
 
 ## Per-string servos, endstops & fret editor (wizard steps 5–7)
 
@@ -93,8 +93,9 @@ The setup wizard configures a full instrument (1–6 strings) with a stepper plu
 servos per string, **with or without a PCA9685**:
 
 - **Servos per string (step 6).** For each string, add the servos it uses —
-  **finger (doigt)**, **strum (grattage)**, **damper (étouffoir)** and an
-  optional **pluck (médiator)**. Each servo picks its signal **source**:
+  **finger**, **strum**, an optional **strum lift** (raises/lowers the strum
+  servo per stroke), **damper** and an optional **pluck**. Each servo picks its
+  signal **source**:
   - **PCA9685** — choose `pcaBoard` (0–3, i.e. up to four boards / 64 channels)
     and `channel` (0–15). A compact channel-availability map flags duplicate
     `board+channel` in red.
@@ -106,7 +107,7 @@ servos per string, **with or without a PCA9685**:
   The system works with **no PCA at all** (every servo on a direct GPIO) or any
   mix. Per-string servos get their `stringIndex` set automatically; Advanced mode
   also exposes **shared/auxiliary** servos (`stringIndex = -1`, e.g.
-  `sharedStrum`/`aux`). Each servo carries its calibration (rest/active µs,
+  `sharedDamper`/`aux`). Each servo carries its calibration (rest/active µs,
   pulse min/max, inverted, travelMs, settleMs, disableAtRest) and **Test
   rest/active** buttons (`POST /api/test/servo`).
 
@@ -117,10 +118,10 @@ servos per string, **with or without a PCA9685**:
   shows a live HIGH/LOW readout (`POST /api/test/endstop`).
 
 - **Fret positions per string (step 7).** A per-string table with one row per
-  fret (0..`maxFret`) editing `calibratedFretMm[]`: **Remplir automatiquement
-  (théorique)** fills every fret from `scaleLength·(1−2^(−fret/12))`, per-fret
-  **+/−** nudge buttons and a direct numeric field, **Aller à cette frette**
-  (jog/test — updates the displayed motor position), and **Enregistrer la
+  fret (0..`maxFret`) editing `calibratedFretMm[]`: **Fill automatically
+  (theoretical)** fills every fret from `scaleLength·(1−2^(−fret/12))`, per-fret
+  **+/−** nudge buttons and a direct numeric field, **Go to this fret**
+  (jog/test — updates the displayed motor position), and **Save
   position**. A calibrated value always overrides theory in the firmware.
 
 ## Backend endpoints

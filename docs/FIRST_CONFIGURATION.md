@@ -1,148 +1,146 @@
-# Guide de première configuration — Stepper-Plucked-Strings-GMB
+# First configuration guide — Stepper-Plucked-Strings-GMB
 
-> Source : `cahier des charges.md` §8, §10, §26 (guide de première configuration).
-> Documents liés : [`WEB_INTERFACE.md`](WEB_INTERFACE.md) · [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md) · [`CALIBRATION.md`](CALIBRATION.md) · [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) · [`SAFETY.md`](SAFETY.md).
+> Source: `SPECIFICATION.md` §8, §10, §26 (first configuration guide).
+> Related documents: [`WEB_INTERFACE.md`](WEB_INTERFACE.md) · [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md) · [`CALIBRATION.md`](CALIBRATION.md) · [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) · [`SAFETY.md`](SAFETY.md).
 
-Ce guide accompagne un débutant du premier démarrage jusqu'à la première note,
-en utilisant uniquement le **mode simplifié** de l'interface Web. Aucune
-modification de code n'est nécessaire.
-
----
-
-## 0. Avant de commencer
-
-* Alimentez la carte et les moteurs selon les rails recommandés (voir
-  [`SAFETY.md`](SAFETY.md) §6). **N'alimentez jamais les servos par le régulateur
-  de l'ESP32.**
-* Au démarrage, le système est en état sûr : drivers désactivés, servos
-  neutralisés, files MIDI vides (voir [`SAFETY.md`](SAFETY.md) §1). Rien ne bouge
-  tant que la configuration n'est pas validée.
+This guide walks a beginner from first power-on to the first note, using only
+the **simplified mode** of the Web interface. No code modification is needed.
 
 ---
 
-## 1. Se connecter à l'interface
+## 0. Before you begin
 
-À la première mise sous tension, l'ESP32 démarre en **mode point d'accès** :
+* Power the board and the motors according to the recommended rails (see
+  [`SAFETY.md`](SAFETY.md) §6). **Never power the servos from the ESP32
+  regulator.**
+* At startup, the system is in a safe state: drivers disabled, servos
+  neutralized, MIDI queues empty (see [`SAFETY.md`](SAFETY.md) §1). Nothing moves
+  until the configuration has been validated.
+
+---
+
+## 1. Connecting to the interface
+
+At first power-on, the ESP32 starts in **access-point mode**:
 
 ```text
-SSID par défaut : Stepper-Plucked-Strings-GMB
+Default SSID: Stepper-Plucked-Strings-GMB
 ```
 
-1. Connectez votre téléphone/ordinateur à ce réseau Wi-Fi.
-2. Ouvrez l'adresse locale affichée (ou le portail captif).
-3. L'assistant de configuration s'ouvre.
+1. Connect your phone/computer to this Wi-Fi network.
+2. Open the local address shown (or the captive portal).
+3. The configuration wizard opens.
 
-Vous pourrez plus tard basculer en **mode client** (l'ESP32 rejoint votre réseau) :
-SSID, mot de passe, nom réseau, IP fixe optionnelle, nom mDNS. Si la connexion
-échoue plusieurs fois, le système revient automatiquement en point d'accès.
-
----
-
-## 2. Étape 1 — Identification
-
-Renseignez : nom de l'instrument, description (optionnelle), **nombre de cordes**
-(1 à 6), type d'instrument (ukulélé, guitare, basse, mandoline, banjo…), accordage
-proposé, nombre maximal de frettes. Ces valeurs déterminent la plage de notes et
-sont annoncées à General-Midi-Boop (voir [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) §3).
+You can later switch to **client mode** (the ESP32 joins your network): SSID,
+password, network name, optional static IP, mDNS name. If the connection fails
+several times, the system automatically reverts to access-point mode.
 
 ---
 
-## 3. Étape 2 — Choix de la carte
+## 2. Step 1 — Identification
 
-Sélectionnez le modèle (**ESP32-S3-DevKitC-1** pris en charge par défaut), la
-révision, la Flash, la présence de PSRAM et la variante. Le profil de carte fixe
-automatiquement les GPIO disponibles, réservés, recommandés et à utiliser avec
-précaution (voir [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md)).
-
-> Attention : sur certaines variantes DevKitC-1, GPIO35/36/37 servent à la
-> Flash/PSRAM et ne sont pas proposées sans vérification de la variante.
+Fill in: instrument name, description (optional), **number of strings** (1 to 6),
+instrument type (ukulele, guitar, bass, mandolin, banjo…), proposed tuning,
+maximum number of frets. These values determine the note range and are announced
+to General-Midi-Boop (see [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) §3).
 
 ---
 
-## 4. Étape 3 — Attribution automatique des broches
+## 3. Step 2 — Board selection
 
-Cliquez sur **« Attribuer automatiquement les broches »**. Le système choisit une
-configuration sans conflit selon le nombre de cordes, les interfaces activées, la
-carte, la réservation de l'USB futur (GPIO19/20), le port de diagnostic (UART), l'I²C
-et les capteurs. En mode simplifié, vous ne voyez que les broches **vertes**. Si un
-signal ne peut pas être placé, l'assistant l'explique et suggère une alternative.
+Select the model (**ESP32-S3-DevKitC-1** supported by default), the revision, the
+Flash, the presence of PSRAM and the variant. The board profile automatically
+sets the GPIO pins that are available, reserved, recommended, and to be used with
+caution (see [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md)).
 
-Exemple d'attribution obtenue (profil DevKitC-1, voir
-[`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md) §5) : STEP sur 4/5/6…, DIR sur 17/18…,
-HOME sur 12/13…, I²C SDA 40 / SCL 41, ENABLE 42, sécurité PCA9685 47.
+> Warning: on certain DevKitC-1 variants, GPIO35/36/37 are used for Flash/PSRAM
+> and are not offered without verifying the variant.
 
 ---
 
-## 5. Étape 4 — Configuration mécanique
+## 4. Step 3 — Automatic pin assignment
 
-Pour chaque corde : note MIDI à vide, frettes max, longueur vibrante, type de
-transmission (courroie GT2 / vis / personnalisé), pas moteur par tour,
-microstepping, déplacement par tour, inversion du sens, vitesse et accélération
-max, position de repos. L'interface **calcule automatiquement les pas/mm**
-(formules courroie/vis dans [`CALIBRATION.md`](CALIBRATION.md) §1).
+Click **"Assign pins automatically"**. The system chooses a conflict-free
+configuration based on the number of strings, the enabled interfaces, the board,
+the reservation of the future USB (GPIO19/20), the diagnostics port (UART), the
+I²C bus and the sensors. In simplified mode, you only see the **green** pins. If a
+signal cannot be placed, the wizard explains it and suggests an alternative.
 
----
-
-## 6. Étape 5 — Homing
-
-Pour chaque axe : capteur activé, GPIO du capteur, contact NO/NC, niveau actif,
-direction du homing, vitesses rapide/lente, distance de recul, offset après
-origine, timeout, distance maximale de recherche. Le homing est non bloquant et
-indépendant par corde (machine d'état `CHECK_SENSOR → … → READY`, voir
-[`CALIBRATION.md`](CALIBRATION.md) §2).
+Example assignment obtained (DevKitC-1 profile, see
+[`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md) §5): STEP on 4/5/6…, DIR on 17/18…,
+HOME on 12/13…, I²C SDA 40 / SCL 41, ENABLE 42, PCA9685 safety 47.
 
 ---
 
-## 7. Étape 6 — Calibration des servos
+## 5. Step 4 — Mechanical configuration
 
-Pour chaque servo : canal PCA9685, position de repos, position active, limites
-min/max, sens inversé, temps de déplacement, temps de stabilisation, désactivation
-au repos. Répartition typique des canaux : doigts 0–5, pincement 6–11, auxiliaires
-12–15 (voir [`CALIBRATION.md`](CALIBRATION.md) §4).
-
----
-
-## 8. Étape 7 — Calibration des notes
-
-Deux méthodes :
-
-* **Calcul automatique des frettes** : `position = longueur vibrante × (1 − 2^(−fret/12))`.
-* **Calibration manuelle** : pour chaque frette, déplacez le moteur avec les
-  boutons, testez la note, ajustez, enregistrez la position exacte. La table
-  calibrée a **priorité** sur la théorie (voir [`CALIBRATION.md`](CALIBRATION.md) §3).
+For each string: open-string MIDI note, max frets, vibrating length, transmission
+type (GT2 belt / screw / custom), motor steps per revolution, microstepping,
+travel per revolution, direction inversion, max speed and acceleration, rest
+position. The interface **automatically computes the steps/mm** (belt/screw
+formulas in [`CALIBRATION.md`](CALIBRATION.md) §1).
 
 ---
 
-## 9. Étape 8 — Test
+## 6. Step 5 — Homing
 
-Testez progressivement : chaque moteur, chaque capteur, chaque doigt, chaque
-médiator, chaque note, chaque corde, un accord, puis l'**arrêt général** (STOP).
-Gardez le bouton STOP à portée (panic logiciel — voir [`SAFETY.md`](SAFETY.md) §3).
-
----
-
-## 10. Étape 9 — Validation
-
-L'interface affiche **« Configuration valide »** ou la liste précise des problèmes.
-Aucun actionneur n'est activé en mode normal tant que les erreurs critiques ne sont
-pas corrigées. Une fois valide, la configuration est sauvegardée (profil), et les
-capacités sont publiées vers General-Midi-Boop.
+For each axis: sensor enabled, sensor GPIO, NO/NC contact, active level, homing
+direction, fast/slow speeds, back-off distance, offset after origin, timeout,
+maximum search distance. Homing is non-blocking and independent per string (state
+machine `CHECK_SENSOR → … → READY`, see [`CALIBRATION.md`](CALIBRATION.md) §2).
 
 ---
 
-## 11. Connecter General-Midi-Boop (optionnel)
+## 7. Step 6 — Servo calibration
 
-Sur la page « MIDI > Identité et capacités GMB », appliquez le préréglage
-**General-Midi-Boop** (CC20 = corde, CC21 = frette, mode hybride). GMB découvre
-alors automatiquement l'instrument (identité, capacités, cordes) par SysEx. Voir
-[`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) §2–3 et [`WEB_INTERFACE.md`](WEB_INTERFACE.md) §3.3.
+For each servo: PCA9685 channel, rest position, active position, min/max limits,
+inverted direction, travel time, settling time, disable at rest. Typical channel
+allocation: fingers 0–5, plucking 6–11, auxiliaries 12–15 (see
+[`CALIBRATION.md`](CALIBRATION.md) §4).
 
 ---
 
-## 12. Sauvegarder et repartir
+## 8. Step 7 — Note calibration
 
-Enregistrez votre configuration comme profil (au moins 8 emplacements), exportez-la
-en JSON pour la conserver, et définissez le profil de démarrage. Le mot de passe
-Wi-Fi n'est pas inclus dans les exports ordinaires.
+Two methods:
 
-Bonne première note !
+* **Automatic fret computation**: `position = longueur vibrante × (1 − 2^(−fret/12))`.
+* **Manual calibration**: for each fret, move the motor with the buttons, test
+  the note, adjust, and record the exact position. The calibrated table takes
+  **priority** over the theory (see [`CALIBRATION.md`](CALIBRATION.md) §3).
+
+---
+
+## 9. Step 8 — Test
+
+Test progressively: each motor, each sensor, each finger, each pick, each note,
+each string, a chord, then the **general stop** (STOP). Keep the STOP button
+within reach (software panic — see [`SAFETY.md`](SAFETY.md) §3).
+
+---
+
+## 10. Step 9 — Validation
+
+The interface shows **"Configuration valid"** or the precise list of problems.
+No actuator is enabled in normal mode as long as critical errors remain
+uncorrected. Once valid, the configuration is saved (profile), and the
+capabilities are published to General-Midi-Boop.
+
+---
+
+## 11. Connecting General-Midi-Boop (optional)
+
+On the "MIDI > GMB identity and capabilities" page, apply the **General-Midi-Boop**
+preset (CC20 = string, CC21 = fret, hybrid mode). GMB then automatically
+discovers the instrument (identity, capabilities, strings) via SysEx. See
+[`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) §2–3 and [`WEB_INTERFACE.md`](WEB_INTERFACE.md) §3.3.
+
+---
+
+## 12. Save and get going
+
+Save your configuration as a profile (at least 8 slots), export it as JSON to
+keep it, and set the startup profile. The Wi-Fi password is not included in
+ordinary exports.
+
+Enjoy your first note!

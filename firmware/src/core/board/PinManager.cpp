@@ -72,7 +72,7 @@ bool PinManager::autoAssign(const PinRequest& req) {
     bool ok = true;
     const int n = static_cast<int>(clampValue<int>(req.stringCount, 1, kMaxStrings));
 
-    // Recommended assignment table (cahier des charges 11.5).
+    // Recommended assignment table (spec 11.5).
     const std::vector<int8_t> stepPref = {4, 5, 6, 7, 15, 16};
     const std::vector<int8_t> dirPref = {17, 18, 8, 9, 10, 11};
     const std::vector<int8_t> homePref = {12, 13, 14, 21, 38, 39};
@@ -114,7 +114,7 @@ std::vector<PinError> PinManager::validate(bool reserveUsb) const {
             continue;
         }
 
-        // USB reservation (cahier des charges 11.3).
+        // USB reservation (spec 11.3).
         if (reserveUsb && cap->usb) {
             errors.push_back({a.signal, a.gpio,
                               "Reserved for future native USB (GPIO19/20)",

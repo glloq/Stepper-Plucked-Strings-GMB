@@ -1,24 +1,24 @@
-# Procédure de calibration — Stepper-Plucked-Strings-GMB
+# Calibration procedure — Stepper-Plucked-Strings-GMB
 
-> Sources : `cahier des charges.md` §12, §13, §14, §15 · Code : `core/motion/{StepperAxis.*, HomingController.*}`, `core/Types.*`, `core/configuration/Profile.h`.
-> Documents liés : [`WEB_INTERFACE.md`](WEB_INTERFACE.md) (assistant §10) · [`SAFETY.md`](SAFETY.md) · [`FIRST_CONFIGURATION.md`](FIRST_CONFIGURATION.md).
+> Sources: `SPECIFICATION.md` §12, §13, §14, §15 · Code: `core/motion/{StepperAxis.*, HomingController.*}`, `core/Types.*`, `core/configuration/Profile.h`.
+> Related documents: [`WEB_INTERFACE.md`](WEB_INTERFACE.md) (wizard §10) · [`SAFETY.md`](SAFETY.md) · [`FIRST_CONFIGURATION.md`](FIRST_CONFIGURATION.md).
 
-Ce document décrit la calibration : pas/mm du moteur, homing, positions de
-frettes (théoriques et manuelles), et servos.
+This document describes calibration: motor steps/mm, homing, fret positions
+(theoretical and manual), and servos.
 
 ---
 
-## 1. Calcul assisté des pas/mm (§12.1)
+## 1. Assisted steps/mm calculation (§12.1)
 
-Le firmware travaille en **millimètres** et convertit vers les pas moteur via un
-facteur `steps/mm` dépendant de la transmission (`StepperAxis::stepsPerMm()`), ce
-qui abstrait le type mécanique du reste du code.
+The firmware works in **millimeters** and converts to motor steps via a
+`steps/mm` factor that depends on the transmission (`StepperAxis::stepsPerMm()`),
+which abstracts the mechanical type away from the rest of the code.
 
 ```cpp
 enum class Transmission { BeltGt2, Screw, Custom };
 ```
 
-### 1.1 Courroie (GT2)
+### 1.1 Belt (GT2)
 
 ```text
                 stepsPerRevolution × microsteps
@@ -26,10 +26,10 @@ stepsPerMm = ──────────────────────�
                     pulleyTeeth × beltPitch
 ```
 
-Exemple : moteur 1,8° (200 pas/tour), 16 microsteps, poulie 20 dents, pas GT2
-2 mm → `(200 × 16) / (20 × 2) = 80 pas/mm`.
+Example: 1.8° motor (200 steps/rev), 16 microsteps, 20-tooth pulley, GT2 pitch
+2 mm → `(200 × 16) / (20 × 2) = 80 steps/mm`.
 
-### 1.2 Vis
+### 1.2 Screw
 
 ```text
                 stepsPerRevolution × microsteps
@@ -37,185 +37,248 @@ stepsPerMm = ──────────────────────�
                     leadPerRevolution
 ```
 
-Exemple : 200 pas/tour, 16 microsteps, vis à pas de 8 mm/tour → `3200 / 8 = 400 pas/mm`.
+Example: 200 steps/rev, 16 microsteps, screw with 8 mm/rev lead → `3200 / 8 = 400 steps/mm`.
 
-### 1.3 Valeur personnalisée
+### 1.3 Custom value
 
-Transmission `Custom` : `customStepsPerMm` est utilisé directement.
+`Custom` transmission: `customStepsPerMm` is used directly.
 
-Paramètres pertinents dans `AxisConfig` : `stepsPerRevolution`, `microsteps`,
+Relevant parameters in `AxisConfig`: `stepsPerRevolution`, `microsteps`,
 `pulleyTeeth`, `beltPitchMm`, `leadPerRevolutionMm`, `customStepsPerMm`,
 `invertDirection`, `minPositionMm`/`maxPositionMm`, `maxSpeedMmS`, `maxAccelMmS2`.
-Conversions : `mmToSteps(mm)`, `stepsToMm(steps)`, bornage `clampToLimits(mm)`.
+Conversions: `mmToSteps(mm)`, `stepsToMm(steps)`, clamping `clampToLimits(mm)`.
 
 ---
 
 ## 2. Homing (§13)
 
-Le homing est **non bloquant** et **indépendant** pour chaque corde
-(`HomingController`, une instance par axe). À chaque tick, il lit le capteur et la
-position, et renvoie la commande de mouvement à appliquer (`HomingCommand`).
+Homing is **non-blocking** and **independent** for each string
+(`HomingController`, one instance per axis). On each tick it reads the sensor and
+the position, and returns the motion command to apply (`HomingCommand`).
 
-### 2.1 Machine d'état
+### 2.1 State machine
 
 ```text
 Idle → CheckSensor → SeekFast → (SensorDetected) → Backoff →
 SeekSlow → SetZero → MoveToOffset → Ready
-                                       └─(défaut)─► Fault
+                                       └─(fault)─► Fault
 ```
 
-| État (`HomingState`) | Rôle |
+| State (`HomingState`) | Role |
 | -------------------- | ---- |
-| `Idle` | inactif |
-| `CheckSensor` | vérifier que le capteur n'est pas déjà actif |
-| `SeekFast` | approche rapide vers le capteur (`fastSpeedMmS`) |
-| `Backoff` | recul après détection (`backoffMm`) |
-| `SeekSlow` | ré-approche lente précise (`slowSpeedMmS`) |
-| `SetZero` | fixer l'origine |
-| `MoveToOffset` | aller à l'offset de repos (`offsetMm`) |
-| `Ready` | axe prêt |
-| `Fault` | axe désactivé |
+| `Idle` | inactive |
+| `CheckSensor` | verify the sensor is not already active |
+| `SeekFast` | fast approach toward the sensor (`fastSpeedMmS`) |
+| `Backoff` | back off after detection (`backoffMm`) |
+| `SeekSlow` | slow, precise re-approach (`slowSpeedMmS`) |
+| `SetZero` | set the origin |
+| `MoveToOffset` | move to the rest offset (`offsetMm`) |
+| `Ready` | axis ready |
+| `Fault` | axis disabled |
 
-Configuration (`HomingConfig`) : `direction` (±1 vers le capteur), `fastSpeedMmS`,
-`slowSpeedMmS`, `backoffMm`, `offsetMm`, `timeoutMs` (défaut 8000), `maxSearchMm`
-(défaut 500), `sensorActiveHigh` (le niveau électrique brut est normalisé en
-interne).
+Configuration (`HomingConfig`): `direction` (±1 toward the sensor), `fastSpeedMmS`,
+`slowSpeedMmS`, `backoffMm`, `offsetMm`, `timeoutMs` (default 8000), `maxSearchMm`
+(default 500), `sensorActiveHigh` (the raw electrical level is normalized
+internally).
 
-### 2.2 Défauts détectés (§13.2, `HomingFault`)
+### 2.2 Detected faults (§13.2, `HomingFault`)
 
-| Défaut | Cause |
+| Fault | Cause |
 | ------ | ----- |
-| `SensorActiveAtStart` | capteur actif au démarrage |
-| `SensorNotReleased` | capteur impossible à libérer |
-| `SensorNeverReached` | capteur jamais atteint |
-| `Timeout` | délai dépassé |
-| `MaxDistanceExceeded` | distance maximale de recherche dépassée |
-| — | activation incohérente de HOME et LIMIT (détectée en amont) |
+| `SensorActiveAtStart` | sensor active at startup |
+| `SensorNotReleased` | sensor cannot be released |
+| `SensorNeverReached` | sensor never reached |
+| `Timeout` | timeout exceeded |
+| `MaxDistanceExceeded` | maximum search distance exceeded |
+| — | inconsistent activation of HOME and LIMIT (detected upstream) |
 
-Un axe défaillant est désactivé **sans provoquer de mouvement imprévu** sur les
-autres axes.
+A faulty axis is disabled **without causing any unexpected movement** on the
+other axes.
 
-### 2.3 Homing parallèle (§13.1)
+### 2.3 Parallel homing (§13.1)
 
-Options : **simultané**, **séquentiel** (si l'alimentation est limitée), ou **par
-groupes**. Chaque axe garde sa propre instance de `HomingController`.
+Options: **simultaneous**, **sequential** (if power supply is limited), or **by
+groups**. Each axis keeps its own `HomingController` instance.
 
 ---
 
-## 3. Calibration des notes / frettes (§14)
+## 3. Note / fret calibration (§14)
 
-### 3.1 Accordage
+### 3.1 Tuning
 
-Chaque corde possède : note MIDI à vide (`openNote`), frette maximale incluse
-(`maxFret`), position de chaque frette. Accordages prédéfinis proposés (guitare,
-basse, ukulélé, mandoline, banjo, personnalisé), entièrement modifiables.
+Each string has: open MIDI note (`openNote`), maximum fret included (`maxFret`),
+and the position of each fret. Predefined tunings are provided (guitar, bass,
+ukulele, mandolin, banjo, custom), all fully editable.
 
-### 3.2 Calcul théorique (§14.2)
+### 3.2 Theoretical calculation (§14.2)
 
 ```text
-position = longueur vibrante × (1 − 2^(−fret / 12))
+position = scale length × (1 − 2^(−fret / 12))
 ```
 
-Implémenté dans `core/Types.cpp` (`fretPositionMm(scaleLengthMm, fret)`) et exposé
-par `StepperAxis::fretPositionMm(fret)`. `scaleLengthMm` = longueur vibrante de la
-corde. La note produite à une frette : `note = openNote + fret + capo + transpose`.
+Implemented in `core/Types.cpp` (`fretPositionMm(scaleLengthMm, fret)`) and
+exposed by `StepperAxis::fretPositionMm(fret)`. `scaleLengthMm` = the string's
+vibrating length. The note produced at a fret: `note = openNote + fret + capo + transpose`.
 
-Exemple (longueur 330 mm) : frette 12 → `330 × (1 − 2^(−1)) = 165 mm` (octave à la
-moitié de la corde).
+Example (length 330 mm): fret 12 → `330 × (1 − 2^(−1)) = 165 mm` (octave at the
+middle of the string).
 
-### 3.3 Calibration manuelle (§14.3)
+### 3.2a Position relative to the FDC — per-string offset
 
-Pour chaque frette : (1) sélectionner la frette, (2) déplacer le moteur avec des
-boutons, (3) tester la note, (4) ajuster la position, (5) enregistrer la position
-exacte. **La table calibrée a priorité sur la position théorique** : si
-`AxisConfig::calibratedFretMm[fret]` est renseigné, `fretPositionMm()` renvoie la
-valeur calibrée plutôt que la théorique.
+The theoretical spacing and the calibrated table are both measured **from the nut**
+(fret 0 = 0). Each string then carries a single **`fretOffsetMm`** — the distance
+from its HOME endstop (the FDC) to the nut — and the axis target is:
+
+```text
+absolute position (from FDC) = fretOffsetMm + (calibrated[fret]  or  theory(fret))
+```
+
+So `fretOffsetMm` places a whole fretboard relative to its FDC and shifts every
+fret of that string at once; it is decoupled from the travel limit `minPositionMm`
+(which is a pure clamp). In the web editor the fret table is entered nut-relative,
+an **Abs (FDC)** column shows `fretOffsetMm + value`, and **Capture position**
+records the live motor position (absolute) minus the offset, so it stores a
+nut-relative value that stays correct if the offset is later changed.
+
+### 3.3 Manual calibration (§14.3)
+
+For each fret: (1) select the fret, (2) move the motor with buttons, (3) test the
+note, (4) adjust the position, (5) save the exact position. **The calibrated
+table takes priority over the theoretical position**: if
+`AxisConfig::calibratedFretMm[fret]` is set, `fretPositionMm()` returns the
+calibrated value rather than the theoretical one.
 
 ### 3.4 Compensation (§14.4)
 
-Le système permet : correction individuelle d'une frette, correction selon le sens
-de déplacement (jeu mécanique / backlash), offset global de la corde, limites
-logicielles avant et arrière (`minPositionMm` / `maxPositionMm`, appliquées par
-`clampToLimits`).
+The system allows: individual correction of a fret, correction according to the
+direction of travel (mechanical play / backlash), a global offset for the string,
+and forward and backward software limits (`minPositionMm` / `maxPositionMm`,
+applied by `clampToLimits`).
 
 ---
 
-## 4. Calibration des servos (§15)
+## 4. Servo calibration (§15)
 
-Chaque servo utilise des impulsions calibrées en microsecondes (`ServoConfig`) :
+Each servo uses pulses calibrated in microseconds (`ServoConfig`):
 
 ```cpp
 enum class ServoSource : uint8_t { Pca = 0, DirectGpio = 1 };
 
 struct ServoConfig {
     bool enabled;
-    std::string function;         // "finger"/"pluck"/"strum"/"damper"/"sharedStrum"/"aux"
-    int8_t stringIndex;           // corde propriétaire, -1 = partagé/global
+    std::string function;         // "finger"/"pluck"/"strum"/"strumLift"/"damper"/"sharedDamper"/"aux"
+    int8_t stringIndex;           // owner string, -1 = shared/global
 
-    ServoSource source;           // PCA9685 OU GPIO direct de l'ESP32
-    uint8_t pcaBoard;             // 0..3 : jusqu'à quatre PCA9685 (0x40..0x43)
-    uint8_t channel;              // canal PCA9685 0..15   (source == Pca)
-    int8_t  gpio;                 // GPIO ESP32            (source == DirectGpio)
+    ServoSource source;           // PCA9685 OR direct ESP32 GPIO
+    uint8_t pcaBoard;             // 0..3 : up to four PCA9685 (0x40..0x43)
+    uint8_t channel;              // PCA9685 channel 0..15   (source == Pca)
+    int8_t  gpio;                 // ESP32 GPIO            (source == DirectGpio)
 
     uint16_t pulseMinUs, pulseMaxUs;
-    uint16_t restUs, activeUs;    // position de repos / active
+    uint16_t restUs, activeUs;    // rest / active position
     bool inverted;
-    uint16_t travelMs;            // temps de déplacement
-    uint16_t settleMs;            // temps de stabilisation
-    bool disableAtRest;           // désactivation au repos
+    uint16_t travelMs;            // travel time
+    uint16_t settleMs;            // settle time
+    bool disableAtRest;           // disable at rest
+
+    // Strum / pluck stroke shaping (per servo).
+    uint16_t engageDelayMs;       // strumLift: pause after the lift is down, before the stroke
+    bool     alternateDirection;  // alternate down/up stroke on successive strikes
+    uint16_t activeAltUs;         // up-stroke active pulse (0 = mirror activeUs about restUs)
+    uint16_t strokeMs;            // stroke engage time before return (0 = use travelMs)
+    uint16_t minStrikeUs;         // guaranteed minimum strike depth (0 = velocity-only)
 };
 ```
 
-### 4.0 Source du signal : PCA9685 ou GPIO direct
+### 4.0a Strum / pluck stroke shaping
 
-Le système fonctionne **avec ou sans PCA9685**. Chaque servo choisit
-indépendamment sa source :
+For the strike roles (`pluck`, `strum`) MIDI velocity scales the
+depth between `restUs` and `activeUs`. Five extra fields control the *gesture*:
 
-* **PCA9685** — jusqu'à **quatre cartes** (`pcaBoard` 0–3, adresses 0x40–0x43),
-  soit **64 canaux** au total ; chaque servo indique sa carte et son `channel`
-  (0–15). Idéal quand le nombre de servos dépasse les broches PWM libres.
-* **GPIO direct** — le servo est piloté par une broche libre de l'ESP32-S3
-  (LEDC PWM 50 Hz). Utile sans PCA ou pour quelques servos seulement.
+* **`alternateDirection` + `activeAltUs`** — successive strokes rake the string
+  in opposite directions (down, up, down…). The up-stroke drives to `activeAltUs`,
+  or, when that is `0`, to the mirror of `activeUs` about `restUs`. Applies to the
+  per-string striker (each servo keeps its own stroke parity, reset on neutralise /
+  profile activation).
+* **`strokeMs`** — how long the stroke stays engaged before it returns to rest,
+  i.e. the stroke's *speed*, independent of `travelMs` (which remains the return /
+  settle base). `0` keeps the legacy behaviour (`travelMs`).
+* **`minStrikeUs`** — a floor on the strike depth toward the active side so a
+  soft (low-velocity) note still catches the string. `0` disables it.
+* **`engageDelayMs`** — on a `strumLift` servo, an extra pause after the lift has
+  lowered the strum servo onto the string, before the stroke fires. Lets the
+  string/lift settle so the attack is clean.
 
-Les deux modes peuvent être **mélangés** sur le même instrument. Le validateur
-refuse : un canal PCA (carte + canal) utilisé deux fois, un GPIO direct réservé
-ou en conflit avec un signal moteur ou un autre servo, et un rôle par corde
-pointant vers une corde inexistante.
+### 4.0b Playback timing / latency (global, `MidiConfig`)
 
-### 4.1 Rôles par corde
+Three global knobs manage the delay between a MIDI Note On and the sound, and how
+much the mechanics anticipate to keep that delay small:
 
-Chaque corde (1 à 6) peut disposer de ses propres servos :
+* **`noteExecutionDelayMs`** — a **fixed** delay from Note On reception to the note
+  actually sounding. The carriage move, finger press and strum prep all happen
+  inside this window, so the note plays at a predictable, constant latency
+  (`reception + delay`) as long as the mechanics can be ready in time. `0` = play
+  as soon as ready (variable latency).
+* **`fingerLeadMs`** — begin the finger descent up to this long **before** the
+  carriage is estimated to reach the fret, so the finger arrives on the string
+  around arrival instead of only starting to descend then. Set too large it can
+  drag the finger during the slide, so it is an opt-in value to tune on the bench
+  (`0` = press only after arrival, the safe default).
+* **`strumLeadMs`** — begin lowering the strum lift up to this long **before** the
+  string becomes ready, so the strummer is already engaged when the strike time
+  comes. `0` = lower the lift only once the string is ready.
 
-| Rôle     | Fonction                                             |
+`fingerLeadMs` and `strumLeadMs` shrink the *minimum* achievable
+`noteExecutionDelayMs`; all three default to `0` (strictly sequential, safe).
+
+### 4.0 Signal source: PCA9685 or direct GPIO
+
+The system works **with or without a PCA9685**. Each servo independently chooses
+its source:
+
+* **PCA9685** — up to **four boards** (`pcaBoard` 0–3, addresses 0x40–0x43),
+  i.e. **64 channels** in total; each servo indicates its board and its `channel`
+  (0–15). Ideal when the number of servos exceeds the free PWM pins.
+* **Direct GPIO** — the servo is driven by a free pin on the ESP32-S3
+  (LEDC PWM 50 Hz). Useful without a PCA or for just a few servos.
+
+The two modes can be **mixed** on the same instrument. The validator rejects: a
+PCA channel (board + channel) used twice, a direct GPIO that is reserved or in
+conflict with a motor signal or another servo, and a per-string role pointing to
+a nonexistent string.
+
+### 4.1 Per-string roles
+
+Each string (1 to 6) can have its own servos:
+
+| Role     | Function                                             |
 | -------- | ---------------------------------------------------- |
-| `finger` | appui du doigt sur la frette                         |
-| `pluck`  | médiator individuel                                  |
-| `strum`  | grattage propre à la corde                           |
-| `damper` | étouffoir / silencieux propre à la corde             |
+| `finger` | finger press on the fret                             |
+| `pluck`  | individual plectrum                                  |
+| `strum`  | string-specific strumming                            |
+| `damper` | string-specific damper / mute                        |
 
-Des rôles **partagés** (`sharedStrum`, `aux`, `stringIndex = -1`) permettent un
-mécanisme traversant plusieurs cordes. Le firmware relève le doigt et actionne
-l'étouffoir de la corde au relâchement de la note.
+**Shared** roles (`sharedDamper`, `aux`, `stringIndex = -1`) allow a mechanism
+that spans several strings. The firmware lifts the finger and actuates the
+string's damper when the note is released.
 
-### 4.1 Doigt (§15.1)
+### 4.1 Finger (§15.1)
 
-Positions relevée / appuyée, délai après appui, délai après relâchement. La corde
-à vide (frette 0) : doigt relevé, moteur éventuellement en position de sécurité,
-pincement direct autorisé.
+Lifted / pressed positions, delay after pressing, delay after releasing. The open
+string (fret 0): finger lifted, motor possibly in a safe position, direct plucking
+allowed.
 
-### 4.2 Médiator individuel (§15.2)
+### 4.2 Individual plectrum (§15.2)
 
-Positions gauche / droite / repos, alternance automatique, course min/max, vitesse
-ou délai de mouvement.
+Left / right / rest positions, automatic alternation, min/max travel, movement
+speed or delay.
 
-### 4.3 Corde à vide (§15.3)
+### 4.3 Open string (§15.3)
 
-Doigt relevé, moteur éventuellement déplacé vers une position de sécurité,
-pincement autorisé directement. Option avancée : utiliser le doigt sur le fret
-zéro pour une mécanique spécifique.
+Finger lifted, motor possibly moved to a safe position, plucking allowed directly.
+Advanced option: use the finger on the zero fret for a specific mechanism.
 
-Répartition recommandée sur une première carte PCA9685 (16 canaux) : 0–5 appui
-des doigts, 6–11 pincement individuel, 12–15 étouffoirs / grattage partagé /
-auxiliaires. Au-delà, ajouter des cartes (`pcaBoard` 1–3) ou des servos en GPIO
-direct. La sortie `/OE` de chaque PCA9685 est reliée à une broche de sécurité —
-voir [`SAFETY.md`](SAFETY.md).
+Recommended layout on a first PCA9685 board (16 channels): 0–5 finger presses,
+6–11 individual plucking, 12–15 dampers / auxiliaries. Beyond
+that, add boards (`pcaBoard` 1–3) or servos on direct GPIO. Each PCA9685's `/OE`
+output is wired to a safety pin — see [`SAFETY.md`](SAFETY.md).
