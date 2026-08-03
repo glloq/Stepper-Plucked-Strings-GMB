@@ -240,6 +240,13 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
 
             if (s.pulseMinUs >= s.pulseMaxUs)
                 err(tag + ".pulse", "pulseMinUs must be less than pulseMaxUs");
+            // Absolute bounds: keep the pulse inside a sane hobby-servo window so a
+            // stray value can't drive the actuator full-scale (the 50 Hz frame is
+            // 20000 µs; real servos live well within ~200..3000 µs).
+            if (s.pulseMinUs < 200)
+                err(tag + ".pulseMinUs", "pulseMinUs is below the safe servo range (200 µs)");
+            if (s.pulseMaxUs > 3000)
+                err(tag + ".pulseMaxUs", "pulseMaxUs exceeds the safe servo range (3000 µs)");
             if (s.restUs < s.pulseMinUs || s.restUs > s.pulseMaxUs)
                 err(tag + ".restUs", "Rest pulse is outside the servo's min/max range");
             if (s.activeUs < s.pulseMinUs || s.activeUs > s.pulseMaxUs)
@@ -315,28 +322,42 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
                 err("servos.finger",
                     "String " + std::to_string(i) +
                         " is fretted (maxFret > 0) and needs a finger servo");
+
+        // At least one string must be enabled, otherwise the instrument can never
+        // arm (it would sit in Boot with a bogus 0..0 capability range).
+        size_t enabledStrings = 0;
+        for (const auto& a : p.strings) if (a.enabled) ++enabledStrings;
+        if (enabledStrings == 0)
+            err("strings", "At least one string must be enabled");
     }
 
-    // String/fret selection CC configuration (selection spec section 18).
+    // String/fret selection CC configuration (selection spec section 18). The
+    // string/fret CCs are only consumed when selection is enabled and not in the
+    // fully-automatic mode, so their range/collision rules only apply then — a
+    // disabled selector must not fail a profile over its (unused) CC numbers.
     const SelectorConfig& s = p.selector;
-    if (s.string.ccNumber > kMaxAssignableCc)
-        err("selector.string.cc", "String CC must be 0..119 (120..127 are mode messages)");
-    if (s.fret.ccNumber > kMaxAssignableCc)
-        err("selector.fret.cc", "Fret CC must be 0..119 (120..127 are mode messages)");
-    if (s.string.ccNumber == s.fret.ccNumber)
-        err("selector.cc", "String and fret CC numbers must differ");
+    bool selectionActive = s.enabled && s.mode != SelectionMode::Automatic;
+    if (selectionActive) {
+        if (s.string.ccNumber > kMaxAssignableCc)
+            err("selector.string.cc", "String CC must be 0..119 (120..127 are mode messages)");
+        if (s.fret.ccNumber > kMaxAssignableCc)
+            err("selector.fret.cc", "Fret CC must be 0..119 (120..127 are mode messages)");
+        if (s.string.ccNumber == s.fret.ccNumber)
+            err("selector.cc", "String and fret CC numbers must differ");
+    }
     // CC7 (volume) and CC11 (expression) are consumed before selection/sustain,
-    // so no selectable CC may collide with them or with each other. Reject any
-    // overlap among {7, 11, sustain (if enabled), string, fret} — the first
-    // handler would otherwise silently swallow a CC meant for something else.
+    // so no consumed CC may collide with them or with each other. The string/fret
+    // CCs join the set only when selection is active.
     {
         struct NamedCc { int cc; const char* field; };
         std::vector<NamedCc> ccs = {
             {7, "volume (CC7)"},
             {11, "expression (CC11)"},
-            {s.string.ccNumber, "selector.string.cc"},
-            {s.fret.ccNumber, "selector.fret.cc"},
         };
+        if (selectionActive) {
+            ccs.push_back({s.string.ccNumber, "selector.string.cc"});
+            ccs.push_back({s.fret.ccNumber, "selector.fret.cc"});
+        }
         if (p.midi.sustainPedal) ccs.push_back({p.midi.sustainCc, "midi.sustainCc"});
         for (size_t a = 0; a < ccs.size(); ++a)
             for (size_t b = a + 1; b < ccs.size(); ++b)

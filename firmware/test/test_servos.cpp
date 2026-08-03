@@ -143,6 +143,30 @@ TEST(strum_lift_without_striker_rejected) {
     CHECK(!ProfileValidator::isActivatable(p));
 }
 
+// An absurd absolute pulse width (outside the safe servo window) is rejected.
+TEST(servo_pulse_absolute_range_rejected) {
+    Profile p = uke();
+    p.servos[0].pulseMaxUs = 4000;  // > 3000 µs absolute ceiling
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
+// A profile with no enabled string can never arm and is rejected.
+TEST(zero_enabled_strings_rejected) {
+    Profile p = uke();
+    for (auto& s : p.strings) s.enabled = false;
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
+// When the selector is disabled its CC numbers are unused, so colliding
+// string/fret CCs must NOT fail the profile.
+TEST(disabled_selector_ignores_cc_collision) {
+    Profile p = uke();
+    p.selector.enabled = false;
+    p.selector.string.ccNumber = 20;
+    p.selector.fret.ccNumber = 20;  // identical, but selection is off
+    CHECK(ProfileValidator::isActivatable(p));
+}
+
 // --- Strum stroke shaping (servoStrikeTargetUs) ---------------------------
 
 static ServoConfig strumServo() {

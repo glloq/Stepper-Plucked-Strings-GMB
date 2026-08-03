@@ -4,7 +4,7 @@
   "capabilitiesRevision": 1,
   "instrument": {
     "name": "Mandolin GDAE",
-    "description": "Mandolin, 4 courses treated as 4 strings, shared strummer, custom transmission.",
+    "description": "Mandolin (4 courses as 4 strings) — individual per-string pluck, custom transmission.",
     "stringCount": 4,
     "type": "mandolin",
     "gmProgram": 24,

@@ -77,7 +77,7 @@
     banjo: { notes: [62, 67, 71, 62], maxFret: 22 }
   };
   var GM_PROGRAM = { ukulele: 24, guitar: 24, bass: 33, mandolin: 25, banjo: 105 };
-  var TYPE_ID = { ukulele: 0x04, guitar: 0x04, bass: 0x05, mandolin: 0x04, banjo: 0x04 };
+  var TYPE_ID = { ukulele: 0x04, guitar: 0x04, bass: 0x05, mandolin: 0x04, banjo: 0x06 };
 
   function render(host) {
     // Subscribe once to live status so the Notes step can read the real motor
@@ -324,11 +324,34 @@
 
   // Nudge one axis a few mm (real move on hardware; the live readout updates from
   // the status socket). Confirms motor direction / wiring polarity on the bench.
+  // The jog acts on the RUNNING instrument, so it is only meaningful once the
+  // edited profile has been saved & activated (otherwise the draft axis index may
+  // not match the active one). We gate on the dirty flag and poll the real outcome.
   function jogAxis(i, deltaMm) {
+    if (GMB.state && GMB.state.dirty) {
+      GMB.toast('Save & activate the profile first — jog moves the running instrument.', 'warn');
+      return;
+    }
     GMB.api.jog({ axis: i, deltaMm: deltaMm }).then(function (res) {
       if (res && res.ok === false) { GMB.toast('Jog refused: ' + (res.error || 'instrument not ready (home first)') + '.', 'warn'); return; }
-      GMB.toast('String ' + (i + 1) + ': jog ' + (deltaMm > 0 ? '+' : '') + deltaMm + ' mm.', 'ok');
+      var id = res && res.commandId;
+      if (!id) { jogToast(i, deltaMm); return; }
+      pollJog(i, deltaMm, id, 6);
     }).catch(function (e) { testErr('Jog failed', e); });
+  }
+  function jogToast(i, deltaMm) {
+    GMB.toast('String ' + (i + 1) + ': jog ' + (deltaMm > 0 ? '+' : '') + deltaMm + ' mm.', 'ok');
+  }
+  // Poll the queued jog for its real loop-side outcome so a refusal (axis busy /
+  // faulted / a note playing / not homed) is surfaced instead of a false success.
+  function pollJog(i, deltaMm, id, tries) {
+    GMB.api.commandState(id).then(function (r) {
+      var st = r && r.state;
+      if (st === 'succeeded') { jogToast(i, deltaMm); return; }
+      if (st === 'refused') { GMB.toast('Jog refused (axis busy, faulted, not homed, or a note is playing).', 'warn'); return; }
+      if (tries > 0) setTimeout(function () { pollJog(i, deltaMm, id, tries - 1); }, 120);
+      else GMB.toast('String ' + (i + 1) + ': jog queued.', 'ok');
+    }).catch(function () { jogToast(i, deltaMm); });
   }
 
   // Assisted steps/mm (spec 12.1) — mirrors StepperAxis::stepsPerMm.

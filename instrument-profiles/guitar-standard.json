@@ -4,7 +4,7 @@
   "capabilitiesRevision": 1,
   "instrument": {
     "name": "Guitar Standard EADGBE",
-    "description": "Six-string guitar, standard tuning, individual pluck + shared strummer.",
+    "description": "Six-string guitar, standard tuning — individual per-string pluck.",
     "stringCount": 6,
     "type": "guitar",
     "gmProgram": 24,

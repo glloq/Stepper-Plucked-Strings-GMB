@@ -174,6 +174,9 @@ option is set).
 | `POST` | `/api/pins/validate` | pin validation → list of `PinError` |
 | `POST` | `/api/panic` | software panic (`SafetyManager::panic`) |
 | `POST` | `/api/test/note` | play a test note (string, fret, note, velocity, channel) |
+| `POST` | `/api/test/servo` | pulse a servo to rest/active (armed only) |
+| `POST` | `/api/test/jog` | nudge one axis by a signed mm delta (armed only) |
+| `POST` | `/api/test/endstop` | read a HOME/LIMIT sensor for one axis |
 | `POST` | `/api/sysex/request` | simulate a GMB SysEx request → decoded response |
 | `GET` | `/api/capabilities` | current capabilities snapshot (read-only) |
 
