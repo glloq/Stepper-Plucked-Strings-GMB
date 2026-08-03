@@ -90,6 +90,14 @@ TEST(validator_rejects_cc_collisions) {
     CHECK(!ProfileValidator::isActivatable(s));
 }
 
+TEST(validator_rejects_insane_steps_per_mm) {
+    Profile p = uke();
+    // A huge microstepping x teeth combination pushes steps/mm out of range.
+    p.strings[0].transmission = Transmission::Custom;
+    p.strings[0].customStepsPerMm = 500000.0;  // absurd
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
 TEST(validator_rejects_midi_transpose_out_of_range) {
     Profile p = uke();
     p.midi.transpose = 60;  // > 48

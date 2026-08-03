@@ -60,10 +60,6 @@ uint32_t g_lastStrumGroupFired = 0;  // strum group already swept (one sweep/gro
 bool g_homingStarted = false;
 uint32_t g_homeReleaseUntilMs = 0;
 
-// Musical move watchdog: if a carriage does not reach its fret within this window
-// the axis is faulted (covers a refused/stalled step-engine command).
-constexpr uint32_t kMoveTimeoutMs = 4000;
-
 // Two-phase profile activation: the OLD profile's fingers are driven to rest and
 // allowed to lift BEFORE the old servo config is destroyed, so a profile that
 // removes/reassigns a finger servo can't leave a finger pressed while the new
@@ -93,7 +89,26 @@ struct StringSched {
     int fingerIndex = -1;
     uint32_t readySinceMs = 0;  // when this string reached Ready (shared-strum sync)
     uint32_t dampUntilMs = 0;   // don't move until the damper has acted (replace)
+    uint32_t moveDeadlineMs = 0;  // fault the axis if the move isn't done by then
 };
+
+// Estimate a trapezoidal/triangular move time (ms) for a distance at a given max
+// speed (mm/s) and acceleration (mm/s^2). Used to set a move watchdog that scales
+// with the profile instead of a fixed 4 s (audit P1-1).
+uint32_t estimateMoveMs(double distanceMm, double vMaxMmS, double aMmS2) {
+    distanceMm = std::fabs(distanceMm);
+    if (distanceMm < 1e-6) return 0;
+    if (vMaxMmS < 1e-6 || aMmS2 < 1e-6) return 0;  // caller applies a floor anyway
+    double tAccel = vMaxMmS / aMmS2;              // time to reach cruise
+    double dAccel = vMaxMmS * vMaxMmS / aMmS2;    // distance for accel + decel
+    double t;
+    if (distanceMm >= dAccel) {
+        t = 2.0 * tAccel + (distanceMm - dAccel) / vMaxMmS;  // trapezoid
+    } else {
+        t = 2.0 * std::sqrt(distanceMm / aMmS2);             // triangle
+    }
+    return static_cast<uint32_t>(t * 1000.0);
+}
 std::vector<StringSched> g_sched;
 
 // ---- Web -> loop() command queue (P0: no mechanical state off the main loop) --
@@ -159,6 +174,10 @@ SemaphoreHandle_t g_storageMutex = nullptr;
 // sets this flag (lock-free, no allocation) and loop() honours it FIRST, before
 // draining anything else. Separate from the FreeRTOS queue on purpose.
 std::atomic<bool> g_panicRequested{false};
+
+// RAM cache of "an admin token is configured" so the 100 ms status rebuild never
+// opens NVS (audit P1-10). Seeded at setup, updated on /api/auth.
+bool g_authConfiguredCache = false;
 
 // Enqueue a command (called from the AsyncTCP task). Returns false if the queue
 // is full so the caller can report back-pressure instead of silently dropping.
@@ -469,6 +488,8 @@ void neutraliseAll() {
     g_steppers.enableDrivers(false);
     g_servos.neutraliseAll();
     for (auto& s : g_sched) s = StringSched{};
+    g_testOffs.clear();  // drop scheduled test Note Offs so a stale one can't stop
+                         // a future note with the same channel/number (audit P1-4)
     // A panic / E-stop supersedes any deferred profile activation.
     delete g_pendingProfile;
     g_pendingProfile = nullptr;
@@ -505,6 +526,7 @@ bool doActivateProfile(const Profile& p, uint32_t nowMs) {
     g_steppers.stopAll();
     g_steppers.enableDrivers(false);
     for (auto& s : g_sched) s = StringSched{};
+    g_testOffs.clear();  // a profile change cancels any pending test Note Offs
     // Immediately demote from Armed to PowerOnSafe and enter Reconfiguring so no
     // test servo / test note / MIDI can drive the (about-to-be-torn-down) hardware
     // during the release+rebuild window (audit P0-2). Only a panic/E-stop or the
@@ -737,9 +759,15 @@ void tickString(size_t i, uint32_t nowMs) {
                  nowMs - sch.phaseStartMs >= g_servos.travelMs(sch.fingerIndex)) &&
                 static_cast<int32_t>(nowMs - sch.dampUntilMs) >= 0 &&
                 g_steppers.atTarget(i)) {
+                double dist = tgt.positionMm - g_steppers.positionMm(i);
+                const AxisConfig& ac = g_profile.strings[i];
+                uint32_t est = estimateMoveMs(dist, ac.maxSpeedMmS, ac.maxAccelMmS2);
+                // Generous margin (3x + 500 ms floor) so only a genuine stall/refusal
+                // faults the axis, but a slow-but-valid profile is never mis-flagged.
                 g_steppers.moveToMm(i, tgt.positionMm);
                 sch.phase = StringSched::MovingToFret;
                 sch.phaseStartMs = nowMs;
+                sch.moveDeadlineMs = nowMs + 500u + 3u * est;
             }
             break;
         case StringSched::MovingToFret:
@@ -755,10 +783,10 @@ void tickString(size_t i, uint32_t nowMs) {
                     sch.phase = StringSched::PressingFinger;
                     sch.phaseStartMs = nowMs;
                 }
-            } else if (nowMs - sch.phaseStartMs >= kMoveTimeoutMs) {
-                // The move never completed (command refused by the step engine, a
-                // stall, or a stop far from target): fault the axis instead of
-                // waiting forever in MovingToFret.
+            } else if (static_cast<int32_t>(nowMs - sch.moveDeadlineMs) >= 0) {
+                // The move never completed within its estimated budget (command
+                // refused by the step engine, a stall, or a stop far from target):
+                // fault the axis instead of waiting forever in MovingToFret.
                 faultRuntimeAxis(i, "move did not reach target (timeout)", nowMs);
             }
             break;
@@ -926,12 +954,13 @@ void setup() {
     ctx.onSetAdminToken = [](const std::string& t) {
         Preferences p; p.begin("gmb", false);
         p.putString("admintoken", String(t.c_str())); p.end();
+        g_authConfiguredCache = !t.empty();  // keep the RAM cache in step
     };
-    ctx.authConfigured = []() -> bool {
-        Preferences p; p.begin("gmb", true);
-        String stored = p.getString("admintoken", ""); p.end();
-        return stored.length() > 0;
-    };
+    // Cached in RAM: the status DTO is rebuilt every 100 ms and must NOT open NVS
+    // that often. Seeded once here; refreshed only when the token is set (P1-10).
+    { Preferences p; p.begin("gmb", true);
+      g_authConfiguredCache = p.getString("admintoken", "").length() > 0; p.end(); }
+    ctx.authConfigured = []() -> bool { return g_authConfiguredCache; };
     ctx.appState = []() -> std::string {
         if (g_phase == AppPhase::Ready) return g_degraded ? "readyDegraded" : "ready";
         if (g_phase == AppPhase::Homing) return "homing";

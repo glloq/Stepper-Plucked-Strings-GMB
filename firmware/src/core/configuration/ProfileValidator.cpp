@@ -1,6 +1,9 @@
 #include "ProfileValidator.h"
 
+#include <cmath>
 #include <utility>
+
+#include "../motion/StepperAxis.h"
 
 namespace gmb {
 
@@ -103,6 +106,33 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
                 if (a.customStepsPerMm <= 0.0)
                     err(t + ".customStepsPerMm", "Custom: steps/mm must be > 0");
                 break;
+        }
+
+        // Finite + bounded numeric checks so the downstream lround()/uint32
+        // conversions in the motion layer can't overflow or produce NaN (P1-2).
+        auto finite = [&](double v, const std::string& f) {
+            if (!std::isfinite(v)) err(f, "Value must be a finite number");
+        };
+        finite(a.scaleLengthMm, t + ".scaleLength");
+        finite(a.maxSpeedMmS, t + ".maxSpeedMmS");
+        finite(a.maxAccelMmS2, t + ".maxAccelMmS2");
+        finite(a.minPositionMm, t + ".minPositionMm");
+        finite(a.maxPositionMm, t + ".maxPositionMm");
+        finite(a.beltPitchMm, t + ".beltPitchMm");
+        finite(a.leadPerRevolutionMm, t + ".leadPerRevolutionMm");
+        finite(a.customStepsPerMm, t + ".customStepsPerMm");
+        // Computed steps/mm must be finite and physically sane; the travel in
+        // STEPS must stay within the 32-bit range the step engine uses.
+        StepperAxis axis(a);
+        double spm = axis.stepsPerMm();
+        if (!std::isfinite(spm) || spm <= 0.0 || spm > 20000.0) {
+            err(t + ".stepsPerMm", "Computed steps/mm is out of range (0, 20000]");
+        } else {
+            double maxPosSteps = std::fabs(a.maxPositionMm) * spm;
+            double minPosSteps = std::fabs(a.minPositionMm) * spm;
+            double worst = maxPosSteps > minPosSteps ? maxPosSteps : minPosSteps;
+            if (worst > 2.0e9)
+                err(t + ".travelSteps", "Travel in motor steps exceeds the 32-bit range");
         }
 
         // Ensure the calculated span physically fits. A highest fret beyond the

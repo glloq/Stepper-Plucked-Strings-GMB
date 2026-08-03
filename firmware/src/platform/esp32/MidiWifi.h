@@ -52,6 +52,11 @@ public:
     bool notifyLastSender(const uint8_t* data, size_t len);
     bool hasLastSender() const { return lastSenderPort_ != 0; }
 
+    // Dropped-input counters (oversized datagrams / per-tick event overflow) so a
+    // sustained MIDI overflow is observable rather than silent.
+    uint32_t droppedEvents() const { return droppedEvents_; }
+    uint32_t droppedPackets() const { return droppedPackets_; }
+
 private:
     static constexpr int kMaxPacketsPerTick = 8;
     static constexpr size_t kMaxEventsPerTick = 128;
@@ -61,6 +66,8 @@ private:
     std::vector<MidiEvent> events_;
     std::vector<SysExPacket> sysex_;
     uint16_t lastSenderPort_ = 0;
+    uint32_t droppedEvents_ = 0;
+    uint32_t droppedPackets_ = 0;
 #if defined(ARDUINO)
     WiFiUDP udp_;
     IPAddress lastSenderIp_;
