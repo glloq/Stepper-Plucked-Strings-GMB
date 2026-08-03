@@ -106,29 +106,28 @@ TEST(strum_lift_with_striker_is_valid) {
     CHECK(ProfileValidator::isActivatable(p));
 }
 
-// A per-string strum servo counts as the individual striker (no pluck required).
-TEST(per_string_strum_satisfies_individual_mode) {
+// A per-string strum servo counts as the string's striker (no pluck required).
+TEST(per_string_strum_satisfies_striker) {
     Profile p = uke();
     for (auto& s : p.servos)
         if (s.function == "pluck" && s.stringIndex == 0) s.function = "strum";
     CHECK(ProfileValidator::isActivatable(p));
 }
 
+// Every enabled string needs its own striker — there is no shared strummer.
+TEST(string_without_striker_rejected) {
+    Profile p = uke();
+    for (auto it = p.servos.begin(); it != p.servos.end();) {
+        if (it->function == "pluck" && it->stringIndex == 0) it = p.servos.erase(it);
+        else ++it;
+    }
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
 // A strum lift with no striker to lift on its string is rejected.
 TEST(strum_lift_without_striker_rejected) {
     Profile p = uke();
-    // Shared-strum mode: per-string strikers are optional, so the only reason the
-    // profile fails is the dangling strum lift.
-    p.instrument.pluckMode = PluckMode::SharedStrum;
-    ServoConfig shared;
-    shared.enabled = true;
-    shared.function = "sharedStrum";
-    shared.stringIndex = -1;
-    shared.source = ServoSource::Pca;
-    shared.pcaBoard = 0;
-    shared.channel = 12;
-    p.servos.push_back(shared);
-    // Drop string 0's pluck so it has no striker at all.
+    // Drop string 0's pluck so it has no striker, then give it a strum lift.
     for (auto it = p.servos.begin(); it != p.servos.end();) {
         if (it->function == "pluck" && it->stringIndex == 0) it = p.servos.erase(it);
         else ++it;

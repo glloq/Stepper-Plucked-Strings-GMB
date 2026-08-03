@@ -10,8 +10,7 @@
     "gmProgram": 24,
     "typeId": 4,
     "capo": 0,
-    "transpose": 0,
-    "pluckMode": "both"
+    "transpose": 0
   },
   "board": {
     "profile": "esp32-s3-devkitc-1",
@@ -193,7 +192,7 @@
       "pulleyTeeth": 20,
       "beltPitchMm": 2,
       "leadPerRevolutionMm": 8,
-      "customStepsPerMm": 80.0,
+      "customStepsPerMm": 80,
       "invertDirection": false,
       "minPositionMm": 0,
       "maxPositionMm": 440,
@@ -221,7 +220,7 @@
       "pulleyTeeth": 20,
       "beltPitchMm": 2,
       "leadPerRevolutionMm": 8,
-      "customStepsPerMm": 80.0,
+      "customStepsPerMm": 80,
       "invertDirection": false,
       "minPositionMm": 0,
       "maxPositionMm": 440,
@@ -249,7 +248,7 @@
       "pulleyTeeth": 20,
       "beltPitchMm": 2,
       "leadPerRevolutionMm": 8,
-      "customStepsPerMm": 80.0,
+      "customStepsPerMm": 80,
       "invertDirection": false,
       "minPositionMm": 0,
       "maxPositionMm": 440,
@@ -277,7 +276,7 @@
       "pulleyTeeth": 20,
       "beltPitchMm": 2,
       "leadPerRevolutionMm": 8,
-      "customStepsPerMm": 80.0,
+      "customStepsPerMm": 80,
       "invertDirection": false,
       "minPositionMm": 0,
       "maxPositionMm": 440,
@@ -305,7 +304,7 @@
       "pulleyTeeth": 20,
       "beltPitchMm": 2,
       "leadPerRevolutionMm": 8,
-      "customStepsPerMm": 80.0,
+      "customStepsPerMm": 80,
       "invertDirection": false,
       "minPositionMm": 0,
       "maxPositionMm": 440,
@@ -333,7 +332,7 @@
       "pulleyTeeth": 20,
       "beltPitchMm": 2,
       "leadPerRevolutionMm": 8,
-      "customStepsPerMm": 80.0,
+      "customStepsPerMm": 80,
       "invertDirection": false,
       "minPositionMm": 0,
       "maxPositionMm": 440,
@@ -556,23 +555,6 @@
       "travelMs": 60,
       "settleMs": 18,
       "disableAtRest": true
-    },
-    {
-      "enabled": true,
-      "function": "sharedStrum",
-      "stringIndex": -1,
-      "source": "pca",
-      "pcaBoard": 0,
-      "channel": 12,
-      "gpio": -1,
-      "pulseMinUs": 500,
-      "pulseMaxUs": 2500,
-      "restUs": 900,
-      "activeUs": 2100,
-      "inverted": false,
-      "travelMs": 180,
-      "settleMs": 40,
-      "disableAtRest": false
     }
   ]
 }

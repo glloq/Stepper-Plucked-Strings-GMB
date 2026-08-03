@@ -178,9 +178,6 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
     in["typeId"] = p.instrument.typeId;
     in["capo"] = p.instrument.capo;
     in["transpose"] = p.instrument.transpose;
-    in["pluckMode"] = p.instrument.pluckMode == PluckMode::Individual ? "individual"
-                      : p.instrument.pluckMode == PluckMode::SharedStrum ? "sharedStrum"
-                                                                         : "both";
 
     JsonObject bo = doc["board"].to<JsonObject>();
     bo["profile"] = p.boardIdentifier;
@@ -324,10 +321,6 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
     out.instrument.typeId = in["typeId"] | 4;
     out.instrument.capo = in["capo"] | 0;
     out.instrument.transpose = in["transpose"] | 0;
-    std::string pm = in["pluckMode"] | "individual";
-    out.instrument.pluckMode = pm == "sharedStrum" ? PluckMode::SharedStrum
-                               : pm == "both"       ? PluckMode::Both
-                                                    : PluckMode::Individual;
 
     JsonObjectConst bo = doc["board"];
     out.boardIdentifier = bo["profile"] | "esp32-s3-devkitc-1";

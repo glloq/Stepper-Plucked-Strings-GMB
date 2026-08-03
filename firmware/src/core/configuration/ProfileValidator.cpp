@@ -289,19 +289,15 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
                 if (s.enabled && s.function == fn && s.stringIndex == strIdx) return true;
             return false;
         };
-        bool needIndividual = p.instrument.pluckMode == PluckMode::Individual ||
-                              p.instrument.pluckMode == PluckMode::Both;
-        bool needShared = p.instrument.pluckMode == PluckMode::SharedStrum ||
-                          p.instrument.pluckMode == PluckMode::Both;
-        if (needIndividual) {
-            for (size_t i = 0; i < p.strings.size(); ++i)
-                if (p.strings[i].enabled &&
-                    !hasServoRole("pluck", static_cast<int>(i)) &&
-                    !hasServoRole("strum", static_cast<int>(i)))
-                    err("servos.pluck",
-                        "String " + std::to_string(i) +
-                            " needs a pluck or strum servo for the individual pluck mode");
-        }
+        // Strumming is per string: every enabled string needs its own striker —
+        // a pluck (plectrum) or a strum servo. There is no shared strummer.
+        for (size_t i = 0; i < p.strings.size(); ++i)
+            if (p.strings[i].enabled &&
+                !hasServoRole("pluck", static_cast<int>(i)) &&
+                !hasServoRole("strum", static_cast<int>(i)))
+                err("servos.pluck",
+                    "String " + std::to_string(i) +
+                        " needs a pluck or strum servo to be plucked");
         // A per-string strum lift only makes sense paired with a striker to lift.
         for (size_t i = 0; i < p.strings.size(); ++i)
             if (hasServoRole("strumLift", static_cast<int>(i)) &&
@@ -310,14 +306,6 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
                 err("servos.strumLift",
                     "String " + std::to_string(i) +
                         " has a strum-lift servo but no pluck/strum servo to lift");
-        if (needShared) {
-            bool found = false;
-            for (const auto& s : p.servos)
-                if (s.enabled && s.function == "sharedStrum") found = true;
-            if (!found)
-                err("servos.sharedStrum",
-                    "A sharedStrum servo is required for the shared-strum pluck mode");
-        }
         // A fretted string (maxFret > 0) MUST have a finger servo: without one the
         // scheduler would treat every note as an open string and pluck a wrong
         // pitch. An open-only course (maxFret == 0) legitimately needs no finger.
@@ -401,7 +389,6 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
     auto enumOk = [&](int v, int maxInclusive, const std::string& field) {
         if (v < 0 || v > maxInclusive) err(field, "Value is out of range");
     };
-    enumOk(static_cast<int>(p.instrument.pluckMode), 2, "instrument.pluckMode");
     enumOk(static_cast<int>(p.midi.velocityCurve), 4, "midi.velocityCurve");
     enumOk(static_cast<int>(p.midi.saturationStrategy), 5, "midi.saturationStrategy");
     enumOk(static_cast<int>(p.selector.mode), 2, "selector.mode");

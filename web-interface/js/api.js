@@ -228,7 +228,7 @@
       instrument: {
         name: 'Ukulele GCEA', description: '4-string soprano ukulele',
         stringCount: 4, type: 'ukulele', gmProgram: 24, typeId: 4,
-        capo: 0, transpose: 0, pluckMode: 'individual'
+        capo: 0, transpose: 0
       },
       board: { profile: 'esp32-s3-devkitc-1', reserveUsb: true, automaticPinAssignment: true },
       pins: [
@@ -276,8 +276,7 @@
         servo('pluck', 0, { channel: 6, activeUs: 1700, travelMs: 90, settleMs: 20 }),
         servo('pluck', 1, { channel: 7, activeUs: 1700, travelMs: 90, settleMs: 20 }),
         servo('pluck', 2, { channel: 8, activeUs: 1700, travelMs: 90, settleMs: 20 }),
-        servo('pluck', 3, { channel: 9, activeUs: 1700, travelMs: 90, settleMs: 20 }),
-        servo('sharedStrum', -1, { source: 'gpio', gpio: 2, activeUs: 1700, travelMs: 90, settleMs: 20 })
+        servo('pluck', 3, { channel: 9, activeUs: 1700, travelMs: 90, settleMs: 20 })
       ]
     };
   }
@@ -802,6 +801,13 @@
       return this._call('/api/test/servo', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wire)
       }, function () { return mockTestServo(payload); });
+    },
+    // POST /api/test/jog -> { ok } (409 if not armed). Body: { axis, deltaMm }.
+    jog: function (payload) {
+      var wire = { axis: payload.axis | 0, deltaMm: Number(payload.deltaMm) || 0 };
+      return this._call('/api/test/jog', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wire)
+      }, function () { return { ok: true, note: 'jog ' + wire.deltaMm + ' mm (mock)' }; });
     },
     // POST /api/test/endstop -> { ok:true, home:Bool, limit:Bool }. Body: { axis }.
     testEndstop: function (payload) {

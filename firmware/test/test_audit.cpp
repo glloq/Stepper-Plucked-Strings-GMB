@@ -164,25 +164,23 @@ TEST(validator_rejects_out_of_range_rest_pulse) {
     CHECK(!ProfileValidator::isActivatable(p));
 }
 
-TEST(validator_requires_pluck_servo_for_individual_mode) {
+TEST(validator_requires_striker_per_string) {
     Profile p = uke();
-    p.instrument.pluckMode = PluckMode::Individual;
-    // Remove all pluck servos.
+    // Remove all pluck servos: every string now lacks a striker (strumming is per
+    // string, so this must fail — there is no shared strummer to fall back on).
     for (auto it = p.servos.begin(); it != p.servos.end();) {
         if (it->function == "pluck") it = p.servos.erase(it);
         else ++it;
     }
     CHECK(!ProfileValidator::isActivatable(p));
-}
-
-TEST(validator_requires_shared_strum_servo) {
-    Profile p = uke();
-    p.instrument.pluckMode = PluckMode::SharedStrum;
-    CHECK(!ProfileValidator::isActivatable(p));  // no sharedStrum servo present
-    ServoConfig strum;
-    strum.enabled = true; strum.function = "sharedStrum"; strum.stringIndex = -1;
-    strum.channel = 12;
-    p.servos.push_back(strum);
+    // A per-string strum servo on each string satisfies the requirement.
+    for (size_t i = 0; i < p.strings.size(); ++i) {
+        ServoConfig strum;
+        strum.enabled = true; strum.function = "strum";
+        strum.stringIndex = static_cast<int8_t>(i);
+        strum.channel = static_cast<uint8_t>(12 + i);
+        p.servos.push_back(strum);
+    }
     CHECK(ProfileValidator::isActivatable(p));
 }
 

@@ -46,18 +46,16 @@ advanced option can instead press "fret 0" for specific mechanics.
 
 ## 3. Setting the string vibrating (§5.3)
 
-Two modes, which may be combined on the same instrument:
+Each string is set vibrating by **its own** actuator — there is no shared
+strummer; strumming is per string:
 
 * **Individual pluck** — one pluck actuator per string (servo `function: "pluck"`,
   PCA9685 channels 6–11). Enables chords, repeated notes, per-string tremolo and
   velocity, and precise per-string triggering.
-* **Shared strummer** — one common mechanism sweeping several strings
-  (servo `function: "strummer"`/`aux`, channels 12–15). Supports up/down strokes,
-  adjustable speed, adjustable string range, string exclusion, return-to-rest and
-  synchronisation with the fingers.
-
-The profile field `instrument.pluckMode` selects `individual`, `sharedStrum`, or
-`both`.
+* **Per-string strum** — a per-string strum servo (`function: "strum"`) with an
+  optional `strumLift` that lowers the strum servo onto the string for a stroke
+  and raises it after. Supports up/down alternating strokes, adjustable stroke
+  speed and depth, and an engage delay — all per string.
 
 Per string, several servo roles can be defined: `finger` (press), `pluck`
 (individual plectrum), `strum` (per-string strum), `strumLift` (an optional

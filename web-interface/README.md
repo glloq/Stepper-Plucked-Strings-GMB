@@ -107,7 +107,7 @@ servos per string, **with or without a PCA9685**:
   The system works with **no PCA at all** (every servo on a direct GPIO) or any
   mix. Per-string servos get their `stringIndex` set automatically; Advanced mode
   also exposes **shared/auxiliary** servos (`stringIndex = -1`, e.g.
-  `sharedStrum`/`aux`). Each servo carries its calibration (rest/active µs,
+  `sharedDamper`/`aux`). Each servo carries its calibration (rest/active µs,
   pulse min/max, inverted, travelMs, settleMs, disableAtRest) and **Test
   rest/active** buttons (`POST /api/test/servo`).
 

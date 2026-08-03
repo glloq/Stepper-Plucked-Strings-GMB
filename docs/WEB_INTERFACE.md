@@ -30,10 +30,10 @@ of detailed parameters, JSON import/export.
 
 | Step | Title | Content |
 | ----- | ----- | ------- |
-| 1 | **Identification** | name, description, number of strings, instrument type, proposed tuning, max frets (applied to all strings), **plucking mode** (individual / shared strummer / both), **capo** |
+| 1 | **Identification** | name, description, number of strings, instrument type, proposed tuning, max frets (applied to all strings), **capo** |
 | 2 | **Board selection** | ESP32 model → available/reserved/recommended GPIOs (`esp32-s3-devkitc-1` profile); plus a **Network** panel: Wi-Fi mode (AP/station), SSID, hostname, AP name |
 | 3 | **Automatic assignment** | "Assign pins automatically" button (number of strings, interfaces, board, future USB, diagnostic port, I²C, sensors) |
-| 4 | **Mechanical configuration** | per string: axis enabled, vibrating length, transmission, motor wiring polarity (invert direction), **max speed & acceleration** (now in the simplified view), and Advanced geometry; **Copy mechanics to all strings** |
+| 4 | **Mechanical configuration** | per string: axis enabled, vibrating length, transmission, motor wiring polarity (invert direction), **max speed & acceleration** (now in the simplified view), and Advanced geometry; a **jog ±1/±5 mm** control to check the motor direction live; **Copy mechanics to all strings** |
 | 5 | **Homing** | per axis: HOME GPIO, active level, homing search direction, **zero offset / rest position (FDC)**; Advanced adds speeds, back-off, timeout, LIMIT GPIO & level; **Home all axes now** and **Copy homing to all** |
 | 6 | **Servo calibration** | per servo: source/channel, rest, active, travel/settle, disable at rest; **strum/stroke motion** for strike roles — alternate stroke direction (+ up-stroke pulse), stroke time, minimum strike depth; **engage delay** for a strum lift; a **Test strike** pulse |
 | 7 | **Note calibration** | per string a **Fret offset from FDC** (nut position) that shifts every fret; automatic fret computation **or** manual calibration — move the axis and **Capture position** records the live motor position; an **Abs (FDC)** column; **Copy scale + calibration to all** |
@@ -142,7 +142,7 @@ restore, set the startup profile. **JSON** exchange format:
 {
   "project": "Stepper-Plucked-Strings-GMB",
   "profileVersion": 1,
-  "instrument": { "name": "Ukulele 4 strings", "stringCount": 4, "pluckMode": "individual" },
+  "instrument": { "name": "Ukulele 4 strings", "stringCount": 4 },
   "board": { "profile": "esp32-s3-devkitc-1", "reserveUsb": true, "automaticPinAssignment": true },
   "network": { "mode": "station", "hostname": "gmb-ukulele" },
   "strings": []

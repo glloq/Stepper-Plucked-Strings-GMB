@@ -1,7 +1,7 @@
 // Servo bank supporting PCA9685 (up to four boards) AND direct-GPIO servos,
 // mixable per servo (user requirement: work with or without a PCA). Roles:
-// finger / pluck / strum / strumLift / damper per string, plus shared and aux
-// actuators.
+// finger / pluck / strum / strumLift / damper per string, plus a shared damper
+// and aux actuators. There is no shared strummer — strumming is per string.
 // The PCA /OE line is tied to a safety pin so all PCA servos can be neutralised
 // instantly (spec §21.2); direct servos are detached on stop.
 #pragma once
@@ -58,7 +58,6 @@ public:
     // the string for a stroke, then raises (disengages) it: rest = raised.
     int strumLiftIndex(int stringIndex) const { return servoIndex("strumLift", stringIndex); }
     int damperIndex(int stringIndex) const { return servoIndex("damper", stringIndex); }
-    int sharedStrumIndex() const { return servoIndex("sharedStrum", -1); }
 
     // True if any configured direct-GPIO servo failed to attach an LEDC channel.
     bool directAttachFault() const { return directAttachFault_; }

@@ -148,12 +148,6 @@
           GMB.markDirty();
         }
       }), 'Applied to every string; fine-tune per string in the Notes step.'),
-      GMB.field('Plucking mode', GMB.input(inst, 'pluckMode', {
-        type: 'select', options: [
-          { value: 'individual', label: 'Individual pluck (one plucker per string)' },
-          { value: 'sharedStrum', label: 'Shared strummer' },
-          { value: 'both', label: 'Both' }]
-      }), 'How strings are excited; drives the servo roles you need.'),
       GMB.field('Capo (fret)', GMB.input(inst, 'capo', { type: 'number', min: 0, max: 12 }),
         'Global capo: raises every open string by this many frets.'),
       GMB.field('GM program', GMB.input(inst, 'gmProgram', { type: 'number', min: 0, max: 127 }))
@@ -311,12 +305,30 @@
         GMB.field('Max position (mm)', GMB.input(s, 'maxPositionMm', { type: 'number' }))
       ];
     }
+    var mp = motorPos[i] !== undefined ? motorPos[i] : 0;
     body.appendChild(h('div.substring', [
       h('div.substring-head', [h('strong', 'String ' + (i + 1)), h('span.pill.mini', GMB.noteName(s.openNote)),
         h('span.muted', 'steps/mm = ' + spm.toFixed(2))]),
       h('div.form-grid', basic.concat(adv)),
+      h('div.toolbar.wrap', [
+        h('span.muted', 'Jog axis (check direction):'),
+        GMB.button('−5', function () { jogAxis(i, -5); }, 'ghost'),
+        GMB.button('−1', function () { jogAxis(i, -1); }, 'ghost'),
+        GMB.button('+1', function () { jogAxis(i, 1); }, 'ghost'),
+        GMB.button('+5', function () { jogAxis(i, 5); }, 'ghost'),
+        h('span.motor-pos', { id: 'motor-pos-live' }, 'Motor: ' + mp.toFixed(2) + ' mm')
+      ]),
       h('div.toolbar', [copyToAllBtn('Copy mechanics to all strings', copyMechToAll, s)])
     ]));
+  }
+
+  // Nudge one axis a few mm (real move on hardware; the live readout updates from
+  // the status socket). Confirms motor direction / wiring polarity on the bench.
+  function jogAxis(i, deltaMm) {
+    GMB.api.jog({ axis: i, deltaMm: deltaMm }).then(function (res) {
+      if (res && res.ok === false) { GMB.toast('Jog refused: ' + (res.error || 'instrument not ready (home first)') + '.', 'warn'); return; }
+      GMB.toast('String ' + (i + 1) + ': jog ' + (deltaMm > 0 ? '+' : '') + deltaMm + ' mm.', 'ok');
+    }).catch(function (e) { testErr('Jog failed', e); });
   }
 
   // Assisted steps/mm (spec 12.1) — mirrors StepperAxis::stepsPerMm.
@@ -480,7 +492,7 @@
   // ---- Step 6: Servos per string -------------------------------------------
   var ROLE_LABEL = {
     finger: 'Finger', pluck: 'Pluck (plectrum)', strum: 'Strum', strumLift: 'Strum lift',
-    damper: 'Damper', sharedStrum: 'Shared strum', sharedDamper: 'Shared damper', aux: 'Auxiliary'
+    damper: 'Damper', sharedDamper: 'Shared damper', aux: 'Auxiliary'
   };
   function roleLabel(fn) { return ROLE_LABEL[fn] || fn; }
 
@@ -542,10 +554,10 @@
     var p = GMB.state.profile;
     var servos = p.servos.filter(function (sv) { return sv.stringIndex === -1; });
     return h('div.substring', [
-      h('div.substring-head', [h('strong', 'Shared / auxiliary servos'), h('span.muted', 'stringIndex −1 (span several strings)')]),
+      h('div.substring-head', [h('strong', 'Shared / auxiliary servos'), h('span.muted', 'stringIndex −1 (a shared damper or auxiliary actuator)')]),
       servos.length ? h('div.servo-list', servos.map(servoRow)) : h('p.muted', 'No shared servo.'),
       h('div.toolbar.wrap', [
-        GMB.button('+ Shared strum', function () { addServo('sharedStrum', -1); }, 'ghost'),
+        GMB.button('+ Shared damper', function () { addServo('sharedDamper', -1); }, 'ghost'),
         GMB.button('+ Auxiliary', function () { addServo('aux', -1); }, 'ghost')
       ])
     ]);
@@ -561,7 +573,7 @@
   }
   function addServo(fn, stringIndex) {
     var opts = { source: 'pca', pcaBoard: 0, channel: nextFreeChannel(0) };
-    if (fn === 'pluck' || fn === 'strum' || fn === 'sharedStrum') { opts.activeUs = 1700; opts.travelMs = 90; opts.settleMs = 20; }
+    if (fn === 'pluck' || fn === 'strum') { opts.activeUs = 1700; opts.travelMs = 90; opts.settleMs = 20; }
     if (fn === 'damper' || fn === 'sharedDamper') { opts.activeUs = 1600; }
     GMB.state.profile.servos.push(GMB.servoDefaults(fn, stringIndex, opts));
     GMB.markDirty(); drawStep();
@@ -642,7 +654,7 @@
     ]);
     // Strum / stroke motion — shown for the roles that actually strike a string.
     var role = sv.function;
-    var isStriker = role === 'strum' || role === 'pluck' || role === 'sharedStrum';
+    var isStriker = role === 'strum' || role === 'pluck';
     if (role === 'strumLift') {
       fields.push(GMB.field('Engage delay (ms)', GMB.input(sv, 'engageDelayMs', { type: 'number', min: 0 }),
         'Extra pause after the lift is down, before the strum stroke fires.'));
@@ -662,7 +674,7 @@
     if (GMB.isAdvanced()) {
       fields = fields.concat([
         GMB.field('Function', GMB.input(sv, 'function', {
-          type: 'select', options: ['finger', 'pluck', 'strum', 'strumLift', 'damper', 'sharedStrum', 'sharedDamper', 'aux'],
+          type: 'select', options: ['finger', 'pluck', 'strum', 'strumLift', 'damper', 'sharedDamper', 'aux'],
           onChange: function () { drawStep(); }
         })),
         GMB.field('Pulse min (µs)', GMB.input(sv, 'pulseMinUs', { type: 'number' })),

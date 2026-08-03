@@ -80,8 +80,7 @@ firmware/                        Specification §23             Implemented (cor
 ├── instrument/
 │   ├── InstrumentController     instrument orchestration      (adapter, upcoming)
 │   ├── StringController         per-string state machine      core/instrument/StringController.{h,cpp}
-│   ├── NoteAllocator            note allocation               core/instrument/NoteAllocator.{h,cpp}
-│   └── SharedStrummer           shared strumming              (phase 4, upcoming)
+│   └── NoteAllocator            note allocation               core/instrument/NoteAllocator.{h,cpp}
 ├── motion/
 │   ├── StepperAxis              geometry/conversion mm↔steps  core/motion/StepperAxis.{h,cpp}
 │   ├── MotionPlanner            trapezoidal profile (accel)   core/motion/MotionPlanner.{h,cpp}
@@ -222,7 +221,7 @@ in [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md#3-protocole-sysex-gmb).
 
 | Field | Type | Role |
 | ----- | ---- | ---- |
-| `instrument` | `InstrumentInfo` | name, type, GM program, number of strings, capo, transposition, pluck mode |
+| `instrument` | `InstrumentInfo` | name, type, GM program, number of strings, capo, transposition |
 | `boardIdentifier` / `reserveUsb` / `pins` | — | board, USB reservation, GPIO assignment |
 | `network` | `NetworkConfig` | AP/station mode, SSID, hostname, static IP |
 | `midi` | `MidiConfig` | channel, Omni, transposition, chord window, velocity curve, pedal |
@@ -244,7 +243,7 @@ string/fret selector and the capabilities generator.
 | **1 — Single-string prototype** | ESP32-S3, Wi-Fi, minimal UI, 1 motor, 1 HOME sensor, 1 finger servo, 1 pluck servo, Wi-Fi MIDI test, complete state machine, panic | state machine, homing, panic |
 | **2 — Intuitive configuration** | wizard, board profile, automatic GPIO assignment, conflict validation, motor/servo calibration, JSON import/export | `BoardProfile`, `PinManager`, `Profile`, wizard |
 | **3 — Multi-string** | 4 then 6 axes, PCA9685, parallel homing, note allocation, chords, per-string diagnostics | `NoteAllocator`, parallel homing |
-| **4 — Advanced playing** | shared strumming, tremolo, damping, sustain pedal, velocity curves, saturation strategies | `SharedStrummer`, curves |
+| **4 — Advanced playing** | tremolo, damping, sustain pedal, velocity curves, saturation strategies | curves |
 | **5 — Dedicated hardware** | schematic, PCB, protections, connectors, hardware shutdown, electrical validation, wiring documentation | `hardware/` |
 | **6 — Future communications** | BLE MIDI, USB MIDI, MIDI DIN, wired links | new transports reusing `MidiEvent` |
 

@@ -561,6 +561,32 @@ void WebApi::registerRoutes() {
     testServo->setMethod(HTTP_POST);
     server_->addHandler(testServo);
 
+    // ---- POST /api/test/jog (nudge one axis by a delta, Ready only) ----
+    auto* testJog = new AsyncCallbackJsonWebHandler(
+        "/api/test/jog", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
+            JsonDocument doc;
+            if (!ctx_.safety || !ctx_.safety->actuatorsAllowed()) {
+                doc["ok"] = false;
+                doc["error"] = "actuators not armed";
+                sendJson(req, doc, 409);
+                return;
+            }
+            // Enqueue for loop(): it owns the steppers and also rejects an invalid
+            // axis, a faulted axis, or an axis busy with a live note.
+            int axis = body["axis"] | -1;
+            double delta = body["deltaMm"] | 0.0;
+            uint32_t cmdId = ctx_.onJog ? ctx_.onJog(axis, delta) : 0;
+            bool queued = cmdId != 0;
+            doc["ok"] = queued;
+            doc["accepted"] = queued;
+            doc["commandId"] = cmdId;
+            doc["note"] = queued ? "jog queued" : "command queue full";
+            sendJson(req, doc, queued ? 202 : 503);
+        });
+    testJog->setMethod(HTTP_POST);
+    server_->addHandler(testJog);
+
     // ---- POST /api/test/endstop (read a HOME/LIMIT sensor) ----
     auto* testEndstop = new AsyncCallbackJsonWebHandler(
         "/api/test/endstop", [this](AsyncWebServerRequest* req, JsonVariant& body) {

@@ -166,7 +166,7 @@ enum class ServoSource : uint8_t { Pca = 0, DirectGpio = 1 };
 
 struct ServoConfig {
     bool enabled;
-    std::string function;         // "finger"/"pluck"/"strum"/"strumLift"/"damper"/"sharedStrum"/"aux"
+    std::string function;         // "finger"/"pluck"/"strum"/"strumLift"/"damper"/"sharedDamper"/"aux"
     int8_t stringIndex;           // owner string, -1 = shared/global
 
     ServoSource source;           // PCA9685 OR direct ESP32 GPIO
@@ -192,14 +192,14 @@ struct ServoConfig {
 
 ### 4.0a Strum / pluck stroke shaping
 
-For the strike roles (`pluck`, `strum`, `sharedStrum`) MIDI velocity scales the
+For the strike roles (`pluck`, `strum`) MIDI velocity scales the
 depth between `restUs` and `activeUs`. Five extra fields control the *gesture*:
 
 * **`alternateDirection` + `activeAltUs`** — successive strokes rake the string
   in opposite directions (down, up, down…). The up-stroke drives to `activeAltUs`,
-  or, when that is `0`, to the mirror of `activeUs` about `restUs`. Applies both to
-  a per-string striker and to the shared strummer (each servo keeps its own
-  stroke parity, reset on neutralise / profile activation).
+  or, when that is `0`, to the mirror of `activeUs` about `restUs`. Applies to the
+  per-string striker (each servo keeps its own stroke parity, reset on neutralise /
+  profile activation).
 * **`strokeMs`** — how long the stroke stays engaged before it returns to rest,
   i.e. the stroke's *speed*, independent of `travelMs` (which remains the return /
   settle base). `0` keeps the legacy behaviour (`travelMs`).
@@ -258,7 +258,7 @@ Each string (1 to 6) can have its own servos:
 | `strum`  | string-specific strumming                            |
 | `damper` | string-specific damper / mute                        |
 
-**Shared** roles (`sharedStrum`, `aux`, `stringIndex = -1`) allow a mechanism
+**Shared** roles (`sharedDamper`, `aux`, `stringIndex = -1`) allow a mechanism
 that spans several strings. The firmware lifts the finger and actuates the
 string's damper when the note is released.
 
@@ -279,6 +279,6 @@ Finger lifted, motor possibly moved to a safe position, plucking allowed directl
 Advanced option: use the finger on the zero fret for a specific mechanism.
 
 Recommended layout on a first PCA9685 board (16 channels): 0–5 finger presses,
-6–11 individual plucking, 12–15 dampers / shared strumming / auxiliaries. Beyond
+6–11 individual plucking, 12–15 dampers / auxiliaries. Beyond
 that, add boards (`pcaBoard` 1–3) or servos on direct GPIO. Each PCA9685's `/OE`
 output is wired to a safety pin — see [`SAFETY.md`](SAFETY.md).

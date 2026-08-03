@@ -92,7 +92,7 @@ The system must be adaptable to:
 * zither;
 * experimental plucked string instruments;
 * instruments using an individual pick;
-* instruments using a shared strumming system.
+* instruments using a per-string strum.
 
 The project must not impose:
 
@@ -192,21 +192,19 @@ This mode allows:
 * individual velocity control;
 * precise triggering of each string.
 
-### Shared strum
+### Per-string strum
 
-A common mechanism sweeps across several strings.
+Each string may use its own strum servo instead of an individual pluck.
 
 It must allow:
 
 * upward strum;
 * downward strum;
 * adjustable speed;
-* adjustable string range;
 * return to rest position;
-* exclusion of certain strings;
 * synchronization with the fingers.
 
-The same instrument may combine individual plucks and a shared strum.
+The same instrument may combine strings that pluck with strings that strum.
 
 ---
 
@@ -312,7 +310,7 @@ Recommended allocation:
 | -------- | -------------------------------------------- |
 | 0 to 5   | finger pressing                              |
 | 6 to 11  | individual pluck                             |
-| 12 to 15 | dampers, shared strum or auxiliary functions |
+| 12 to 15 | dampers or auxiliary functions               |
 
 The `OE` output of the PCA9685 must be connected to a safety pin in order to immediately neutralize the servos.
 
@@ -1142,8 +1140,7 @@ Simplified example:
   "profileVersion": 1,
   "instrument": {
     "name": "Ukulele 4 strings",
-    "stringCount": 4,
-    "pluckMode": "individual"
+    "stringCount": 4
   },
   "board": {
     "profile": "esp32-s3-devkitc-1",
@@ -1269,8 +1266,7 @@ firmware/
 ├── instrument/
 │   ├── InstrumentController
 │   ├── StringController
-│   ├── NoteAllocator
-│   └── SharedStrummer
+│   └── NoteAllocator
 ├── motion/
 │   ├── StepperAxis
 │   ├── MotionPlanner
@@ -1334,7 +1330,6 @@ firmware/
 
 ## Phase 4 — Advanced play
 
-* shared strum;
 * tremolo;
 * damping;
 * sustain pedal;

@@ -79,7 +79,7 @@ channel map:
 | -------- | --- |
 | 0–5 | finger press (one per string) |
 | 6–11 | individual pluck (one per string) |
-| 12–15 | dampers, shared strummer, or auxiliary functions |
+| 12–15 | dampers or auxiliary functions |
 
 The PCA9685 `/OE` (output-enable) pin must be tied to a **safety GPIO**
 (`SERVO_OE`, GPIO47 by default) so all servos can be neutralised instantly on

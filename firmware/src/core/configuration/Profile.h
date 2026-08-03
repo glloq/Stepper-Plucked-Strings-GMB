@@ -17,7 +17,6 @@
 
 namespace gmb {
 
-enum class PluckMode : uint8_t { Individual = 0, SharedStrum = 1, Both = 2 };
 enum class NetworkMode : uint8_t { AccessPoint = 0, Station = 1 };
 
 enum class VelocityCurve : uint8_t { Linear, Soft, Hard, Exponential, Custom };
@@ -31,7 +30,6 @@ struct InstrumentInfo {
     uint8_t typeId = 0x04;    // GMB instrument type id (guitar)
     int8_t capo = 0;
     int8_t transpose = 0;
-    PluckMode pluckMode = PluckMode::Individual;
 };
 
 struct NetworkConfig {
@@ -81,8 +79,9 @@ enum class ServoSource : uint8_t { Pca = 0, DirectGpio = 1 };
 //   strum  : per-string strum servo                    (per string)
 //   strumLift : lowers/raises the strum servo per stroke (per string)
 //   damper : per-string damper (mute)                  (per string)
-//   sharedStrum / sharedDamper : one mechanism across several strings
+//   sharedDamper : one damper mechanism across several strings
 //   aux    : any auxiliary actuator
+// (Strumming is per string only — there is no shared strummer role.)
 // (Function is kept as a string so the web UI can offer new roles without a
 // firmware change.)
 struct ServoConfig {

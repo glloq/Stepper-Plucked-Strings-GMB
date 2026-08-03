@@ -51,8 +51,6 @@ WebApi g_web;
 enum class AppPhase { Boot, Reconfiguring, Homing, Ready };
 AppPhase g_phase = AppPhase::Boot;
 bool g_degraded = false;  // Ready but with one or more axes disabled by a fault
-uint32_t g_lastSharedStrumMs = 0;    // time of the last shared-strum sweep
-uint32_t g_lastStrumGroupFired = 0;  // strum group already swept (one sweep/group)
 
 // Pre-homing finger-lift: homing must not move a carriage while a finger is still
 // pressed on the string. beginHoming() commands every finger to rest and waits
@@ -87,7 +85,6 @@ struct StringSched {
     uint32_t phaseStartMs = 0;
     uint32_t commandId = 0;
     int fingerIndex = -1;
-    uint32_t readySinceMs = 0;  // when this string reached Ready (shared-strum sync)
     uint32_t dampUntilMs = 0;   // don't move until the damper has acted (replace)
     uint32_t moveDeadlineMs = 0;  // fault the axis if the move isn't done by then
     int liftIndex = -1;    // engaged strum-lift servo during a stroke (-1 = none)
@@ -128,7 +125,7 @@ std::vector<StringSched> g_sched;
 // here; loop() is the SOLE owner of the mechanical state and drains the queue
 // sequentially. Read-only handlers take g_stateMutex so a reallocation in loop()
 // (profile reload, capability rebuild) can never be seen half-done.
-enum class CmdType : uint8_t { Panic, Reset, ActivateProfile, TestNote, TestServo };
+enum class CmdType : uint8_t { Panic, Reset, ActivateProfile, TestNote, TestServo, Jog };
 struct AppCommand {
     CmdType type;
     uint32_t id = 0;             // for result tracking (GET /api/commands)
@@ -137,6 +134,8 @@ struct AppCommand {
     uint16_t durationMs = 0;
     int16_t servoIndex = -1;
     bool servoActive = false;
+    int16_t axisIndex = -1;      // Jog: which axis to nudge
+    float jogDeltaMm = 0.0f;     // Jog: signed distance (mm)
 };
 
 // Result registry so a 202-accepted command can be followed up by the web UI:
@@ -625,6 +624,25 @@ bool doTestServo(int index, bool active) {
     return true;
 }
 
+// Web jog: nudge one axis by a small signed delta (manual bring-up, checking the
+// motor direction, positioning for fret calibration). Only when Ready, actuators
+// armed, the axis homed & not faulted, and idle (no live note) so it can never
+// fight the playback scheduler. moveToMm clamps to the axis travel.
+bool doJog(int axis, double deltaMm, uint32_t nowMs) {
+    (void)nowMs;
+    if (g_phase != AppPhase::Ready) return false;
+    if (!g_safety.actuatorsAllowed()) return false;
+    if (axis < 0 || axis >= static_cast<int>(g_instrument.stringCount())) return false;
+    if (axis < static_cast<int>(g_axisFaulted.size()) && g_axisFaulted[axis]) return false;
+    if (g_instrument.target(axis).active) return false;         // don't fight a live note
+    if (g_sched[axis].phase != StringSched::Idle) return false;  // axis busy
+    if (g_steppers.isRunning(axis)) return false;                // still moving
+    if (deltaMm > 25.0) deltaMm = 25.0;                          // bound one nudge
+    if (deltaMm < -25.0) deltaMm = -25.0;
+    g_steppers.moveToMm(axis, g_steppers.positionMm(axis) + deltaMm);
+    return true;
+}
+
 // Discard every queued command without executing it (used after a panic so a
 // stale profile activation / test can't fire once the STOP has latched).
 void purgeCommands() {
@@ -668,6 +686,9 @@ void drainCommands(uint32_t nowMs) {
             case CmdType::TestServo:
                 ok = doTestServo(c->servoIndex, c->servoActive);
                 break;
+            case CmdType::Jog:
+                ok = doJog(c->axisIndex, c->jogDeltaMm, nowMs);
+                break;
         }
         setCommandResult(c->id, ok ? 1 : 2);  // succeeded / refused
         delete c->profile;  // owned copy (null for non-profile commands)
@@ -675,37 +696,13 @@ void drainCommands(uint32_t nowMs) {
     }
 }
 
-// The per-string individual striker: the plectrum ('pluck') if present, otherwise
-// the per-string strum servo ('strum'). Both name the same physical per-string
-// striker, so an instrument may wire either one.
+// The per-string striker: the plectrum ('pluck') if present, otherwise the
+// per-string strum servo ('strum'). Both name the same physical per-string
+// striker, so an instrument may wire either one. There is no shared strummer —
+// every string is plucked/strummed on its own.
 int perStringStrikeIndex(size_t i) {
     int p = g_servos.pluckIndex(static_cast<int>(i));
     return p >= 0 ? p : g_servos.strumIndex(static_cast<int>(i));
-}
-
-// Does a given string rely on the shared strummer (shared modes, or no
-// individual striker of its own)?
-bool usesSharedStrum(size_t i) {
-    PluckMode mode = g_profile.instrument.pluckMode;
-    int pi = perStringStrikeIndex(i);
-    return (mode == PluckMode::SharedStrum || mode == PluckMode::Both) || pi < 0;
-}
-
-// Shared-strum barrier: every OTHER active string in the SAME chord (strum group)
-// that the shared strummer will sweep must have reached its fret position before
-// the sweep fires — one sweep per chord, and a prepared or unrelated note (a
-// different group) never blocks it.
-bool sharedGroupPositioned(uint32_t group) {
-    if (group == 0) return true;
-    for (size_t j = 0; j < g_instrument.stringCount(); ++j) {
-        const StringTarget& t = g_instrument.target(j);
-        if (!t.active || t.strumGroup != group) continue;
-        if (!usesSharedStrum(j)) continue;
-        // Reached its fret once it is at Ready or beyond (the strum-lift sub-phases
-        // come after Ready); anything earlier is still travelling.
-        if (g_sched[j].phase < StringSched::Ready) return false;
-    }
-    return true;
 }
 
 // Per-axis endstop safety scan, run for EVERY axis each tick BEFORE any musical
@@ -840,7 +837,6 @@ void tickString(size_t i, uint32_t nowMs) {
                 sc.motionReached();
                 if (sc.openString() || sch.fingerIndex < 0) {
                     sch.phase = StringSched::Ready;  // no finger press for open string
-                    sch.readySinceMs = nowMs;
                 } else if (sch.fingerPressStarted) {
                     // Finger already descending (lead) — keep its running travel
                     // timer (phaseStartMs) instead of restarting the press.
@@ -875,11 +871,8 @@ void tickString(size_t i, uint32_t nowMs) {
             // for a merely-prepared note — it must not rest on (and mute) the string
             // through the whole pre-trigger window; its lift lowers after trigger.
             if (!sch.liftStarted && sc.willArmOnSettle() && g_profile.midi.strumLeadMs > 0) {
-                PluckMode mode = g_profile.instrument.pluckMode;
                 int pi = perStringStrikeIndex(i);
-                bool doIndividual = (mode == PluckMode::Individual ||
-                                     mode == PluckMode::Both) && pi >= 0;
-                int li = doIndividual ? g_servos.strumLiftIndex(static_cast<int>(i)) : -1;
+                int li = pi >= 0 ? g_servos.strumLiftIndex(static_cast<int>(i)) : -1;
                 uint32_t settle = g_servos.settleMs(sch.fingerIndex);
                 if (li >= 0 &&
                     (nowMs - sch.phaseStartMs) + g_profile.midi.strumLeadMs >= settle) {
@@ -893,7 +886,6 @@ void tickString(size_t i, uint32_t nowMs) {
             if (nowMs - sch.phaseStartMs >= g_servos.settleMs(sch.fingerIndex)) {
                 sc.settled();
                 sch.phase = StringSched::Ready;
-                sch.readySinceMs = nowMs;
             }
             break;
         }
@@ -906,44 +898,16 @@ void tickString(size_t i, uint32_t nowMs) {
                 sch.executeAnchored = true;
             }
             if (!sc.pluckArmed()) break;  // not armed (prepared / already plucked)
-            PluckMode mode = g_profile.instrument.pluckMode;
             int pi = perStringStrikeIndex(i);
-            bool doIndividual = (mode == PluckMode::Individual ||
-                                 mode == PluckMode::Both) && pi >= 0;
-            bool doShared = usesSharedStrum(i);
-            // Shared-strum barrier: wait until the whole active shared group is in
-            // position (or a bounded timeout, so a stuck string can't deadlock the
-            // chord) before firing — one synchronised sweep per chord.
-            if (doShared) {
-                static constexpr uint32_t kMaxStrumWaitMs = 250;
-                if (!sharedGroupPositioned(tgt.strumGroup) &&
-                    nowMs - sch.readySinceMs < kMaxStrumWaitMs) {
-                    break;  // stay armed in Ready, keep waiting for the chord group
-                }
-            }
             // Fixed reception -> sound delay: stay ready but silent until the
             // scheduled execution time. The mechanics have been preparing (and any
             // anticipated strum lift has been lowering) during this window.
             if (static_cast<int32_t>(nowMs - sch.executeAtMs) < 0) break;
             if (!sc.executePluck(tgt.commandId)) break;
-            // Shared strum sweep (once per chord group) — not gated by a per-string
-            // strum lift.
-            if (doShared) {
-                int si = g_servos.sharedStrumIndex();
-                // Exactly one sweep PER GROUP: keyed on the chord's strum group, not
-                // a global time window. A late member of the same group can't fire a
-                // second sweep, and a genuinely different chord fires even within a
-                // few ms of the previous one (audit P0-5).
-                if (si >= 0 && tgt.strumGroup != 0 &&
-                    tgt.strumGroup != g_lastStrumGroupFired) {
-                    g_servos.strike(si, tgt.intensity);
-                    g_lastStrumGroupFired = tgt.strumGroup;
-                    g_lastSharedStrumMs = nowMs;
-                }
-            }
-            // Individual strike. If the string carries a strum-lift servo, lower it
-            // onto the string first, strike, then raise it — otherwise strike now.
-            if (doIndividual) {
+            // Per-string strike: every string is plucked/strummed on its own — there
+            // is no shared strummer. An optional strum-lift lowers the strum servo
+            // onto the string for the stroke, then raises it.
+            if (pi >= 0) {
                 // Use the lift already lowering (strum lead) if there is one,
                 // otherwise start it now.
                 int li = sch.liftStarted ? sch.liftIndex
@@ -1066,6 +1030,12 @@ void setup() {
         AppCommand c{CmdType::TestServo};
         c.servoIndex = static_cast<int16_t>(index);
         c.servoActive = active;
+        return enqueueCommand(c);
+    };
+    ctx.onJog = [](int axis, double deltaMm) -> uint32_t {
+        AppCommand c{CmdType::Jog};
+        c.axisIndex = static_cast<int16_t>(axis);
+        c.jogDeltaMm = static_cast<float>(deltaMm);
         return enqueueCommand(c);
     };
     ctx.commandState = [](uint32_t id) -> std::string { return commandStateStr(id); };

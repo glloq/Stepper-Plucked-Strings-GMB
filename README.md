@@ -28,7 +28,7 @@ One **string** = one **motor** + a few **servos**:
     │                     the finger to the fret              │
     │                                                          │
     └─ servos:  [finger] press down   [pluck] pick the string  ┘
-                [damper] mute it       (+ optional shared strummer for chords)
+                [damper] mute it       (each string has its own plucker/strummer)
 ```
 
 To play a note the firmware:
@@ -63,8 +63,8 @@ understand?"* and adapt automatically.
 - 🎸 **1–6 strings**, each with its own motor, finger, plucker and optional damper.
 - 🎵 **Automatic note allocation** — send plain MIDI notes and it spreads chords
   across the strings, or **force an exact string/fret** with MIDI CC (tablature).
-- 🤙 **Three plucking styles** — one plucker per string, a single shared strummer
-  for chords, or both.
+- 🤙 **Per-string plucking** — every string has its own striker: a plectrum
+  plucker or a per-string strum servo.
 - 🛰️ **Wi-Fi MIDI** — plays notes received over the network (UDP, port 5006).
 - 🖥️ **Local web interface** — setup wizard, live dashboard, MIDI monitor, SysEx
   tester. Runs entirely on the ESP32, no cloud.

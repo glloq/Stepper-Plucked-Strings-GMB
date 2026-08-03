@@ -305,7 +305,7 @@ Examples:
 ```text
 6 strings with individual plectrums → maximum polyphony 6
 
-6 strings with shared strumming
+6 strings, per-string plucking
 but independent sustain              → maximum polyphony 6
 
 6 strings with mechanical constraints
