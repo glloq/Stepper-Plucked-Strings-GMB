@@ -250,6 +250,28 @@ TEST(controller_explicit_fallback_on_faulted_string) {
     CHECK(!ic.target(2).active);             // never on the faulted string
 }
 
+// Explicit notes within one chord window share a strum group; a later note gets
+// a fresh group (audit P0-5).
+TEST(controller_explicit_chord_shares_strum_group) {
+    Profile p = ukulele();
+    p.selector.mode = SelectionMode::Explicit;
+    p.selector.prepareOnCompleteSelection = false;
+    p.midi.chordWindowMs = 5;  // 5 ms grouping window
+    InstrumentController ic;
+    ic.load(p);
+    ic.handleEvent(cc(0, 20, 1), 0); ic.handleEvent(cc(0, 21, 0), 0);
+    ic.handleEvent(noteOn(0, 67, 100), 0);        // string index 0
+    ic.handleEvent(cc(0, 20, 2), 1000); ic.handleEvent(cc(0, 21, 0), 1000);
+    ic.handleEvent(noteOn(0, 60, 100), 1000);     // string index 1, +1 ms
+    CHECK(ic.target(0).active);
+    CHECK(ic.target(1).active);
+    CHECK_EQ(ic.target(0).strumGroup, ic.target(1).strumGroup);  // same chord
+    CHECK(ic.target(0).strumGroup != 0);
+    ic.handleEvent(cc(0, 20, 3), 10000); ic.handleEvent(cc(0, 21, 0), 10000);
+    ic.handleEvent(noteOn(0, 64, 100), 10000);    // string index 2, +10 ms
+    CHECK(ic.target(2).strumGroup != ic.target(0).strumGroup);   // new chord
+}
+
 // A 4-note chord uses four distinct strings (criterion 14 at ukulele scale).
 TEST(controller_chord) {
     InstrumentController ic;

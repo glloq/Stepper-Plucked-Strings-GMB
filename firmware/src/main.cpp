@@ -48,10 +48,11 @@ Net g_net;
 MidiWifi g_midi;
 WebApi g_web;
 
-enum class AppPhase { Boot, Homing, Ready };
+enum class AppPhase { Boot, Reconfiguring, Homing, Ready };
 AppPhase g_phase = AppPhase::Boot;
 bool g_degraded = false;  // Ready but with one or more axes disabled by a fault
-uint32_t g_lastSharedStrumMs = 0;  // dedupe the shared strummer within a chord
+uint32_t g_lastSharedStrumMs = 0;    // time of the last shared-strum sweep
+uint32_t g_lastStrumGroupFired = 0;  // strum group already swept (one sweep/group)
 
 // Pre-homing finger-lift: homing must not move a carriage while a finger is still
 // pressed on the string. beginHoming() commands every finger to rest and waits
@@ -370,6 +371,14 @@ bool doReset(uint32_t nowMs) {
         return false;
     g_safety.reset();                 // Panic/EStop -> PowerOnSafe
     g_safety.clearFaults();
+    // Recover runtime-faulted axes so a reset can actually bring them back: clear
+    // the fault flag AND the StringController fault, then re-home (audit P0-3).
+    for (size_t i = 0; i < g_axisFaulted.size(); ++i) {
+        if (g_axisFaulted[i]) {
+            g_axisFaulted[i] = false;
+            g_instrument.recoverString(i);  // Fault -> Idle, un-fault the allocator
+        }
+    }
     return beginHoming(nowMs);         // mandatory re-home before playing again
 }
 
@@ -496,7 +505,12 @@ bool doActivateProfile(const Profile& p, uint32_t nowMs) {
     g_steppers.stopAll();
     g_steppers.enableDrivers(false);
     for (auto& s : g_sched) s = StringSched{};
-    g_phase = AppPhase::Boot;
+    // Immediately demote from Armed to PowerOnSafe and enter Reconfiguring so no
+    // test servo / test note / MIDI can drive the (about-to-be-torn-down) hardware
+    // during the release+rebuild window (audit P0-2). Only a panic/E-stop or the
+    // internal neutralisation may act until homing re-arms.
+    g_safety.reset();
+    g_phase = AppPhase::Reconfiguring;
 
     // Drive every current servo to rest (fingers up) before the old config is
     // destroyed, and wait for the slowest to travel + settle.
@@ -528,13 +542,19 @@ void servicePendingActivation(uint32_t nowMs) {
     }
     delete g_pendingProfile;
     g_pendingProfile = nullptr;
-    beginHoming(nowMs);  // re-home after a mechanical change (§16)
+    // Re-home after the mechanical change (§16). If it cannot start (attach fault,
+    // invalid config), stay safely in Boot/PowerOnSafe rather than stuck armed.
+    if (!beginHoming(nowMs)) g_phase = AppPhase::Boot;
 }
 
 // Web test note: only when Ready, and only if we can guarantee its Note Off.
 bool doTestNote(uint8_t channel, uint8_t note, uint8_t vel, uint16_t durationMs,
                 uint32_t nowMs) {
     if (g_phase != AppPhase::Ready) return false;
+    // Reject out-of-range MIDI values: a 4-bit channel and 7-bit note/velocity.
+    // (Defence at the source; the selector also masks the channel.)
+    if (channel > 15 || note > 127 || vel > 127) return false;
+    if (durationMs > 10000) durationMs = 10000;  // cap a runaway hold
     // Never emit a Note On we cannot later release: refuse if the deferred
     // Note-Off queue is full (would otherwise leave the note stuck on).
     if (g_testOffs.size() >= 16) return false;
@@ -632,6 +652,31 @@ bool sharedGroupPositioned(uint32_t group) {
     return true;
 }
 
+// Per-axis endstop safety scan, run for EVERY axis each tick BEFORE any musical
+// logic and regardless of whether a note is active — so a carriage still
+// decelerating after a Note Off (or drifting while idle) is caught. Returns true
+// if the axis just faulted (caller should skip its musical tick).
+bool tickAxisSafety(size_t i, uint32_t nowMs) {
+    if (i < g_axisFaulted.size() && g_axisFaulted[i]) return false;  // already out
+    // A LIMIT switch tripped removes this axis from service (allocator + selection
+    // + capabilities) without disturbing the others.
+    if (g_steppers.limitActive(i)) {
+        faultRuntimeAxis(i, "LIMIT tripped", nowMs);
+        return true;
+    }
+    // HOME asserting while the carriage position says it is well away from home is
+    // a position/reference fault (lost steps, drift, stuck/inverted sensor). Home
+    // is anchored to 0 mm, so the ABSOLUTE distance is the mismatch (the axis
+    // coordinate can run negative depending on the homing direction). Positions
+    // legitimately near home (open string / low frets) are not faulted.
+    static constexpr double kHomeMismatchMm = 10.0;
+    if (g_steppers.homeActive(i) && std::fabs(g_steppers.positionMm(i)) > kHomeMismatchMm) {
+        faultRuntimeAxis(i, "HOME asserted away from home (position drift)", nowMs);
+        return true;
+    }
+    return false;
+}
+
 // Drive one string's mechanical sequence toward a plucked note.
 void tickString(size_t i, uint32_t nowMs) {
     StringController& sc = g_instrument.string(i);
@@ -658,24 +703,6 @@ void tickString(size_t i, uint32_t nowMs) {
             sch.phase = StringSched::Idle;
             sch.commandId = 0;
         }
-        return;
-    }
-
-    // A LIMIT switch tripped faults this axis and removes it from service
-    // (allocator + selection + capabilities), without disturbing the others.
-    if (g_steppers.limitActive(i)) {
-        faultRuntimeAxis(i, "LIMIT tripped", nowMs);
-        return;
-    }
-    // HOME is also a physical extremity. Asserting it while the carriage position
-    // says it is well away from home is a position/reference fault (lost steps,
-    // drift, stuck/inverted sensor) — fault rather than trust a bad coordinate.
-    // Positions legitimately near home (open string / low frets) are not faulted.
-    // Home is anchored to 0 mm, so the ABSOLUTE distance from 0 is the mismatch
-    // (the axis coordinate can run negative depending on the homing direction).
-    static constexpr double kHomeMismatchMm = 10.0;
-    if (g_steppers.homeActive(i) && std::fabs(g_steppers.positionMm(i)) > kHomeMismatchMm) {
-        faultRuntimeAxis(i, "HOME asserted away from home (position drift)", nowMs);
         return;
     }
 
@@ -770,10 +797,14 @@ void tickString(size_t i, uint32_t nowMs) {
             if (doIndividual) g_servos.strike(pi, tgt.intensity);
             if (doShared) {
                 int si = g_servos.sharedStrumIndex();
-                // One sweep per chord: dedupe strikes within a short window.
-                static constexpr uint32_t kStrumDedupeMs = 30;
-                if (si >= 0 && nowMs - g_lastSharedStrumMs >= kStrumDedupeMs) {
+                // Exactly one sweep PER GROUP: keyed on the chord's strum group, not
+                // a global time window. A late member of the same group can't fire a
+                // second sweep, and a genuinely different chord fires even within a
+                // few ms of the previous one (audit P0-5).
+                if (si >= 0 && tgt.strumGroup != 0 &&
+                    tgt.strumGroup != g_lastStrumGroupFired) {
                     g_servos.strike(si, tgt.intensity);
+                    g_lastStrumGroupFired = tgt.strumGroup;
                     g_lastSharedStrumMs = nowMs;
                 }
             }
@@ -903,7 +934,9 @@ void setup() {
     };
     ctx.appState = []() -> std::string {
         if (g_phase == AppPhase::Ready) return g_degraded ? "readyDegraded" : "ready";
-        return g_phase == AppPhase::Homing ? "homing" : "boot";
+        if (g_phase == AppPhase::Homing) return "homing";
+        if (g_phase == AppPhase::Reconfiguring) return "reconfiguring";
+        return "boot";
     };
     ctx.readyStrings = []() -> int {
         if (g_phase != AppPhase::Ready) return 0;
@@ -1020,7 +1053,11 @@ void loop() {
         doHoming(nowMs);
         g_steppers.tick(nowUs);
     } else if (g_phase == AppPhase::Ready && g_safety.actuatorsAllowed()) {
-        for (size_t i = 0; i < g_instrument.stringCount(); ++i) tickString(i, nowMs);
+        // Endstop safety for EVERY axis first (active or not), then the musical
+        // logic for the axes that did not just fault.
+        for (size_t i = 0; i < g_instrument.stringCount(); ++i) {
+            if (!tickAxisSafety(i, nowMs)) tickString(i, nowMs);
+        }
         g_steppers.tick(nowUs);
     }
 

@@ -305,6 +305,32 @@ TEST(faulted_string_removed_from_allocation) {
     CHECK_EQ(ic.soundingCount(), 3);
 }
 
+// recoverString undoes a runtime fault so the axis can play again (reset path).
+TEST(recover_string_restores_a_faulted_axis) {
+    InstrumentController ic;
+    ic.load(uke());
+    ic.faultString(2);                       // string 2 out of service
+    CHECK(ic.string(2).state() == StringState::Fault);
+    ic.recoverString(2);                     // reset recovery
+    CHECK(ic.string(2).state() == StringState::Idle);
+    // It can now be homed again (Fault would have refused setHoming).
+    ic.string(2).setHoming();
+    CHECK(ic.string(2).state() == StringState::Homing);
+    ic.string(2).homingDone();
+    // And it is choosable again: an explicit note on string 2 plays.
+    Profile p = uke();
+    p.selector.mode = SelectionMode::Explicit;
+    p.selector.prepareOnCompleteSelection = false;
+    InstrumentController ic2;
+    ic2.load(p);
+    ic2.faultString(2);
+    ic2.recoverString(2);
+    ic2.handleEvent(cc(0, 20, 3, 0), 0);     // string index 2
+    ic2.handleEvent(cc(0, 21, 5, 0), 0);
+    ic2.handleEvent(noteOn(0, 69, 100, 0), 0);
+    CHECK(ic2.target(2).active);
+}
+
 // --- P0: degraded capabilities exclude the faulted axis entirely ---
 TEST(degraded_snapshot_excludes_disabled_string) {
     Profile p = Profile::makeDefault("Guitar", 6, {40, 45, 50, 55, 59, 64}, 12);
