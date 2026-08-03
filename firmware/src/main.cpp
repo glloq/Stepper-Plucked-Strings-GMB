@@ -92,6 +92,11 @@ struct StringSched {
     uint32_t moveDeadlineMs = 0;  // fault the axis if the move isn't done by then
     int liftIndex = -1;    // engaged strum-lift servo during a stroke (-1 = none)
     int strikeIndex = -1;  // striker to fire once the lift has lowered
+    uint32_t executeAtMs = 0;   // earliest time the note may sound (fixed delay)
+    uint32_t estArriveMs = 0;   // estimated carriage arrival time (finger lead)
+    bool fingerPressStarted = false;  // finger descent already begun (lead)
+    uint32_t liftStartMs = 0;   // when the strum lift began lowering
+    bool liftStarted = false;   // strum lift descent already begun (lead)
 };
 
 // Estimate a trapezoidal/triangular move time (ms) for a distance at a given max
@@ -733,6 +738,7 @@ void tickString(size_t i, uint32_t nowMs) {
             int fi = g_servos.fingerIndex(static_cast<int>(i));
             if (fi >= 0) g_servos.release(fi);
             if (sch.liftIndex >= 0) { g_servos.release(sch.liftIndex); sch.liftIndex = -1; }
+            sch.liftStarted = false;
             int di = g_servos.damperIndex(static_cast<int>(i));
             if (di >= 0) g_servos.strike(di);
             sch.phase = StringSched::WaitStopped;
@@ -763,6 +769,12 @@ void tickString(size_t i, uint32_t nowMs) {
         }
         // A strum lift engaged for the previous note is raised before anything else.
         if (sch.liftIndex >= 0) { g_servos.release(sch.liftIndex); sch.liftIndex = -1; }
+        // Fixed reception -> sound delay, and reset the per-note lead state so a
+        // new note starts its finger/strum anticipation from scratch.
+        sch.executeAtMs = nowMs + g_profile.midi.noteExecutionDelayMs;
+        sch.fingerPressStarted = false;
+        sch.liftStarted = false;
+        sch.strikeIndex = -1;
         // Lift the finger and WAIT for it to travel up before moving the carriage,
         // so the finger never drags along the string (§16).
         sch.commandId = tgt.commandId;
@@ -789,10 +801,26 @@ void tickString(size_t i, uint32_t nowMs) {
                 g_steppers.moveToMm(i, tgt.positionMm);
                 sch.phase = StringSched::MovingToFret;
                 sch.phaseStartMs = nowMs;
+                sch.estArriveMs = nowMs + est;
                 sch.moveDeadlineMs = nowMs + 500u + 3u * est;
             }
             break;
         case StringSched::MovingToFret:
+            // Finger lead: begin the finger descent up to fingerLeadMs before the
+            // estimated arrival so the finger reaches the string around arrival,
+            // trimming the post-arrival latency. Opt-in (0 = press only on arrival);
+            // set too large it can drag, so it is the user's to tune.
+            if (!sc.openString() && sch.fingerIndex >= 0 && !sch.fingerPressStarted &&
+                g_profile.midi.fingerLeadMs > 0 &&
+                static_cast<int32_t>(nowMs - sch.estArriveMs) +
+                        static_cast<int32_t>(g_profile.midi.fingerLeadMs) >= 0) {
+                if (!g_servos.press(sch.fingerIndex)) {
+                    faultRuntimeAxis(i, "finger servo write failed", nowMs);
+                    break;
+                }
+                sch.fingerPressStarted = true;
+                sch.phaseStartMs = nowMs;  // finger travel timer starts now
+            }
             // Arrived only when the carriage is stopped AND actually at the fret
             // position (a refused/interrupted move must not be read as "reached").
             if (g_steppers.reachedTarget(i)) {
@@ -800,6 +828,10 @@ void tickString(size_t i, uint32_t nowMs) {
                 if (sc.openString() || sch.fingerIndex < 0) {
                     sch.phase = StringSched::Ready;  // no finger press for open string
                     sch.readySinceMs = nowMs;
+                } else if (sch.fingerPressStarted) {
+                    // Finger already descending (lead) — keep its running travel
+                    // timer (phaseStartMs) instead of restarting the press.
+                    sch.phase = StringSched::PressingFinger;
                 } else if (!g_servos.press(sch.fingerIndex)) {
                     // The finger servo could not be driven (LEDC re-attach / PCA
                     // failure): fault the axis rather than play a wrong pitch with a
@@ -823,13 +855,33 @@ void tickString(size_t i, uint32_t nowMs) {
                 sch.phaseStartMs = nowMs;
             }
             break;
-        case StringSched::Settling:
+        case StringSched::Settling: {
+            // Strum lead: begin lowering the strum lift up to strumLeadMs before the
+            // string is Ready, so the strummer is already engaged when the strike
+            // time comes (overlaps the lift travel with the finger settle).
+            if (!sch.liftStarted && g_profile.midi.strumLeadMs > 0) {
+                PluckMode mode = g_profile.instrument.pluckMode;
+                int pi = perStringStrikeIndex(i);
+                bool doIndividual = (mode == PluckMode::Individual ||
+                                     mode == PluckMode::Both) && pi >= 0;
+                int li = doIndividual ? g_servos.strumLiftIndex(static_cast<int>(i)) : -1;
+                uint32_t settle = g_servos.settleMs(sch.fingerIndex);
+                if (li >= 0 &&
+                    (nowMs - sch.phaseStartMs) + g_profile.midi.strumLeadMs >= settle) {
+                    g_servos.press(li);  // start lowering the lift early
+                    sch.liftIndex = li;
+                    sch.strikeIndex = pi;
+                    sch.liftStartMs = nowMs;
+                    sch.liftStarted = true;
+                }
+            }
             if (nowMs - sch.phaseStartMs >= g_servos.settleMs(sch.fingerIndex)) {
                 sc.settled();
                 sch.phase = StringSched::Ready;
                 sch.readySinceMs = nowMs;
             }
             break;
+        }
         case StringSched::Ready: {
             if (!sc.pluckArmed()) break;  // not armed (prepared / already plucked)
             PluckMode mode = g_profile.instrument.pluckMode;
@@ -847,6 +899,10 @@ void tickString(size_t i, uint32_t nowMs) {
                     break;  // stay armed in Ready, keep waiting for the chord group
                 }
             }
+            // Fixed reception -> sound delay: stay ready but silent until the
+            // scheduled execution time. The mechanics have been preparing (and any
+            // anticipated strum lift has been lowering) during this window.
+            if (static_cast<int32_t>(nowMs - sch.executeAtMs) < 0) break;
             if (!sc.executePluck(tgt.commandId)) break;
             // Shared strum sweep (once per chord group) — not gated by a per-string
             // strum lift.
@@ -866,13 +922,19 @@ void tickString(size_t i, uint32_t nowMs) {
             // Individual strike. If the string carries a strum-lift servo, lower it
             // onto the string first, strike, then raise it — otherwise strike now.
             if (doIndividual) {
-                int li = g_servos.strumLiftIndex(static_cast<int>(i));
+                // Use the lift already lowering (strum lead) if there is one,
+                // otherwise start it now.
+                int li = sch.liftStarted ? sch.liftIndex
+                                         : g_servos.strumLiftIndex(static_cast<int>(i));
                 if (li >= 0) {
-                    g_servos.press(li);  // lower / engage the strum servo
-                    sch.liftIndex = li;
-                    sch.strikeIndex = pi;
+                    if (!sch.liftStarted) {
+                        g_servos.press(li);  // lower / engage the strum servo now
+                        sch.liftIndex = li;
+                        sch.strikeIndex = pi;
+                        sch.liftStartMs = nowMs;
+                        sch.liftStarted = true;
+                    }
                     sch.phase = StringSched::StrumLiftDown;
-                    sch.phaseStartMs = nowMs;
                     break;
                 }
                 g_servos.strike(pi, tgt.intensity);
@@ -880,10 +942,12 @@ void tickString(size_t i, uint32_t nowMs) {
             break;
         }
         case StringSched::StrumLiftDown:
-            // Wait for the lift to lower the strum servo onto the string, plus the
-            // configurable engage delay, then strum.
-            if (nowMs - sch.phaseStartMs >=
-                g_servos.travelMs(sch.liftIndex) + g_servos.engageDelayMs(sch.liftIndex)) {
+            // Strum once the lift has lowered the strum servo onto the string
+            // (travel + engage delay from when the descent STARTED — which may have
+            // been anticipated during the settle via strumLeadMs).
+            if (static_cast<int32_t>(nowMs - (sch.liftStartMs +
+                    g_servos.travelMs(sch.liftIndex) +
+                    g_servos.engageDelayMs(sch.liftIndex))) >= 0) {
                 g_servos.strike(sch.strikeIndex, tgt.intensity);
                 sch.phase = StringSched::StrumLiftHold;
                 sch.phaseStartMs = nowMs;

@@ -211,6 +211,9 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
     mi["sustainCc"] = p.midi.sustainCc;
     mi["velocityCurve"] = velocityCurveName(p.midi.velocityCurve);
     mi["saturationStrategy"] = saturationName(p.midi.saturationStrategy);
+    mi["noteExecutionDelayMs"] = p.midi.noteExecutionDelayMs;
+    mi["fingerLeadMs"] = p.midi.fingerLeadMs;
+    mi["strumLeadMs"] = p.midi.strumLeadMs;
 
     JsonObject sf = doc["stringFretSelection"].to<JsonObject>();
     sf["enabled"] = p.selector.enabled;
@@ -259,6 +262,7 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
         o["invertDirection"] = a.invertDirection;
         o["minPositionMm"] = a.minPositionMm;
         o["maxPositionMm"] = a.maxPositionMm;
+        o["fretOffsetMm"] = a.fretOffsetMm;
         o["maxSpeedMmS"] = a.maxSpeedMmS;
         o["maxAccelMmS2"] = a.maxAccelMmS2;
         JsonArray cal = o["calibratedFretMm"].to<JsonArray>();
@@ -359,6 +363,9 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
     out.midi.sustainCc = mi["sustainCc"] | 64;
     out.midi.velocityCurve = velocityCurveFrom(mi["velocityCurve"], &enumsOk);
     out.midi.saturationStrategy = saturationFrom(mi["saturationStrategy"], &enumsOk);
+    out.midi.noteExecutionDelayMs = mi["noteExecutionDelayMs"] | 0;
+    out.midi.fingerLeadMs = mi["fingerLeadMs"] | 0;
+    out.midi.strumLeadMs = mi["strumLeadMs"] | 0;
 
     JsonObjectConst sf = doc["stringFretSelection"];
     out.selector.enabled = sf["enabled"] | true;
@@ -416,6 +423,7 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
         a.invertDirection = o["invertDirection"] | false;
         a.minPositionMm = o["minPositionMm"] | 0.0;
         a.maxPositionMm = o["maxPositionMm"] | 400.0;
+        a.fretOffsetMm = o["fretOffsetMm"] | 0.0;
         a.maxSpeedMmS = o["maxSpeedMmS"] | 200.0;
         a.maxAccelMmS2 = o["maxAccelMmS2"] | 2000.0;
         a.calibratedFretMm.clear();

@@ -234,3 +234,27 @@ TEST(adjustable_fret_positions) {
     CHECK_NEAR(axis.fretPositionMm(1), 19.5, 1e-9);           // manual override
     CHECK_NEAR(axis.fretPositionMm(2), gmb::fretPositionMm(330.0, 2), 1e-9);
 }
+
+// The per-string fret offset (nut position from the FDC) shifts every fret; the
+// theoretical spacing is measured from the nut.
+TEST(fret_offset_shifts_all_frets) {
+    AxisConfig cfg;
+    cfg.scaleLengthMm = 330.0;
+    cfg.maxFret = 3;
+    cfg.fretOffsetMm = 25.0;
+    StepperAxis axis(cfg);
+    CHECK_NEAR(axis.fretPositionMm(0), 25.0, 1e-9);                                 // nut at the offset
+    CHECK_NEAR(axis.fretPositionMm(1), 25.0 + gmb::fretPositionMm(330.0, 1), 1e-9); // + spacing
+}
+
+// The offset applies on top of a nut-relative calibrated table too.
+TEST(fret_offset_applies_to_calibrated) {
+    AxisConfig cfg;
+    cfg.scaleLengthMm = 330.0;
+    cfg.maxFret = 2;
+    cfg.fretOffsetMm = 10.0;
+    cfg.calibratedFretMm = {0.0, 19.5, 37.0};  // nut-relative
+    StepperAxis axis(cfg);
+    CHECK_NEAR(axis.fretPositionMm(0), 10.0, 1e-9);
+    CHECK_NEAR(axis.fretPositionMm(1), 10.0 + 19.5, 1e-9);
+}

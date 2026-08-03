@@ -199,7 +199,7 @@
       openNote: 60, maxFret: 12, scaleLengthMm: 330, transmission: 'beltGt2',
       stepsPerRevolution: 200, microsteps: 16, pulleyTeeth: 20, beltPitchMm: 2,
       leadPerRevolutionMm: 8, customStepsPerMm: 80, invertDirection: false,
-      minPositionMm: 0, maxPositionMm: 300, maxSpeedMmS: 200, maxAccelMmS2: 2000,
+      minPositionMm: 0, maxPositionMm: 300, fretOffsetMm: 0, maxSpeedMmS: 200, maxAccelMmS2: 2000,
       calibratedFretMm: [], homing: { direction: -1, fastSpeedMmS: 40, slowSpeedMmS: 5,
         backoffMm: 3, offsetMm: 0, timeoutMs: 8000, maxSearchMm: 500, sensorActiveHigh: true }
     };
@@ -697,12 +697,17 @@
     var i = activeStr, s = GMB.state.profile.strings[i];
     if (!s) return;
     var mp = motorPos[i] !== undefined ? motorPos[i] : 0;
+    if (s.fretOffsetMm === undefined) s.fretOffsetMm = 0;
     body.appendChild(h('div.substring', [
       h('div.substring-head', [h('strong', 'String ' + (i + 1)),
         GMB.field('Open note (MIDI)', GMB.input(s, 'openNote', { type: 'number', min: 0, max: 127, onChange: function () { drawStep(); } })),
         GMB.field('Max frets', GMB.input(s, 'maxFret', { type: 'number', min: 0, max: 30, onChange: function () { drawStep(); } })),
         h('span.pill.mini', GMB.noteName(s.openNote)),
         h('span.motor-pos', { id: 'motor-pos-live' }, 'Motor: ' + mp.toFixed(2) + ' mm')]),
+      h('div.form-grid', [
+        GMB.field('Fret offset from FDC (mm)', GMB.input(s, 'fretOffsetMm', { type: 'number', step: '0.1', onChange: function () { drawStep(); } }),
+          'Distance from the HOME endstop (FDC) to fret 0 (the nut). Shifts every fret of this string.')
+      ]),
       h('div.toolbar.wrap', [
         GMB.button('Auto-fill (theoretical)', function () { autoFill(s); }, 'primary'),
         GMB.button('Clear calibration', function () { s.calibratedFretMm = []; GMB.markDirty(); drawStep(); }, 'ghost'),
@@ -733,7 +738,7 @@
     var rows = [];
     for (var f = 0; f <= s.maxFret; f++) rows.push(fretRow(s, i, f));
     return h('div.table-wrap', h('table.mini-table.fret-editor', [
-      h('thead', h('tr', [h('th', 'Fret'), h('th', 'Note'), h('th', 'Theory mm'), h('th', 'Calibrated mm'), h('th', 'Move / save')])),
+      h('thead', h('tr', [h('th', 'Fret'), h('th', 'Note'), h('th', 'Theory mm (nut)'), h('th', 'Calibrated mm (nut)'), h('th', 'Abs (FDC) mm'), h('th', 'Move / save')])),
       h('tbody', rows)
     ]));
   }
@@ -763,6 +768,7 @@
         h('button.btn.ghost.nudge', { type: 'button', onclick: function () { nudge(0.5); } }, '+'),
         h('span.cal-shown', calCell)
       ]),
+      h('td', GMB.fretAbsoluteMm(s, f).toFixed(2)),
       h('td', h('div.fret-actions', [
         GMB.button('Go to this fret', function () { jogToFret(s, i, f, theo); }, 'ghost'),
         GMB.button('Capture position', function () { saveFret(s, i, f); }, 'primary')
@@ -770,19 +776,20 @@
     ]);
   }
 
-  // Jog/test: move the (mock) motor to the fret's calibrated-or-theoretical mm.
+  // Jog/test: move to the fret's ABSOLUTE position from the FDC (offset + value).
   function jogToFret(s, i, f, theo) {
-    var target = (s.calibratedFretMm[f] === undefined || s.calibratedFretMm[f] === null) ? +theo.toFixed(2) : s.calibratedFretMm[f];
-    motorPos[i] = target;
-    GMB.toast('String ' + (i + 1) + ': moved to fret ' + f + ' (' + target.toFixed(2) + ' mm).', 'ok');
+    var abs = GMB.fretAbsoluteMm(s, f);
+    motorPos[i] = abs;
+    GMB.toast('String ' + (i + 1) + ': moved to fret ' + f + ' (' + abs.toFixed(2) + ' mm from FDC).', 'ok');
     drawStep();
   }
-  // Record the current (mock) motor position as this fret's calibrated value.
+  // Record the live motor position (absolute from FDC) as this fret's calibrated
+  // value, stored nut-relative (subtract the per-string fret offset).
   function saveFret(s, i, f) {
-    var pos = motorPos[i] !== undefined ? motorPos[i] : GMB.fretTheoreticalMm(s, f);
-    s.calibratedFretMm[f] = +pos.toFixed(2);
+    var abs = motorPos[i] !== undefined ? motorPos[i] : GMB.fretAbsoluteMm(s, f);
+    s.calibratedFretMm[f] = +(abs - (s.fretOffsetMm || 0)).toFixed(2);
     GMB.markDirty();
-    GMB.toast('Fret ' + f + ' saved at ' + s.calibratedFretMm[f].toFixed(2) + ' mm.', 'ok');
+    GMB.toast('Fret ' + f + ' captured at ' + abs.toFixed(2) + ' mm from FDC.', 'ok');
     drawStep();
   }
 

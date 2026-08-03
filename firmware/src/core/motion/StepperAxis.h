@@ -36,6 +36,12 @@ struct AxisConfig {
     double minPositionMm = 0.0;
     double maxPositionMm = 400.0;
 
+    // Per-string fret offset: distance from the HOME endstop (FDC) to fret 0
+    // (the nut). Every fret — theoretical or calibrated — is measured from the
+    // nut, then shifted by this offset, so a single number places a whole
+    // string's fretboard relative to its FDC.
+    double fretOffsetMm = 0.0;
+
     // Motion profile.
     double maxSpeedMmS = 200.0;
     double maxAccelMmS2 = 2000.0;

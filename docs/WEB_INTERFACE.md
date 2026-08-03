@@ -36,13 +36,14 @@ of detailed parameters, JSON import/export.
 | 4 | **Mechanical configuration** | per string: axis enabled, vibrating length, transmission, motor wiring polarity (invert direction), **max speed & acceleration** (now in the simplified view), and Advanced geometry; **Copy mechanics to all strings** |
 | 5 | **Homing** | per axis: HOME GPIO, active level, homing search direction, **zero offset / rest position (FDC)**; Advanced adds speeds, back-off, timeout, LIMIT GPIO & level; **Home all axes now** and **Copy homing to all** |
 | 6 | **Servo calibration** | per servo: source/channel, rest, active, travel/settle, disable at rest; **strum/stroke motion** for strike roles — alternate stroke direction (+ up-stroke pulse), stroke time, minimum strike depth; **engage delay** for a strum lift; a **Test strike** pulse |
-| 7 | **Note calibration** | automatic fret computation **or** manual calibration — move the axis and **Capture position** records the live motor position; **Copy scale + calibration to all** |
+| 7 | **Note calibration** | per string a **Fret offset from FDC** (nut position) that shifts every fret; automatic fret computation **or** manual calibration — move the axis and **Capture position** records the live motor position; an **Abs (FDC)** column; **Copy scale + calibration to all** |
 | 8 | **Test** | test each motor, sensor, finger, pick, note, string, a chord, the emergency stop |
 | 9 | **Validation** | "Valid configuration" or a precise list of problems; no actuator is enabled until the critical errors are fixed |
 
 The per-string steps (4–7) show **one string at a time** via a string-tab strip,
 so a 6-string instrument stays navigable. General MIDI parameters (sustain CC,
-chord **saturation strategy**, velocity curve…) live on the **MIDI** page.
+chord **saturation strategy**, velocity curve…) and a **Playback timing** card
+(fixed note-execution delay, finger lead, strum lead) live on the **MIDI** page.
 
 The step-by-step detail is in [`FIRST_CONFIGURATION.md`](FIRST_CONFIGURATION.md).
 The computations for steps 4–7 are in [`CALIBRATION.md`](CALIBRATION.md).

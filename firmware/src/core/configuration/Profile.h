@@ -51,6 +51,23 @@ struct MidiConfig {
     bool sustainPedal = true;
     uint8_t sustainCc = 64;
     SaturationStrategy saturationStrategy = SaturationStrategy::PriorityLow;
+
+    // Playback timing / latency management.
+    //   noteExecutionDelayMs : fixed delay between receiving a Note On and the
+    //                          note actually sounding, so the mechanics have a
+    //                          predictable, constant window to get in position.
+    //   fingerLeadMs         : begin the finger descent up to this long before
+    //                          the carriage is estimated to reach the fret, so
+    //                          the finger arrives on the string around the same
+    //                          time (overlaps descent with the approach).
+    //   strumLeadMs          : begin lowering the strum lift up to this long
+    //                          before the string is ready, so the strummer is
+    //                          already engaged when the strike time comes.
+    // The two leads shrink the minimum achievable noteExecutionDelayMs; both
+    // default to 0 (no anticipation — the safe, strictly-sequential behaviour).
+    uint16_t noteExecutionDelayMs = 0;
+    uint16_t fingerLeadMs = 0;
+    uint16_t strumLeadMs = 0;
 };
 
 // Where a servo's PWM signal comes from. The system must work with OR without a

@@ -123,6 +123,23 @@ vibrating length. The note produced at a fret: `note = openNote + fret + capo + 
 Example (length 330 mm): fret 12 → `330 × (1 − 2^(−1)) = 165 mm` (octave at the
 middle of the string).
 
+### 3.2a Position relative to the FDC — per-string offset
+
+The theoretical spacing and the calibrated table are both measured **from the nut**
+(fret 0 = 0). Each string then carries a single **`fretOffsetMm`** — the distance
+from its HOME endstop (the FDC) to the nut — and the axis target is:
+
+```text
+absolute position (from FDC) = fretOffsetMm + (calibrated[fret]  or  theory(fret))
+```
+
+So `fretOffsetMm` places a whole fretboard relative to its FDC and shifts every
+fret of that string at once; it is decoupled from the travel limit `minPositionMm`
+(which is a pure clamp). In the web editor the fret table is entered nut-relative,
+an **Abs (FDC)** column shows `fretOffsetMm + value`, and **Capture position**
+records the live motor position (absolute) minus the offset, so it stores a
+nut-relative value that stays correct if the offset is later changed.
+
 ### 3.3 Manual calibration (§14.3)
 
 For each fret: (1) select the fret, (2) move the motor with buttons, (3) test the
@@ -191,6 +208,28 @@ depth between `restUs` and `activeUs`. Five extra fields control the *gesture*:
 * **`engageDelayMs`** — on a `strumLift` servo, an extra pause after the lift has
   lowered the strum servo onto the string, before the stroke fires. Lets the
   string/lift settle so the attack is clean.
+
+### 4.0b Playback timing / latency (global, `MidiConfig`)
+
+Three global knobs manage the delay between a MIDI Note On and the sound, and how
+much the mechanics anticipate to keep that delay small:
+
+* **`noteExecutionDelayMs`** — a **fixed** delay from Note On reception to the note
+  actually sounding. The carriage move, finger press and strum prep all happen
+  inside this window, so the note plays at a predictable, constant latency
+  (`reception + delay`) as long as the mechanics can be ready in time. `0` = play
+  as soon as ready (variable latency).
+* **`fingerLeadMs`** — begin the finger descent up to this long **before** the
+  carriage is estimated to reach the fret, so the finger arrives on the string
+  around arrival instead of only starting to descend then. Set too large it can
+  drag the finger during the slide, so it is an opt-in value to tune on the bench
+  (`0` = press only after arrival, the safe default).
+* **`strumLeadMs`** — begin lowering the strum lift up to this long **before** the
+  string becomes ready, so the strummer is already engaged when the strike time
+  comes. `0` = lower the lift only once the string is ready.
+
+`fingerLeadMs` and `strumLeadMs` shrink the *minimum* achievable
+`noteExecutionDelayMs`; all three default to `0` (strictly sequential, safe).
 
 ### 4.0 Signal source: PCA9685 or direct GPIO
 

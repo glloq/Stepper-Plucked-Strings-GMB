@@ -170,7 +170,7 @@
       openNote: openNote, maxFret: 12, scaleLengthMm: 330,
       transmission: 'beltGt2', stepsPerRevolution: 200, microsteps: 16,
       pulleyTeeth: 20, beltPitchMm: 2, leadPerRevolutionMm: 8, customStepsPerMm: 80,
-      invertDirection: false, minPositionMm: 0, maxPositionMm: 300,
+      invertDirection: false, minPositionMm: 0, maxPositionMm: 300, fretOffsetMm: 0,
       maxSpeedMmS: 200, maxAccelMmS2: 2000, calibratedFretMm: [],
       homing: {
         direction: -1, fastSpeedMmS: 40, slowSpeedMmS: 5, backoffMm: 3, offsetMm: 0,
@@ -209,11 +209,17 @@
   }
   GMB.servoDefaults = servo;
 
-  // Theoretical fret position (spec 14.2): minPositionMm + scale·(1−2^(−fret/12)).
-  // The nut sits at minPositionMm, matching firmware StepperAxis::fretPositionMm
-  // so Auto-fill agrees with the firmware when minPositionMm != 0.
+  // Theoretical fret position (spec 14.2), measured from the nut (fret 0 = 0):
+  // scale·(1−2^(−fret/12)). The per-string fret offset (nut → FDC) is applied by
+  // the firmware; the editor stores nut-relative values and shows the absolute.
   GMB.fretTheoreticalMm = function (s, fret) {
-    return (s.minPositionMm || 0) + (s.scaleLengthMm || 0) * (1 - Math.pow(2, -fret / 12));
+    return (s.scaleLengthMm || 0) * (1 - Math.pow(2, -fret / 12));
+  };
+  // Absolute fret position from the FDC = fret offset + nut-relative value.
+  GMB.fretAbsoluteMm = function (s, fret) {
+    var cal = s.calibratedFretMm && s.calibratedFretMm[fret];
+    var nut = (cal === undefined || cal === null) ? GMB.fretTheoreticalMm(s, fret) : cal;
+    return (s.fretOffsetMm || 0) + nut;
   };
 
   function sampleProfile() {
@@ -242,7 +248,8 @@
       midi: {
         globalChannel: 0, omni: false, transpose: 0, chordWindowMs: 3,
         velocityCurve: 'linear', sustainPedal: true, sustainCc: 64,
-        saturationStrategy: 'priorityLow'
+        saturationStrategy: 'priorityLow',
+        noteExecutionDelayMs: 0, fingerLeadMs: 0, strumLeadMs: 0
       },
       stringFretSelection: {
         enabled: true, mode: 'hybrid', preset: 'general-midi-boop', perMidiChannel: true,
