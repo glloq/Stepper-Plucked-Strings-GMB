@@ -118,6 +118,7 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
         finite(a.maxAccelMmS2, t + ".maxAccelMmS2");
         finite(a.minPositionMm, t + ".minPositionMm");
         finite(a.maxPositionMm, t + ".maxPositionMm");
+        finite(a.fretOffsetMm, t + ".fretOffsetMm");
         finite(a.beltPitchMm, t + ".beltPitchMm");
         finite(a.leadPerRevolutionMm, t + ".leadPerRevolutionMm");
         finite(a.customStepsPerMm, t + ".customStepsPerMm");
@@ -135,19 +136,24 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
                 err(t + ".travelSteps", "Travel in motor steps exceeds the 32-bit range");
         }
 
-        // Ensure the calculated span physically fits. A highest fret beyond the
-        // travel is a hard error: clampToLimits() would otherwise silently play a
-        // different position than the requested fret (audit P1-8).
+        // Ensure the calculated span physically fits. Fret targets are absolute
+        // axis coordinates = fretOffsetMm + (nut-relative spacing), so the check
+        // must fold in the offset; otherwise clampToLimits() would silently play a
+        // different position than the requested fret (audit P1-8). The nut (fret 0)
+        // sits at fretOffsetMm and must be within the travel too.
         double lastFret = gmb::fretPositionMm(a.scaleLengthMm, a.maxFret);
-        if (lastFret > a.maxPositionMm - a.minPositionMm + 0.001) {
-            err(t + ".travel", "Highest fret position exceeds the configured travel");
-        }
+        if (a.fretOffsetMm < a.minPositionMm - 0.001)
+            err(t + ".fretOffsetMm", "Fret offset places fret 0 before the minimum travel");
+        if (a.fretOffsetMm + lastFret > a.maxPositionMm + 0.001)
+            err(t + ".travel", "Highest fret position (offset + spacing) exceeds the configured travel");
 
-        // Calibrated fret table must be monotonic and inside the travel.
+        // Calibrated fret table must be monotonic and inside the travel. Values are
+        // stored nut-relative, so compare the ABSOLUTE target (offset + value).
         double prev = -1e9;
         for (size_t f = 0; f < a.calibratedFretMm.size(); ++f) {
             double v = a.calibratedFretMm[f];
-            if (v < a.minPositionMm - 1e-6 || v > a.maxPositionMm + 1e-6)
+            double abs = a.fretOffsetMm + v;
+            if (abs < a.minPositionMm - 1e-6 || abs > a.maxPositionMm + 1e-6)
                 err(t + ".calibratedFretMm[" + std::to_string(f) + "]",
                     "Calibrated fret position is outside the axis travel");
             if (v < prev - 1e-6)

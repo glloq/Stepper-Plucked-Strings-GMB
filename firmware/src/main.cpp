@@ -93,6 +93,7 @@ struct StringSched {
     int liftIndex = -1;    // engaged strum-lift servo during a stroke (-1 = none)
     int strikeIndex = -1;  // striker to fire once the lift has lowered
     uint32_t executeAtMs = 0;   // earliest time the note may sound (fixed delay)
+    bool executeAnchored = false;  // executeAtMs fixed at the Note-On instant
     uint32_t estArriveMs = 0;   // estimated carriage arrival time (finger lead)
     bool fingerPressStarted = false;  // finger descent already begun (lead)
     uint32_t liftStartMs = 0;   // when the strum lift began lowering
@@ -312,7 +313,16 @@ void faultRuntimeAxis(size_t i, const char* reason, uint32_t nowMs) {
     if (i >= g_instrument.stringCount()) return;
     g_steppers.emergencyStop(i);
     g_instrument.faultString(i);
-    if (i < g_sched.size()) g_sched[i] = StringSched{};
+    // Physically release any servo this axis had engaged BEFORE wiping the sched,
+    // so a single-axis fault never leaves the finger clamped or the strum lift
+    // pressed on the string (finger/strum leads can engage them before arrival).
+    // This mirrors the Note Off / note-replacement release paths.
+    if (i < g_sched.size()) {
+        int fi = g_servos.fingerIndex(static_cast<int>(i));
+        if (fi >= 0) g_servos.release(fi);
+        if (g_sched[i].liftIndex >= 0) g_servos.release(g_sched[i].liftIndex);
+        g_sched[i] = StringSched{};
+    }
     if (i < g_anchored.size()) g_anchored[i] = false;
     if (i < g_axisFaulted.size()) g_axisFaulted[i] = true;
     g_safety.recordFault("axis", std::string(reason) + " on axis " + std::to_string(i),
@@ -769,9 +779,12 @@ void tickString(size_t i, uint32_t nowMs) {
         }
         // A strum lift engaged for the previous note is raised before anything else.
         if (sch.liftIndex >= 0) { g_servos.release(sch.liftIndex); sch.liftIndex = -1; }
-        // Fixed reception -> sound delay, and reset the per-note lead state so a
-        // new note starts its finger/strum anticipation from scratch.
+        // Fixed reception -> sound delay. A directly-played note is received now,
+        // so anchor the delay here. A merely-PREPARED (anticipated) note is not
+        // "received" until its Note On triggers it, so leave it unanchored and
+        // re-anchor at the trigger instant in the Ready state below.
         sch.executeAtMs = nowMs + g_profile.midi.noteExecutionDelayMs;
+        sch.executeAnchored = sc.willArmOnSettle();
         sch.fingerPressStarted = false;
         sch.liftStarted = false;
         sch.strikeIndex = -1;
@@ -858,8 +871,10 @@ void tickString(size_t i, uint32_t nowMs) {
         case StringSched::Settling: {
             // Strum lead: begin lowering the strum lift up to strumLeadMs before the
             // string is Ready, so the strummer is already engaged when the strike
-            // time comes (overlaps the lift travel with the finger settle).
-            if (!sch.liftStarted && g_profile.midi.strumLeadMs > 0) {
+            // time comes (overlaps the lift travel with the finger settle). Skip it
+            // for a merely-prepared note — it must not rest on (and mute) the string
+            // through the whole pre-trigger window; its lift lowers after trigger.
+            if (!sch.liftStarted && sc.willArmOnSettle() && g_profile.midi.strumLeadMs > 0) {
                 PluckMode mode = g_profile.instrument.pluckMode;
                 int pi = perStringStrikeIndex(i);
                 bool doIndividual = (mode == PluckMode::Individual ||
@@ -883,6 +898,13 @@ void tickString(size_t i, uint32_t nowMs) {
             break;
         }
         case StringSched::Ready: {
+            // An anticipated note is "received" when its Note On triggers it: the
+            // fixed delay must run from that instant, not from prepare time. The
+            // arm transitioning true here IS that trigger, so anchor now.
+            if (!sch.executeAnchored && sc.pluckArmed()) {
+                sch.executeAtMs = nowMs + g_profile.midi.noteExecutionDelayMs;
+                sch.executeAnchored = true;
+            }
             if (!sc.pluckArmed()) break;  // not armed (prepared / already plucked)
             PluckMode mode = g_profile.instrument.pluckMode;
             int pi = perStringStrikeIndex(i);

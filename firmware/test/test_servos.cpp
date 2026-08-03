@@ -258,3 +258,28 @@ TEST(fret_offset_applies_to_calibrated) {
     CHECK_NEAR(axis.fretPositionMm(0), 10.0, 1e-9);
     CHECK_NEAR(axis.fretPositionMm(1), 10.0 + 19.5, 1e-9);
 }
+
+// The travel-fit validator must fold in fretOffsetMm (absolute target), else a
+// too-large offset would be silently clamped at play time (audit P1-8 regression).
+TEST(fret_offset_beyond_travel_rejected) {
+    Profile p = uke();  // scale 330, maxFret 12 -> lastFret 165; maxPositionMm 400
+    p.strings[0].fretOffsetMm = 300.0;  // 300 + 165 = 465 > 400
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+TEST(fret_offset_within_travel_valid) {
+    Profile p = uke();
+    p.strings[0].fretOffsetMm = 20.0;   // 20 + 165 = 185 < 400
+    CHECK(ProfileValidator::isActivatable(p));
+}
+TEST(negative_fret_offset_before_travel_rejected) {
+    Profile p = uke();
+    p.strings[0].fretOffsetMm = -10.0;  // fret 0 target below minPositionMm (0)
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+// A calibrated value is nut-relative, so the range check must add the offset.
+TEST(calibrated_plus_offset_out_of_travel_rejected) {
+    Profile p = uke();
+    p.strings[0].fretOffsetMm = 350.0;
+    p.strings[0].calibratedFretMm = {0.0, 60.0};  // absolute: 350, 410 > 400
+    CHECK(!ProfileValidator::isActivatable(p));
+}

@@ -72,6 +72,12 @@ public:
     bool pluckArmed() const { return pluckArmed_; }
     uint32_t pluckCommandId() const { return commandId_; }
 
+    // True for a normal note that arms its pluck as soon as it is ready; false
+    // while a note is only PREPARED (anticipated) and still waiting for trigger().
+    // Lets the scheduler skip strum-lift anticipation for a merely-prepared note
+    // and re-anchor the fixed execution delay to the trigger instant.
+    bool willArmOnSettle() const { return armOnSettle_; }
+
     // Release the note. Cancels any armed/prepared attack.
     void noteOff();
 
