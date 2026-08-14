@@ -275,15 +275,21 @@ BoardProfile makeEsp32DevKitV1() {
     return b;
 }
 
-const BoardProfile* builtinBoardProfile(const std::string& identifier) {
+// One list, built once, that every lookup and every enumeration goes through.
+// Keeping the registry in a single place is what lets the web UI offer exactly
+// the boards the firmware supports instead of a hand-maintained copy that drifts.
+const std::vector<const BoardProfile*>& builtinBoardProfiles() {
     static const BoardProfile s3 = makeEsp32S3DevKitC1();
     static const BoardProfile s3v11 = makeEsp32S3DevKitC1V11();
     static const BoardProfile wroom = makeEsp32Wroom32();
     static const BoardProfile devkitv1 = makeEsp32DevKitV1();
-    if (identifier == s3.identifier) return &s3;
-    if (identifier == s3v11.identifier) return &s3v11;
-    if (identifier == wroom.identifier) return &wroom;
-    if (identifier == devkitv1.identifier) return &devkitv1;
+    static const std::vector<const BoardProfile*> all{&s3, &s3v11, &wroom, &devkitv1};
+    return all;
+}
+
+const BoardProfile* builtinBoardProfile(const std::string& identifier) {
+    for (const BoardProfile* b : builtinBoardProfiles())
+        if (identifier == b->identifier) return b;
     return nullptr;
 }
 

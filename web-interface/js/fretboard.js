@@ -67,6 +67,15 @@
   function enabledStrings() {
     return strings().filter(function (s) { return s.enabled !== false; });
   }
+  // The enabled strings WITH their original index. Filtering compacts the array,
+  // so the position in the filtered list is not the physical axis: with string 2
+  // disabled, filtered[1] is axis 2, and using 1 aims a whole chord at the wrong
+  // carriages. Anything that needs an axis number must come through here.
+  function enabledStringIndexes() {
+    var out = [];
+    strings().forEach(function (s, i) { if (s.enabled !== false) out.push(i); });
+    return out;
+  }
   // The travel every lane is scaled against: the furthest any carriage must reach,
   // so all the strings share one horizontal scale and a chord reads as a shape.
   function spanMm() {
@@ -286,7 +295,9 @@
       h('div.card-head', [h('h2', 'Play'), h('span.muted', 'click a fret, or strum a chord')]),
       h('div.row', [
         GMB.button('Strum open strings', function () {
-          playChord(enabledStrings().map(function (_, n) { return { str: n, fret: 0 }; }), 96);
+          playChord(enabledStringIndexes()
+            .filter(function (i) { return !isFaulted(i); })
+            .map(function (i) { return { str: i, fret: 0 }; }), 96);
         }, 'primary'),
         GMB.button('All strings, fret 5', function () {
           var picks = [];

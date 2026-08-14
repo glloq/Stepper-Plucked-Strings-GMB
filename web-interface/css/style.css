@@ -220,6 +220,8 @@ body {
 /* Prose and button rows are not fields: let them span the whole grid instead of
    being squeezed into one 210px column beside the inputs. */
 .form-grid > p, .form-grid > .toolbar { grid-column: 1 / -1; margin: 0; }
+/* A field whose value is too long for one 210px column (a full board name). */
+.form-grid > .field.wide { grid-column: span 2; }
 .field { display: flex; flex-direction: column; gap: 4px; }
 /* A checkbox is not a text box: the blanket `input { width:100% }` below made it
    sit adrift in the middle of the field instead of under the start of its label. */

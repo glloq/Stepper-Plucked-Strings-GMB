@@ -56,31 +56,41 @@ void writeBool(std::string& s, const char* key, bool v, int indent) {
 // PinManager::autoAssign for the reference board; the classic ESP32 boards have a
 // smaller usable set, so their tables are shorter (and a 6-axis instrument simply
 // will not auto-assign there — the validator says so explicitly).
-std::string recommendedAssignment(const std::string& id) {
-    if (id == "esp32-s3-devkitc-1" || id == "esp32-s3-devkitc-1-v1.1") {
-        return R"(  "recommendedAssignment": {
-    "STEP": [4, 5, 6, 7, 15, 16],
-    "DIR": [17, 18, 8, 9, 10, 11],
-    "HOME": [12, 13, 14, 21, 38, 39],
-    "SDA": 40,
-    "SCL": 41,
-    "ENABLE": 42,
-    "SERVO_OE": 47
-  },
-)";
-    }
+struct Recommendation {
+    std::vector<int> step, dir, home;
+    int sda, scl, enable, servoOe;
+};
+
+Recommendation recommendationFor(const std::string& id) {
+    if (id == "esp32-s3-devkitc-1" || id == "esp32-s3-devkitc-1-v1.1")
+        return {{4, 5, 6, 7, 15, 16}, {17, 18, 8, 9, 10, 11}, {12, 13, 14, 21, 38, 39},
+                40, 41, 42, 47};
     // Classic ESP32: only 8 comfortable high-speed outputs remain once UART0, the
     // flash pads, the strapping pins and the input-only pins are excluded.
-    return R"(  "recommendedAssignment": {
-    "STEP": [4, 13, 14, 25],
-    "DIR": [26, 27, 32, 33],
-    "HOME": [16, 17, 18, 19],
-    "SDA": 21,
-    "SCL": 22,
-    "ENABLE": 23,
-    "SERVO_OE": 5
-  },
-)";
+    return {{4, 13, 14, 25}, {26, 27, 32, 33}, {16, 17, 18, 19}, 21, 22, 23, 5};
+}
+
+std::string intList(const std::vector<int>& v) {
+    std::string s = "[";
+    for (size_t i = 0; i < v.size(); ++i) {
+        s += std::to_string(v[i]);
+        if (i + 1 < v.size()) s += ", ";
+    }
+    return s + "]";
+}
+
+std::string recommendedAssignment(const std::string& id) {
+    const Recommendation r = recommendationFor(id);
+    std::string s = "  \"recommendedAssignment\": {\n";
+    s += "    \"STEP\": " + intList(r.step) + ",\n";
+    s += "    \"DIR\": " + intList(r.dir) + ",\n";
+    s += "    \"HOME\": " + intList(r.home) + ",\n";
+    s += "    \"SDA\": " + std::to_string(r.sda) + ",\n";
+    s += "    \"SCL\": " + std::to_string(r.scl) + ",\n";
+    s += "    \"ENABLE\": " + std::to_string(r.enable) + ",\n";
+    s += "    \"SERVO_OE\": " + std::to_string(r.servoOe) + "\n";
+    s += "  },\n";
+    return s;
 }
 
 std::string describe(const std::string& id) {
@@ -142,11 +152,74 @@ std::string render(const BoardProfile& b) {
     return s;
 }
 
+// The same tables again, as a JS module the offline web interface loads. The mock
+// backend used to hand-build ONE board in api.js — a third copy of this table, and
+// the reason the board picker offered a single model while the firmware supported
+// four. Generated here, it cannot drift and the demo covers every board.
+std::string renderJs(const std::vector<BoardProfile>& boards) {
+    std::string s;
+    s += "/*\n";
+    s += " * boarddata.js — GENERATED, do not edit by hand.\n";
+    s += " *\n";
+    s += " * Board capability tables for the offline mock backend, rendered from\n";
+    s += " * firmware/src/core/board/BoardProfile.cpp by\n";
+    s += " * firmware/tools/dump_board_profiles.cpp. Edit the C++ tables and run\n";
+    s += " * firmware/test/boardcheck/run.sh; CI checks this file with --check.\n";
+    s += " *\n";
+    s += " * On a real device these come from GET /api/boards and /api/board/{id};\n";
+    s += " * this file is what makes the file:// demo behave the same.\n";
+    s += " */\n";
+    s += "(function (global) {\n";
+    s += "  'use strict';\n";
+    s += "  var GMB = global.GMB = global.GMB || {};\n";
+    s += "  GMB.BOARD_PROFILES = [\n";
+    for (size_t i = 0; i < boards.size(); ++i) {
+        const BoardProfile& b = boards[i];
+        s += "    {\n";
+        const Recommendation r = recommendationFor(b.identifier);
+        s += "      identifier: \"" + jsonEscape(b.identifier) + "\",\n";
+        s += "      displayName: \"" + jsonEscape(b.displayName) + "\",\n";
+        s += "      recommendedAssignment: {\n";
+        s += "        STEP: " + intList(r.step) + ",\n";
+        s += "        DIR: " + intList(r.dir) + ",\n";
+        s += "        HOME: " + intList(r.home) + ",\n";
+        s += "        SDA: " + std::to_string(r.sda) + ", SCL: " + std::to_string(r.scl) +
+             ", ENABLE: " + std::to_string(r.enable) +
+             ", SERVO_OE: " + std::to_string(r.servoOe) + "\n";
+        s += "      },\n";
+        s += "      pins: [\n";
+        for (size_t j = 0; j < b.pins.size(); ++j) {
+            const PinCapability& p = b.pins[j];
+            s += "        { gpio: " + std::to_string(static_cast<int>(p.gpio));
+            s += ", exposed: " + std::string(p.exposed ? "true" : "false");
+            s += ", input: " + std::string(p.input ? "true" : "false");
+            s += ", output: " + std::string(p.output ? "true" : "false");
+            s += ", interrupt: " + std::string(p.interrupt ? "true" : "false");
+            s += ", internalPullUp: " + std::string(p.internalPullUp ? "true" : "false");
+            s += ", internalPullDown: " + std::string(p.internalPullDown ? "true" : "false");
+            s += ", highSpeedOutput: " + std::string(p.highSpeedOutput ? "true" : "false");
+            s += ", adc: " + std::string(p.adc ? "true" : "false");
+            s += ", reserved: " + std::string(p.reserved ? "true" : "false");
+            s += ", strapping: " + std::string(p.strapping ? "true" : "false");
+            s += ", usb: " + std::string(p.usb ? "true" : "false");
+            s += ", onboardPeripheral: " + std::string(p.onboardPeripheral ? "true" : "false");
+            s += ", preference: \"" + std::string(preferenceName(p.preference)) + "\"";
+            s += ", note: \"" + jsonEscape(p.note) + "\" }";
+            s += std::string(j + 1 < b.pins.size() ? "," : "") + "\n";
+        }
+        s += "      ]\n";
+        s += std::string("    }") + (i + 1 < boards.size() ? "," : "") + "\n";
+    }
+    s += "  ];\n";
+    s += "})(window);\n";
+    return s;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "usage: dump_board_profiles <output-directory>\n";
+        std::cerr << "usage: dump_board_profiles <output-directory> [boarddata.js]\n";
         return 2;
     }
     const std::string dir = argv[1];
@@ -162,6 +235,15 @@ int main(int argc, char** argv) {
         }
         f << render(b);
         std::cout << "wrote " << path << "\n";
+    }
+    if (argc >= 3) {
+        std::ofstream f(argv[2]);
+        if (!f) {
+            std::cerr << "cannot write " << argv[2] << "\n";
+            return 1;
+        }
+        f << renderJs(boards);
+        std::cout << "wrote " << argv[2] << "\n";
     }
     return 0;
 }

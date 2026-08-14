@@ -233,26 +233,59 @@
   }
 
   // ---- Integrated test tool (section 16) ------------------------------------
-  var testCfg = { string: 1, fret: 5, note: 64, velocity: 100, channel: 0, durationMs: 400 };
+  // The two CC fields hold the VALUES a controller would put on the wire, not a
+  // string number the UI silently re-encodes. That is the whole point: the
+  // firmware decodes them with the configured numbering / offset / order /
+  // mapping, so a wrong mapping shows up as the wrong axis moving instead of
+  // being corrected on the way out.
+  var testCfg = { ccString: 1, ccFret: 5, sendSelection: true,
+                  note: 64, velocity: 100, channel: 0, durationMs: 400 };
 
   function testTool(p) {
-    testCfg.string = Math.min(testCfg.string, p.instrument.stringCount);
+    var sfs = p.stringFretSelection;
     var log = h('div#test-log.step-log');
+    var axis = GMB.decodeStringCc(sfs, p, testCfg.ccString);
+    var fret = GMB.decodeFretCc(sfs, testCfg.ccFret);
+    var resolves = axis < 0
+      ? h('span.pill.mini.warn', 'CC ' + testCfg.ccString + ' selects no string')
+      : h('span.pill.mini.ok', 'selects axis ' + (axis + 1) +
+          (fret >= 0 ? ' · fret ' + fret : ''));
+    var fields = [
+      GMB.field('Send selection CCs', GMB.input(testCfg, 'sendSelection', {
+        type: 'checkbox', onChange: function () { GMB.render(); }
+      }), 'Off = plain Note On, allocated automatically.')
+    ];
+    if (testCfg.sendSelection) {
+      fields.push(GMB.field('String CC value (CC' + sfs.string.ccNumber + ')',
+        GMB.input(testCfg, 'ccString', { type: 'number', min: 0, max: 127,
+          onChange: function () { GMB.render(); } })));
+      fields.push(GMB.field('Fret CC value (CC' + sfs.fret.ccNumber + ')',
+        GMB.input(testCfg, 'ccFret', { type: 'number', min: 0, max: 127,
+          onChange: function () { GMB.render(); } })));
+    }
+    fields.push(GMB.field('MIDI note', GMB.input(testCfg, 'note', { type: 'number', min: 0, max: 127 })));
+    fields.push(GMB.field('Velocity', GMB.input(testCfg, 'velocity', { type: 'number', min: 1, max: 127 })));
+    fields.push(GMB.field('Channel (1–16)', GMB.input(testCfg, 'channel', { type: 'number', min: 0, max: 15 })));
+    fields.push(GMB.field('Note duration (ms)', GMB.input(testCfg, 'durationMs', { type: 'number', min: 20, max: 5000 })));
+
     var card = h('div.card#test-tool', [
-      h('h2', 'Integrated test tool'),
-      h('p.muted', 'Sends CC(string) + CC(fret) + Note On, then Note Off after the chosen duration, and traces each step.'),
-      h('div.form-grid', [
-        GMB.field('String', GMB.input(testCfg, 'string', { type: 'number', min: 1, max: p.instrument.stringCount })),
-        GMB.field('Fret', GMB.input(testCfg, 'fret', { type: 'number', min: 0, max: 30 })),
-        GMB.field('MIDI note', GMB.input(testCfg, 'note', { type: 'number', min: 0, max: 127 })),
-        GMB.field('Velocity', GMB.input(testCfg, 'velocity', { type: 'number', min: 1, max: 127 })),
-        GMB.field('Channel (1–16)', GMB.input(testCfg, 'channel', { type: 'number', min: 0, max: 15 })),
-        GMB.field('Note duration (ms)', GMB.input(testCfg, 'durationMs', { type: 'number', min: 20, max: 5000 }))
-      ]),
+      h('div.card-head', [h('h2', 'Integrated test tool'),
+        testCfg.sendSelection ? resolves : h('span.muted', 'automatic allocation')]),
+      h('p.muted', testCfg.sendSelection
+        ? 'Sends CC' + sfs.string.ccNumber + ' + CC' + sfs.fret.ccNumber + ' + Note On on ' +
+          'the device, then Note Off after the chosen duration. The firmware decodes the ' +
+          'CC values with the live selector config, so this tests the real ' +
+          'General-Midi-Boop chain end to end.'
+        : 'Sends a bare Note On, then Note Off after the chosen duration — the ' +
+          'controller allocates the string itself.'),
+      h('div.form-grid', fields),
       h('div.toolbar', [
         GMB.button('Send test', function () { runTest(p, log); }, 'primary'),
-        GMB.button('Auto-fill note from string+fret', function () {
-          testCfg.note = p.strings[testCfg.string - 1].openNote + testCfg.fret;
+        GMB.button('Auto-fill note from the selected string+fret', function () {
+          var a = GMB.decodeStringCc(sfs, p, testCfg.ccString);
+          var f = GMB.decodeFretCc(sfs, testCfg.ccFret);
+          if (a < 0 || f < 0) { GMB.toast('Those CC values select nothing.', 'warn'); return; }
+          testCfg.note = p.strings[a].openNote + f;
           GMB.render(); scrollToTest();
         }, 'ghost')
       ]),
@@ -263,14 +296,13 @@
 
   function runTest(p, log) {
     log.innerHTML = '';
-    var sfs = p.stringFretSelection;
-    // The firmware reads only channel/note/velocity/durationMs; the extra
-    // string/fret/CC fields feed the offline mock's step trace.
-    GMB.api.testNote({
-      string: testCfg.string, fret: testCfg.fret,
-      stringCc: sfs.string.ccNumber, fretCc: sfs.fret.ccNumber,
-      note: testCfg.note, velocity: testCfg.velocity, channel: testCfg.channel, durationMs: testCfg.durationMs
-    }).then(function (res) {
+    var payload = { note: testCfg.note, velocity: testCfg.velocity,
+                    channel: testCfg.channel, durationMs: testCfg.durationMs };
+    if (testCfg.sendSelection) {
+      payload.ccString = testCfg.ccString;
+      payload.ccFret = testCfg.ccFret;
+    }
+    GMB.api.testNote(payload).then(function (res) {
       if (res && res.ok === false) {
         log.appendChild(h('div.step-line.error', [h('span.step-dot'), h('strong', 'Rejected'),
           h('span.muted', ' — ' + (res.error || 'instrument not ready'))]));
@@ -289,8 +321,11 @@
       // Emit the corresponding Note Off after the chosen duration (mock stream).
       setTimeout(function () {
         GMB.injectMidi && GMB.api.mock && (function () {
+          var axis = testCfg.sendSelection
+            ? GMB.decodeStringCc(p.stringFretSelection, p, testCfg.ccString) : -1;
           if (monitor) monitor.push({ channel: testCfg.channel + 1, type: 'noteOff', note: testCfg.note,
-            value: 0, interpretation: 'release string ' + testCfg.string, t: Date.now() });
+            value: 0, interpretation: axis >= 0 ? 'release string ' + (axis + 1) : 'release',
+            t: Date.now() });
         })();
       }, testCfg.durationMs);
     }).catch(function (e) {

@@ -510,9 +510,13 @@
         return GMB.api.setWifi(payload).then(function (r) {
           wifi.stationPassword = ''; wifi.apPassword = '';
           wifi.forgetStation = false; wifi.forgetAp = false;
-          GMB.toast((r && r.note) ? ('Network settings ' + r.note) :
-            'Network settings stored on the device.', 'ok');
-          if (switching)
+          // Report what the DEVICE says happened, not what we hoped: `applied`
+          // comes back false on a build that can only store the settings.
+          GMB.toast(r && r.applied
+            ? 'Network settings applied — the device is reconfiguring its radio.'
+            : ('Network settings ' + ((r && r.note) || 'stored — reboot to apply.')),
+            'ok');
+          if (switching && r && r.applied)
             GMB.toast('If you are connected through the hotspot, the device may now ' +
                       'switch networks — reconnect on the new network if this page ' +
                       'stops responding.', 'warn');

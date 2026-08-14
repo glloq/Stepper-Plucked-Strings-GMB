@@ -294,27 +294,55 @@ void WebApi::registerRoutes() {
         sendJson(req, doc, queued ? 202 : 503);
     });
 
-    // ---- GET /api/board/{id} ----
-    server_->on("/api/board/esp32-s3-devkitc-1", HTTP_GET,
-               [](AsyncWebServerRequest* req) {
-        const BoardProfile* b = builtinBoardProfile("esp32-s3-devkitc-1");
+    // ---- GET /api/boards (which boards this firmware actually supports) ----
+    // The UI builds its board picker from this instead of carrying its own list:
+    // a hand-maintained copy is how the picker came to offer one board while the
+    // firmware supported four.
+    server_->on("/api/boards", HTTP_GET, [](AsyncWebServerRequest* req) {
         JsonDocument doc;
-        doc["identifier"] = b->identifier;
-        doc["displayName"] = b->displayName;
-        JsonArray pins = doc["pins"].to<JsonArray>();
-        for (const auto& p : b->pins) {
-            JsonObject o = pins.add<JsonObject>();
-            o["gpio"] = p.gpio;
-            o["preference"] = prefName(p.preference);
-            o["reserved"] = p.reserved;
-            o["usb"] = p.usb;
-            o["strapping"] = p.strapping;
-            o["highSpeedOutput"] = p.highSpeedOutput;
-            o["adc"] = p.adc;
-            o["note"] = p.note;
+        JsonArray arr = doc["boards"].to<JsonArray>();
+        for (const BoardProfile* b : builtinBoardProfiles()) {
+            JsonObject o = arr.add<JsonObject>();
+            o["identifier"] = b->identifier;
+            o["displayName"] = b->displayName;
         }
         sendJson(req, doc);
     });
+
+    // ---- GET /api/board/{id} — one route per built-in board ----
+    for (const BoardProfile* b : builtinBoardProfiles()) {
+        server_->on(("/api/board/" + b->identifier).c_str(), HTTP_GET,
+                    [b](AsyncWebServerRequest* req) {
+            JsonDocument doc;
+            doc["identifier"] = b->identifier;
+            doc["displayName"] = b->displayName;
+            JsonArray pins = doc["pins"].to<JsonArray>();
+            for (const auto& p : b->pins) {
+                JsonObject o = pins.add<JsonObject>();
+                o["gpio"] = p.gpio;
+                o["preference"] = prefName(p.preference);
+                // The FULL capability set, matching board-profiles/*.json field for
+                // field. exposed/input/output/interrupt were missing here, and the
+                // web UI's pinSupports() bails out on the first falsy one — so
+                // against a real device every signal dropdown came up empty while
+                // the offline mock (which has the fields) looked fine.
+                o["exposed"] = p.exposed;
+                o["input"] = p.input;
+                o["output"] = p.output;
+                o["interrupt"] = p.interrupt;
+                o["internalPullUp"] = p.internalPullUp;
+                o["internalPullDown"] = p.internalPullDown;
+                o["reserved"] = p.reserved;
+                o["usb"] = p.usb;
+                o["strapping"] = p.strapping;
+                o["onboardPeripheral"] = p.onboardPeripheral;
+                o["highSpeedOutput"] = p.highSpeedOutput;
+                o["adc"] = p.adc;
+                o["note"] = p.note;
+            }
+            sendJson(req, doc);
+        });
+    }
 
     // ---- POST /api/pins/auto (auto-assign GPIO for the wizard's draft) ----
     // Reads the wizard's request body so the assignment matches the DRAFT being
@@ -575,9 +603,21 @@ void WebApi::registerRoutes() {
         "/api/test/note", [this](AsyncWebServerRequest* req, JsonVariant& body) {
             if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
             JsonDocument doc;
+            // ccString / ccFret are the SELECTION CC values a controller would
+            // send (0..127). Absent means "no selection CC" — the note is then
+            // allocated automatically, exactly as before.
+            int ccString = body["ccString"].isNull() ? -1 : (body["ccString"] | -1);
+            int ccFret = body["ccFret"].isNull() ? -1 : (body["ccFret"] | -1);
+            if (ccString > 127 || ccFret > 127) {
+                doc["ok"] = false;
+                doc["error"] = "ccString/ccFret must be 0-127";
+                sendJson(req, doc, 422);
+                return;
+            }
             uint32_t cmdId = ctx_.onTestNote
                 ? ctx_.onTestNote(body["channel"] | 0, body["note"] | 60,
-                                  body["velocity"] | 100, body["durationMs"] | 500)
+                                  body["velocity"] | 100, body["durationMs"] | 500,
+                                  ccString, ccFret)
                 : 0;
             bool queued = cmdId != 0;
             doc["ok"] = queued;
@@ -641,6 +681,33 @@ void WebApi::registerRoutes() {
     testJog->setMethod(HTTP_POST);
     server_->addHandler(testJog);
 
+    // ---- POST /api/test/moveto (send one axis to an absolute mm, Ready only) ----
+    auto* testMoveTo = new AsyncCallbackJsonWebHandler(
+        "/api/test/moveto", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
+            JsonDocument doc;
+            if (!ctx_.safety || !ctx_.safety->actuatorsAllowed()) {
+                doc["ok"] = false;
+                doc["error"] = "actuators not armed";
+                sendJson(req, doc, 409);
+                return;
+            }
+            // Same enqueue-for-loop() contract as the jog: loop() owns the
+            // steppers and applies the identical per-axis gate. The target is
+            // measured from the homing zero and clamped to the axis travel.
+            int axis = body["axis"] | -1;
+            double positionMm = body["positionMm"] | 0.0;
+            uint32_t cmdId = ctx_.onMoveTo ? ctx_.onMoveTo(axis, positionMm) : 0;
+            bool queued = cmdId != 0;
+            doc["ok"] = queued;
+            doc["accepted"] = queued;
+            doc["commandId"] = cmdId;
+            doc["note"] = queued ? "move queued" : "command queue full";
+            sendJson(req, doc, queued ? 202 : 503);
+        });
+    testMoveTo->setMethod(HTTP_POST);
+    server_->addHandler(testMoveTo);
+
     // ---- POST /api/test/endstop (read a HOME/LIMIT sensor) ----
     auto* testEndstop = new AsyncCallbackJsonWebHandler(
         "/api/test/endstop", [this](AsyncWebServerRequest* req, JsonVariant& body) {
@@ -670,16 +737,69 @@ void WebApi::registerRoutes() {
                 sendJson(req, doc, 409);
                 return;
             }
+            WebContext::WifiRequest rq;
             // Only overwrite a password that was actually provided (an absent or
-            // empty field leaves the stored secret unchanged).
-            bool hasSta = !body["stationPassword"].isNull() &&
-                          std::string(body["stationPassword"] | "").size() > 0;
-            bool hasAp = !body["apPassword"].isNull() &&
-                         std::string(body["apPassword"] | "").size() > 0;
-            ctx_.onSetWifi(hasSta, body["stationPassword"] | "", hasAp,
-                           body["apPassword"] | "");
+            // empty field leaves the stored secret unchanged). Erasing one is a
+            // separate, explicit flag for exactly that reason.
+            rq.stationPassword = body["stationPassword"] | "";
+            rq.apPassword = body["apPassword"] | "";
+            rq.hasStationPassword = !rq.stationPassword.empty();
+            rq.hasApPassword = !rq.apPassword.empty();
+            rq.clearStationPassword = body["clearStationPassword"] | false;
+            rq.clearApPassword = body["clearApPassword"] | false;
+            rq.apply = body["apply"] | false;
+
+            // WPA2 bounds. Refusing here matters: a 4-character "password" would
+            // silently start an OPEN access point, which is not what was asked for.
+            if (rq.hasApPassword && (rq.apPassword.size() < 8 || rq.apPassword.size() > 63)) {
+                doc["ok"] = false;
+                doc["error"] = "apPassword must be 8-63 characters (WPA2)";
+                sendJson(req, doc, 422);
+                return;
+            }
+            // Setting and clearing the same secret in one request is a caller bug,
+            // not something to resolve by guessing which one wins.
+            if ((rq.hasApPassword && rq.clearApPassword) ||
+                (rq.hasStationPassword && rq.clearStationPassword)) {
+                doc["ok"] = false;
+                doc["error"] = "cannot set and clear the same password";
+                sendJson(req, doc, 422);
+                return;
+            }
+
+            if (!body["mode"].isNull()) {
+                std::string mode = body["mode"] | "";
+                if (mode != "accessPoint" && mode != "station") {
+                    doc["ok"] = false;
+                    doc["error"] = "mode must be \"accessPoint\" or \"station\"";
+                    sendJson(req, doc, 422);
+                    return;
+                }
+                rq.hasNetwork = true;
+                rq.network.mode = mode == "station" ? NetworkMode::Station
+                                                    : NetworkMode::AccessPoint;
+                rq.network.ssid = body["ssid"] | "";
+                rq.network.apSsid = body["apSsid"] | "";
+                rq.network.hostname = body["hostname"] | "";
+                if (rq.network.apSsid.empty()) {
+                    doc["ok"] = false;
+                    doc["error"] = "apSsid must not be empty";
+                    sendJson(req, doc, 422);
+                    return;
+                }
+                if (rq.network.hostname.empty()) rq.network.hostname = "gmb-instrument";
+                // Joining a network needs a name to join.
+                if (rq.network.mode == NetworkMode::Station && rq.network.ssid.empty()) {
+                    doc["ok"] = false;
+                    doc["error"] = "station mode needs an ssid";
+                    sendJson(req, doc, 422);
+                    return;
+                }
+            }
+
             doc["ok"] = true;
-            doc["note"] = "stored; reboot to apply";
+            doc["note"] = ctx_.onSetWifi(rq);
+            doc["applied"] = rq.apply;
             sendJson(req, doc);
         });
     setWifi->setMethod(HTTP_POST);

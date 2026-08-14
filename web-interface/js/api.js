@@ -44,96 +44,32 @@
     };
   }
 
-  function buildDevKitC1() {
-    var pins = [];
-    // Strapping / boot pins — usable, but their level is sampled at reset.
-    pins.push(pin(0, { strapping: true, highSpeedOutput: true, preference: 'reserved',
-      note: 'BOOT strapping pin — reserved to keep boot reliable.' }));
-    pins.push(pin(1, { adc: true, highSpeedOutput: true, preference: 'recommended', note: 'ADC1_CH0.' }));
-    pins.push(pin(2, { adc: true, highSpeedOutput: true, preference: 'recommended', note: 'ADC1_CH1.' }));
-    pins.push(pin(3, { adc: true, strapping: true, highSpeedOutput: true, preference: 'caution',
-      note: 'Strapping pin (JTAG source select) — usable, but verify the boot level.' }));
-    // Recommended general I/O — the auto-assigner draws STEP/DIR/HOME from here.
-    [4, 5, 6, 7].forEach(function (g) {
-      pins.push(pin(g, { adc: true, highSpeedOutput: true, preference: 'recommended',
-        note: 'Fast, general purpose — recommended for STEP.' }));
+  // Board capability tables come from js/boarddata.js, GENERATED from
+  // firmware/src/core/board/BoardProfile.cpp. api.js used to hand-build the S3
+  // table here — a third copy of the same data, and the reason the board picker
+  // offered one model while the firmware supported four.
+  function boardList() {
+    return (GMB.BOARD_PROFILES || []).map(function (b) {
+      return { identifier: b.identifier, displayName: b.displayName };
     });
-    [8, 9, 10, 11].forEach(function (g) {
-      pins.push(pin(g, { adc: true, highSpeedOutput: true, preference: 'recommended',
-        note: 'General purpose — recommended for DIR.' }));
-    });
-    [12, 13, 14].forEach(function (g) {
-      pins.push(pin(g, { adc: true, highSpeedOutput: true, preference: 'recommended',
-        note: 'General purpose — recommended for HOME sensors.' }));
-    });
-    [15, 16].forEach(function (g) {
-      pins.push(pin(g, { adc: true, highSpeedOutput: true, preference: 'recommended',
-        note: 'General purpose (ADC2) — recommended for STEP.' }));
-    });
-    [17, 18].forEach(function (g) {
-      pins.push(pin(g, { adc: true, highSpeedOutput: true, preference: 'recommended',
-        note: 'General purpose (ADC2) — recommended for DIR.' }));
-    });
-    // Native USB — reserved by default (spec 8.3 / 11.3).
-    pins.push(pin(19, { usb: true, preference: 'reserved',
-      note: 'USB-JTAG / native USB (D-). Reserved for future USB MIDI.' }));
-    pins.push(pin(20, { usb: true, preference: 'reserved',
-      note: 'USB-JTAG / native USB (D+). Reserved for future USB MIDI.' }));
-    pins.push(pin(21, { highSpeedOutput: true, preference: 'recommended',
-      note: 'General purpose — recommended for HOME sensor.' }));
-    // GPIO22..25 do not exist on the ESP32-S3.
-    // SPI flash — never usable on the DevKitC-1 module.
-    [26, 27, 28, 29, 30, 31, 32].forEach(function (g) {
-      pins.push(pin(g, { preference: 'reserved', reserved: true,
-        note: 'Connected to on-module SPI flash — not available.' }));
-    });
-    // Variant-dependent memory pins.
-    pins.push(pin(33, { highSpeedOutput: true, preference: 'caution',
-      note: 'May be used by octal PSRAM on some variants — verify your module.' }));
-    pins.push(pin(34, { highSpeedOutput: true, preference: 'caution',
-      note: 'May be used by octal PSRAM on some variants — verify your module.' }));
-    [35, 36, 37].forEach(function (g) {
-      pins.push(pin(g, { preference: 'reserved', reserved: true,
-        note: 'Flash/PSRAM on octal variants — reserved unless the variant frees it.' }));
-    });
-    [38, 39].forEach(function (g) {
-      pins.push(pin(g, { highSpeedOutput: true, preference: 'recommended',
-        note: 'General purpose — recommended for HOME sensor.' }));
-    });
-    pins.push(pin(40, { preference: 'recommended', note: 'Recommended I2C SDA (PCA9685).' }));
-    pins.push(pin(41, { preference: 'recommended', note: 'Recommended I2C SCL (PCA9685).' }));
-    pins.push(pin(42, { preference: 'recommended', note: 'Recommended global driver ENABLE.' }));
-    // Main UART — programming / diagnostics.
-    pins.push(pin(43, { onboardPeripheral: true, preference: 'reserved',
-      note: 'U0TXD — programming & diagnostic UART. Reserved.' }));
-    pins.push(pin(44, { onboardPeripheral: true, preference: 'reserved',
-      note: 'U0RXD — programming & diagnostic UART. Reserved.' }));
-    pins.push(pin(45, { strapping: true, preference: 'caution',
-      note: 'Strapping pin (VDD_SPI voltage) — usable, but verify the boot level.' }));
-    pins.push(pin(46, { strapping: true, preference: 'caution',
-      note: 'Strapping pin — usable, but verify the boot level.' }));
-    pins.push(pin(47, { highSpeedOutput: true, preference: 'recommended',
-      note: 'Recommended PCA9685 /OE safety line.' }));
-    pins.push(pin(48, { onboardPeripheral: true, preference: 'reserved',
-      note: 'On-board RGB LED (WS2812). Reserved.' }));
-    return {
-      identifier: 'esp32-s3-devkitc-1',
-      displayName: 'ESP32-S3-DevKitC-1',
-      pins: pins
-    };
+  }
+  function boardById(id) {
+    var all = GMB.BOARD_PROFILES || [];
+    for (var i = 0; i < all.length; i++) if (all[i].identifier === id) return all[i];
+    return all[0] || null;
   }
 
   // ---------------------------------------------------------------------------
-  // Default recommended pin assignment (spec 11.5). Signal names
-  // match firmware PinAssignment.signal ("STEP1", "HOME3", "SDA"...).
+  // Recommended pin assignment (spec 11.5), PER BOARD, from the generated tables.
+  // Signal names match firmware PinAssignment.signal ("STEP1", "HOME3", "SDA"...).
+  // This was one hard-coded S3 map, so auto-assign handed out S3 pins whichever
+  // board was selected — on a classic ESP32 half of them do not exist.
   // ---------------------------------------------------------------------------
-  var RECOMMENDED = {
-    STEP: [4, 5, 6, 7, 15, 16],
-    DIR: [17, 18, 8, 9, 10, 11],
-    HOME: [12, 13, 14, 21, 38, 39],
-    SDA: 40, SCL: 41, ENABLE: 42, SERVO_OE: 47
+  GMB.recommendedFor = function (identifier) {
+    var b = boardById(identifier);
+    return (b && b.recommendedAssignment) ||
+           { STEP: [], DIR: [], HOME: [], SDA: -1, SCL: -1, ENABLE: -1, SERVO_OE: -1 };
   };
-  GMB.RECOMMENDED = RECOMMENDED;
 
   // Which capability a signal kind needs (mirrors BoardProfile::candidatesFor).
   var SIGNAL_KIND = {
@@ -190,6 +126,29 @@
       default: return p.output;
     }
   };
+
+  // ---------------------------------------------------------------------------
+  // Mock axis positions, in mm from the homing zero. /api/test/jog and
+  // /api/test/moveto write here and the status snapshot reads it, so offline the
+  // carriages move for real instead of every control reporting a success that
+  // changes nothing.
+  // ---------------------------------------------------------------------------
+  var mockAxes = [];
+  function mockAxisPos(axis) { return mockAxes[axis] || 0; }
+  function mockAxisMove(axis, positionMm) {
+    var p = (global.GMB.state && global.GMB.state.profile) || MOCK.profile;
+    var s = p && p.strings && p.strings[axis];
+    if (!s) return { ok: false, error: 'no such axis' };
+    // The firmware clamps to the axis travel rather than refusing, so an
+    // out-of-range target parks at the limit here too.
+    var lo = Number(s.minPositionMm) || 0;
+    var hi = Number(s.maxPositionMm);
+    if (!(hi > lo)) hi = lo;
+    var v = Math.min(hi, Math.max(lo, Number(positionMm) || 0));
+    mockAxes[axis] = v;
+    return { ok: true, accepted: true, commandId: 0,
+             note: 'axis ' + axis + ' -> ' + v.toFixed(2) + ' mm (mock)' };
+  }
 
   // ---------------------------------------------------------------------------
   // Sample profile — a 4-string GCEA ukulele (reentrant tuning G4 C4 E4 A4).
@@ -337,6 +296,48 @@
     return NOTE_NAMES[n % 12] + (Math.floor(n / 12) - 1);
   };
 
+  // ---- selection-CC decoding (mirrors StringFretSelector::mapStringValue /
+  // mapFretValue) --------------------------------------------------------------
+  //
+  // These answer "which physical axis / fret does CC value V select, under THIS
+  // configuration?" — the question the integrated test tool exists to settle. The
+  // order of operations matters and is the firmware's: range-check the raw value,
+  // apply the offset, drop the one-based bias, reverse, then the mapping table.
+  // Both return -1 for a value the firmware would reject.
+  GMB.decodeStringCc = function (sfs, p, rawValue) {
+    var cfg = sfs.string, count = p.instrument.stringCount;
+    if (rawValue < cfg.minimum || rawValue > cfg.maximum) return -1;
+    var index = rawValue + (cfg.offset || 0);
+    if (cfg.numbering !== 'zeroBased') index -= 1;   // oneBased is the default
+    if (index < 0 || index >= count) return -1;
+    if (cfg.reverseOrder) index = (count - 1) - index;
+    var map = cfg.mapping;
+    if (map && map.length) {
+      if (index >= map.length) return -1;
+      index = map[index];
+    }
+    if (index < 0 || index >= count) return -1;
+    return index;
+  };
+  GMB.decodeFretCc = function (sfs, rawValue) {
+    var cfg = sfs.fret;
+    if (rawValue < cfg.minimum || rawValue > cfg.maximum) return -1;
+    var fret = rawValue + (cfg.offset || 0);
+    return fret < 0 ? -1 : fret;
+  };
+  // The inverse, for pre-filling the tester from a string the user picked. Brute
+  // force over the 128 CC values rather than an algebraic inverse: reverseOrder
+  // plus an arbitrary mapping table is not invertible in closed form, and a wrong
+  // inverse would silently test the wrong axis.
+  GMB.encodeStringCc = function (sfs, p, axis) {
+    for (var v = 0; v <= 127; v++) if (GMB.decodeStringCc(sfs, p, v) === axis) return v;
+    return -1;
+  };
+  GMB.encodeFretCc = function (sfs, fret) {
+    for (var v = 0; v <= 127; v++) if (GMB.decodeFretCc(sfs, v) === fret) return v;
+    return -1;
+  };
+
   // Derive read-only capabilities from a profile (SysEx spec 5 / 6 / 17).
   GMB.computeCapabilities = function (p) {
     // Only ENABLED strings are announced, and the pitch shift is capo + BOTH
@@ -413,11 +414,15 @@
       temperatures: [{ name: 'Driver board', c: 34.2 }],
       voltages: [{ name: '24V motor', v: 24.1 }, { name: '5V servo', v: 5.02 }],
       strings: p.strings.map(function (s, i) {
+        var pos = mockAxisPos(i);
         return {
           index: i, state: 'IDLE',
           note: null, fret: null,
-          positionMm: 0, targetMm: 0, distanceMm: 0,
-          home: true, limit: false,
+          // Report where the mock jog / go-to-position actually left the carriage
+          // instead of a hard-coded 0: a demo whose axes never move cannot show
+          // that the jog and calibration controls do anything.
+          positionMm: pos, targetMm: pos, distanceMm: 0,
+          home: pos <= 0.05, limit: false,
           finger: 'up', plectrum: 'rest', lastFault: 'none',
           openNote: s.openNote
         };
@@ -440,7 +445,6 @@
   }
 
   var MOCK = {
-    board: buildDevKitC1(),
     profile: sampleProfile(),
     slots: [
       sampleProfile(),
@@ -453,7 +457,14 @@
     midiSourcePolicy: 'open',     // UDP source posture (P1.11)
     midiSourceLocked: false
   };
-  GMB.mockBoard = function () { return MOCK.board; };
+  // The board the DRAFT selects, not a fixed one: changing the board model has to
+  // change which GPIOs the mock offers and validates, or the picker would be
+  // decorative offline.
+  function currentBoard(profile) {
+    var p = profile || (global.GMB.state && global.GMB.state.profile) || MOCK.profile;
+    return boardById(p && p.board && p.board.profile) || { pins: [] };
+  }
+  GMB.mockBoard = currentBoard;
 
   // A plausible GET /api/diagnostics body for mock mode, so the Diagnostics panel
   // can be laid out and read without a device attached. Shape matches
@@ -494,37 +505,54 @@
   // requested string count and reserved USB pins (mirrors PinManager::autoAssign).
   // ---------------------------------------------------------------------------
   function mockAutoAssign(req) {
-    var n = req.stringCount || MOCK.profile.instrument.stringCount;
+    var profile = (global.GMB.state && global.GMB.state.profile) || MOCK.profile;
+    var n = req.stringCount || profile.instrument.stringCount;
+    var rec = GMB.recommendedFor(req.board || (profile.board && profile.board.profile));
     var pins = [];
+    var errors = [];
     for (var i = 0; i < n; i++) {
-      pins.push({ signal: 'STEP' + (i + 1), kind: 'step', gpio: RECOMMENDED.STEP[i] });
-      pins.push({ signal: 'DIR' + (i + 1), kind: 'dir', gpio: RECOMMENDED.DIR[i] });
-      pins.push({ signal: 'HOME' + (i + 1), kind: 'home', gpio: RECOMMENDED.HOME[i] });
+      // A classic ESP32 runs out of comfortable high-speed outputs well before 6
+      // axes. Say so instead of emitting an undefined GPIO that later surfaces as
+      // a mystery validation error.
+      if (rec.STEP[i] === undefined || rec.DIR[i] === undefined || rec.HOME[i] === undefined) {
+        errors.push({ signal: 'STEP' + (i + 1),
+          reason: 'This board has no recommended pin set left for axis ' + (i + 1) +
+                  '. Assign it by hand, or pick a board with more usable GPIOs.' });
+        continue;
+      }
+      pins.push({ signal: 'STEP' + (i + 1), kind: 'step', gpio: rec.STEP[i] });
+      pins.push({ signal: 'DIR' + (i + 1), kind: 'dir', gpio: rec.DIR[i] });
+      pins.push({ signal: 'HOME' + (i + 1), kind: 'home', gpio: rec.HOME[i] });
     }
     if (req.useI2cServos !== false) {
-      pins.push({ signal: 'SDA', kind: 'sda', gpio: RECOMMENDED.SDA });
-      pins.push({ signal: 'SCL', kind: 'scl', gpio: RECOMMENDED.SCL });
+      pins.push({ signal: 'SDA', kind: 'sda', gpio: rec.SDA });
+      pins.push({ signal: 'SCL', kind: 'scl', gpio: rec.SCL });
     }
-    if (req.globalEnable !== false) pins.push({ signal: 'ENABLE', kind: 'enable', gpio: RECOMMENDED.ENABLE });
-    if (req.servoSafetyOe !== false) pins.push({ signal: 'SERVO_OE', kind: 'servoOe', gpio: RECOMMENDED.SERVO_OE });
-    return { pins: pins, errors: [] };
+    if (req.globalEnable !== false) pins.push({ signal: 'ENABLE', kind: 'enable', gpio: rec.ENABLE });
+    if (req.servoSafetyOe !== false) pins.push({ signal: 'SERVO_OE', kind: 'servoOe', gpio: rec.SERVO_OE });
+    return { pins: pins, errors: errors };
   }
 
   // Mock validation (spec 11.6). Mirrors the firmware contract:
   // decodes the full profile and returns { ok, issues:[{field,message,severity}] }.
   function mockValidatePins(profile) {
     var pins = (profile && profile.pins) || [];
+    var board = currentBoard(profile);
     var reserveUsb = !!(profile && profile.board && profile.board.reserveUsb);
     var errors = [];
     var byGpio = {};
+    // Pins already handed out as suggestions in THIS pass. Without it every one of
+    // eight broken signals was told to "try GPIO 16" — advice that cannot be
+    // followed more than once.
+    var claimed = {};
     pins.forEach(function (a) {
       if (a.gpio < 0) return;
-      var cap = MOCK.board.pins.filter(function (p) { return p.gpio === a.gpio; })[0];
+      var cap = board.pins.filter(function (p) { return p.gpio === a.gpio; })[0];
       // Duplicate use.
       if (byGpio[a.gpio]) {
         errors.push({ signal: a.signal, gpio: a.gpio,
           reason: 'GPIO ' + a.gpio + ' is already used by ' + byGpio[a.gpio] + '.',
-          suggestion: suggest(a.kind, pins), conflictWith: byGpio[a.gpio] });
+          suggestion: suggest(a.kind, pins, board, claimed), conflictWith: byGpio[a.gpio] });
       } else {
         byGpio[a.gpio] = a.signal;
       }
@@ -532,38 +560,44 @@
       if (!cap) {
         errors.push({ signal: a.signal, gpio: a.gpio,
           reason: 'GPIO ' + a.gpio + ' does not exist on this board.',
-          suggestion: suggest(a.kind, pins), conflictWith: '' });
+          suggestion: suggest(a.kind, pins, board, claimed), conflictWith: '' });
       } else if (reserveUsb && cap.usb) {
         errors.push({ signal: a.signal, gpio: a.gpio,
           reason: 'GPIO ' + a.gpio + ' is reserved for future native USB.',
-          suggestion: suggest(a.kind, pins), conflictWith: 'USB (reserved)' });
+          suggestion: suggest(a.kind, pins, board, claimed), conflictWith: 'USB (reserved)' });
       } else if (cap.preference === 'reserved') {
         errors.push({ signal: a.signal, gpio: a.gpio,
           reason: cap.note || ('GPIO ' + a.gpio + ' is reserved.'),
-          suggestion: suggest(a.kind, pins), conflictWith: '' });
+          suggestion: suggest(a.kind, pins, board, claimed), conflictWith: '' });
       } else if (!GMB.pinSupports(cap, SIGNAL_KIND[a.kind] || 'generic')) {
         errors.push({ signal: a.signal, gpio: a.gpio,
           reason: 'GPIO ' + a.gpio + ' is not compatible with a ' + a.kind.toUpperCase() + ' signal.',
-          suggestion: suggest(a.kind, pins), conflictWith: '' });
+          suggestion: suggest(a.kind, pins, board, claimed), conflictWith: '' });
       }
     });
     // Map the rich mock errors onto the firmware's { field, message, severity }
     // issue shape.
     var issues = errors.map(function (e) {
-      var msg = e.reason + (e.suggestion ? ' ' + e.suggestion : '');
+      // Board notes come from the generated tables and do not all end in a full
+      // stop, so join rather than concatenate ("...SPI flash Try GPIO 16.").
+      var reason = /[.!?]$/.test(e.reason) ? e.reason : e.reason + '.';
+      var msg = reason + (e.suggestion ? ' ' + e.suggestion : '');
       return { field: e.signal + ' (GPIO' + e.gpio + ')', message: msg, severity: 'error' };
     });
     return { ok: issues.length === 0, issues: issues };
   }
 
-  function suggest(kind, pins) {
+  function suggest(kind, pins, board, claimed) {
     var used = {};
     pins.forEach(function (a) { used[a.gpio] = true; });
     var wantKind = SIGNAL_KIND[kind] || 'generic';
-    var free = MOCK.board.pins.filter(function (p) {
-      return !used[p.gpio] && p.preference === 'recommended' && GMB.pinSupports(p, wantKind);
+    var free = (board || currentBoard()).pins.filter(function (p) {
+      return !used[p.gpio] && !(claimed && claimed[p.gpio]) &&
+             p.preference === 'recommended' && GMB.pinSupports(p, wantKind);
     });
-    return free.length ? ('Try GPIO ' + free[0].gpio + '.') : 'No free recommended pin — free one up first.';
+    if (!free.length) return 'No free recommended pin — free one up first.';
+    if (claimed) claimed[free[0].gpio] = true;   // do not offer it twice
+    return 'Try GPIO ' + free[0].gpio + '.';
   }
 
   // ---------------------------------------------------------------------------
@@ -919,7 +953,15 @@
       });
     },
     getBoard: function (id) {
-      return this._call('/api/board/' + id, null, function () { return deepCopy(MOCK.board); });
+      return this._call('/api/board/' + id, null, function () {
+        return deepCopy(boardById(id) || currentBoard());
+      });
+    },
+    // GET /api/boards -> { boards:[{identifier,displayName}] }. The board picker is
+    // built from this, so it can only ever offer boards the firmware supports.
+    listBoards: function () {
+      return this._call('/api/boards', null, function () { return { boards: boardList() }; })
+        .then(function (r) { return (r && r.boards) || []; });
     },
     autoPins: function (req) {
       return this._call('/api/pins/auto', {
@@ -942,9 +984,18 @@
     // POST /api/test/note -> { ok:true } (200) or { ok:false, error } (409 when
     // the instrument is homing / not ready). The firmware reads only
     // channel/note/velocity/durationMs; the richer payload feeds the mock trace.
+    // POST /api/test/note. `ccString` / `ccFret` are the SELECTION CC VALUES a
+    // controller would put on the wire; the firmware emits them on the configured
+    // CC numbers before the Note On, so the test walks the real selector (mapping,
+    // offset, numbering and all) instead of bypassing it. Omit them for a plain
+    // automatically-allocated note.
     testNote: function (payload) {
       var wire = { channel: payload.channel | 0, note: payload.note | 0,
         velocity: payload.velocity | 0, durationMs: payload.durationMs || 500 };
+      if (payload.ccString !== undefined && payload.ccString !== null)
+        wire.ccString = payload.ccString | 0;
+      if (payload.ccFret !== undefined && payload.ccFret !== null)
+        wire.ccFret = payload.ccFret | 0;
       return this._call('/api/test/note', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wire)
       }, function () { return mockTestNote(payload); });
@@ -967,7 +1018,17 @@
       var wire = { axis: payload.axis | 0, deltaMm: Number(payload.deltaMm) || 0 };
       return this._call('/api/test/jog', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wire)
-      }, function () { return { ok: true, note: 'jog ' + wire.deltaMm + ' mm (mock)' }; });
+      }, function () { return mockAxisMove(wire.axis, mockAxisPos(wire.axis) + wire.deltaMm); });
+    },
+    // POST /api/test/moveto -> { ok } (409 if not armed). Body: { axis, positionMm }.
+    // Absolute target from the homing zero, for fret calibration: reaching fret 9
+    // by summing jogs folds every rounding error into the value the operator is
+    // about to record as ground truth.
+    moveTo: function (payload) {
+      var wire = { axis: payload.axis | 0, positionMm: Number(payload.positionMm) || 0 };
+      return this._call('/api/test/moveto', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wire)
+      }, function () { return mockAxisMove(wire.axis, wire.positionMm); });
     },
     // POST /api/test/endstop -> { ok:true, home:Bool, limit:Bool }. Body: { axis }.
     testEndstop: function (payload) {
@@ -977,11 +1038,31 @@
       }, function () { return mockTestEndstop(payload); });
     },
     // POST /api/wifi -> { ok:true }. Passwords are write-only.
+    // POST /api/wifi -> { ok, note, applied }. Passwords are write-only and are
+    // only overwritten when non-empty; erasing one needs its explicit clear flag.
+    // `apply` reconfigures the radio immediately instead of waiting for a reboot.
+    // Send the WHOLE request: this used to forward only the two passwords, so the
+    // mode / SSID / hostname / clear / apply controls above it did nothing.
     setWifi: function (payload) {
+      var wire = {
+        stationPassword: payload.stationPassword || '',
+        apPassword: payload.apPassword || '',
+        clearStationPassword: !!payload.clearStationPassword,
+        clearApPassword: !!payload.clearApPassword,
+        apply: !!payload.apply
+      };
+      // mode is what tells the firmware a link config is present at all; omitting
+      // it leaves the stored network untouched (a password-only change).
+      if (payload.mode) {
+        wire.mode = payload.mode;
+        wire.ssid = payload.ssid || '';
+        wire.apSsid = payload.apSsid || '';
+        wire.hostname = payload.hostname || '';
+      }
       return this._call('/api/wifi', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stationPassword: payload.stationPassword || '', apPassword: payload.apPassword || '' })
-      }, function () { return { ok: true, note: 'stored (mock); reboot to apply' }; });
+        body: JSON.stringify(wire)
+      }, function () { return mockSetWifi(wire); });
     },
     // POST /api/sysex/request: build the request bytes for the block, send
     // { bytes:[...] }, then decode the returned response bytes for display.
@@ -1007,19 +1088,46 @@
   };
 
   function mockTestNote(payload) {
-    // Emulate the integrated test tool (selection spec 16) with a step log.
-    var steps = [
-      { step: 'CC string received', detail: 'CC' + payload.stringCc + ' = ' + payload.string },
-      { step: 'CC fret received', detail: 'CC' + payload.fretCc + ' = ' + payload.fret },
-      { step: 'Selection validated', detail: 'string ' + payload.string + ', fret ' + payload.fret },
-      { step: 'Axis moving', detail: 'string ' + payload.string + ' -> fret ' + payload.fret },
-      { step: 'Position reached', detail: 'ok' },
-      { step: 'Finger pressed', detail: payload.fret === 0 ? 'skipped (open string)' : 'ok' },
-      { step: 'String plucked', detail: 'velocity ' + payload.velocity }
-    ];
+    // Emulate the integrated test tool (selection spec 16) with a step log. The
+    // selection CCs are only traced when they were actually sent — a note with no
+    // selection is allocated automatically, and the trace has to say so rather
+    // than invent a selection step that never happened.
+    var p = (global.GMB.state && global.GMB.state.profile) || MOCK.profile;
+    var sfs = p.stringFretSelection;
+    var hasSel = payload.ccString !== undefined && payload.ccString !== null &&
+                 payload.ccFret !== undefined && payload.ccFret !== null;
+    var steps = [];
+    if (hasSel) {
+      // Decode the CC value exactly as the firmware selector does, so the trace
+      // shows which PHYSICAL axis a given CC value lands on under the current
+      // numbering / offset / order / mapping — that is the thing being tested.
+      var axis = GMB.decodeStringCc ? GMB.decodeStringCc(sfs, p, payload.ccString) : -1;
+      steps.push({ step: 'CC string received',
+                   detail: 'CC' + sfs.string.ccNumber + ' = ' + payload.ccString +
+                           (axis >= 0 ? ' -> axis ' + (axis + 1) : ' -> invalid') });
+      steps.push({ step: 'CC fret received',
+                   detail: 'CC' + sfs.fret.ccNumber + ' = ' + payload.ccFret });
+      if (axis < 0) {
+        steps.push({ step: 'Selection rejected',
+                     detail: 'no such string — falling back to automatic allocation' });
+      } else {
+        steps.push({ step: 'Selection validated',
+                     detail: 'axis ' + (axis + 1) + ', fret ' + payload.ccFret });
+        steps.push({ step: 'Axis moving',
+                     detail: 'axis ' + (axis + 1) + ' -> fret ' + payload.ccFret });
+        steps.push({ step: 'Position reached', detail: 'ok' });
+        steps.push({ step: 'Finger pressed',
+                     detail: payload.ccFret === 0 ? 'skipped (open string)' : 'ok' });
+      }
+    } else {
+      steps.push({ step: 'Note On received',
+                   detail: 'note ' + payload.note + ', no selection CC' });
+      steps.push({ step: 'Allocated automatically', detail: 'controller picked the string' });
+    }
+    steps.push({ step: 'String plucked', detail: 'velocity ' + payload.velocity });
     // Also inject the events into the mock MIDI stream so the monitor shows them.
     injectMidi(payload);
-    return { ok: true, steps: steps };
+    return { ok: true, accepted: true, steps: steps };
   }
 
   // Mock servo test (/api/test/servo): matches the firmware contract
@@ -1041,6 +1149,40 @@
   // { ok:true, home:Bool, limit:Bool } for an { axis } request.
   function mockTestEndstop(payload) {
     return { ok: true, home: Math.random() < 0.25, limit: Math.random() < 0.1 };
+  }
+
+  // Mock /api/wifi. It mirrors the firmware's validation rather than always
+  // answering ok: a demo that accepts what the device refuses teaches the wrong
+  // thing about the form. Secrets are not stored anywhere — only their presence.
+  var mockWifiState = { stationPassword: false, apPassword: false };
+  // Same shape _fetch() throws for a real HTTP error, so a caller reading
+  // e.body.error works identically against the device and against the mock.
+  function apiError(status, body) {
+    var e = new Error('HTTP ' + status);
+    e.httpStatus = status;
+    e.body = body;
+    return e;
+  }
+  function mockSetWifi(wire) {
+    if (wire.apPassword && (wire.apPassword.length < 8 || wire.apPassword.length > 63))
+      return Promise.reject(apiError(422, { error: 'apPassword must be 8-63 characters (WPA2)' }));
+    if ((wire.apPassword && wire.clearApPassword) ||
+        (wire.stationPassword && wire.clearStationPassword))
+      return Promise.reject(apiError(422, { error: 'cannot set and clear the same password' }));
+    if (wire.mode !== undefined) {
+      if (wire.mode !== 'accessPoint' && wire.mode !== 'station')
+        return Promise.reject(apiError(422, { error: 'mode must be "accessPoint" or "station"' }));
+      if (!wire.apSsid)
+        return Promise.reject(apiError(422, { error: 'apSsid must not be empty' }));
+      if (wire.mode === 'station' && !wire.ssid)
+        return Promise.reject(apiError(422, { error: 'station mode needs an ssid' }));
+    }
+    if (wire.stationPassword) mockWifiState.stationPassword = true;
+    if (wire.clearStationPassword) mockWifiState.stationPassword = false;
+    if (wire.apPassword) mockWifiState.apPassword = true;
+    if (wire.clearApPassword) mockWifiState.apPassword = false;
+    return { ok: true, applied: !!wire.apply,
+             note: wire.apply ? 'applied now (mock)' : 'stored (mock); reboot to apply' };
   }
 
   // ---------------------------------------------------------------------------
@@ -1118,14 +1260,26 @@
     midiSubscribers.forEach(function (fn) { try { fn(ev); } catch (e) {} });
   }
 
-  // Push test-tool events straight into the monitor stream.
+  // Push test-tool events straight into the monitor stream — the CC lines only
+  // when selection CCs were really part of the request, so the monitor shows the
+  // same traffic the device would have seen and nothing else.
   function injectMidi(payload) {
-    emitMidi({ channel: (payload.channel || 0) + 1, type: 'cc', cc: payload.stringCc,
-      value: payload.string, interpretation: 'string ' + payload.string });
-    emitMidi({ channel: (payload.channel || 0) + 1, type: 'cc', cc: payload.fretCc,
-      value: payload.fret, interpretation: 'fret ' + payload.fret });
-    emitMidi({ channel: (payload.channel || 0) + 1, type: 'noteOn', note: payload.note,
-      value: payload.velocity, interpretation: 'string ' + payload.string + ', fret ' + payload.fret });
+    var p = (global.GMB.state && global.GMB.state.profile) || MOCK.profile;
+    var sfs = p.stringFretSelection;
+    var ch = (payload.channel || 0) + 1;
+    var axis = -1;
+    if (payload.ccString !== undefined && payload.ccString !== null) {
+      axis = GMB.decodeStringCc(sfs, p, payload.ccString);
+      emitMidi({ channel: ch, type: 'cc', cc: sfs.string.ccNumber, value: payload.ccString,
+        interpretation: axis >= 0 ? 'string ' + (axis + 1) : 'invalid string value' });
+    }
+    if (payload.ccFret !== undefined && payload.ccFret !== null) {
+      var fret = GMB.decodeFretCc(sfs, payload.ccFret);
+      emitMidi({ channel: ch, type: 'cc', cc: sfs.fret.ccNumber, value: payload.ccFret,
+        interpretation: fret >= 0 ? 'fret ' + fret : 'invalid fret value' });
+    }
+    emitMidi({ channel: ch, type: 'noteOn', note: payload.note, value: payload.velocity,
+      interpretation: axis >= 0 ? 'string ' + (axis + 1) : 'auto-allocated' });
   }
   GMB.injectMidi = injectMidi;
 

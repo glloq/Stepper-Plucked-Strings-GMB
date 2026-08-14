@@ -216,6 +216,85 @@ test('the mock diagnostics body matches the firmware shape', function () {
 });
 
 // ---------------------------------------------------------------------------
+// Selection-CC decoding. This is the JS twin of StringFretSelector::mapStringValue
+// / mapFretValue: the integrated test tool sends raw CC VALUES to the device and
+// tells the operator which axis they select, so if this drifts from the firmware
+// the tool confidently points at the wrong string.
+// ---------------------------------------------------------------------------
+
+function selCfg(over) {
+  var p = GMB.sampleProfile();
+  var sfs = p.stringFretSelection;
+  sfs.string.ccNumber = 20; sfs.string.minimum = 1; sfs.string.maximum = 4;
+  sfs.string.offset = 0; sfs.string.numbering = 'oneBased';
+  sfs.string.reverseOrder = false; sfs.string.mapping = [];
+  sfs.fret.ccNumber = 21; sfs.fret.minimum = 0; sfs.fret.maximum = 24; sfs.fret.offset = 0;
+  if (over) over(sfs, p);
+  return { p: p, sfs: sfs };
+}
+
+test('string CC decodes one-based values to physical axes', function () {
+  var c = selCfg();
+  check(GMB.decodeStringCc(c.sfs, c.p, 1) === 0, 'CC value 1 is axis 0');
+  check(GMB.decodeStringCc(c.sfs, c.p, 4) === 3, 'CC value 4 is axis 3');
+  check(GMB.decodeStringCc(c.sfs, c.p, 0) === -1, 'below the minimum is rejected');
+  check(GMB.decodeStringCc(c.sfs, c.p, 5) === -1, 'above the maximum is rejected');
+});
+
+test('string CC honours zero-based numbering', function () {
+  var c = selCfg(function (sfs) { sfs.string.numbering = 'zeroBased'; sfs.string.minimum = 0; });
+  check(GMB.decodeStringCc(c.sfs, c.p, 0) === 0, 'CC value 0 is axis 0');
+  check(GMB.decodeStringCc(c.sfs, c.p, 3) === 3, 'CC value 3 is axis 3');
+});
+
+test('string CC honours the offset', function () {
+  // offset shifts the value BEFORE the one-based bias, exactly as the firmware does.
+  var c = selCfg(function (sfs) { sfs.string.offset = 10; sfs.string.minimum = 0; sfs.string.maximum = 3; });
+  check(GMB.decodeStringCc(c.sfs, c.p, 0) === -1, 'value+offset lands past the last axis');
+  var d = selCfg(function (sfs) { sfs.string.offset = -1; sfs.string.minimum = 2; sfs.string.maximum = 5; });
+  check(GMB.decodeStringCc(d.sfs, d.p, 2) === 0, 'a negative offset shifts back onto axis 0');
+});
+
+test('string CC honours reverse order', function () {
+  var c = selCfg(function (sfs) { sfs.string.reverseOrder = true; });
+  check(GMB.decodeStringCc(c.sfs, c.p, 1) === 3, 'the first value selects the LAST axis');
+  check(GMB.decodeStringCc(c.sfs, c.p, 4) === 0, 'the last value selects the first axis');
+});
+
+test('string CC honours the mapping table, and reverse is applied before it', function () {
+  var c = selCfg(function (sfs) { sfs.string.mapping = [3, 2, 1, 0]; });
+  check(GMB.decodeStringCc(c.sfs, c.p, 1) === 3, 'mapping redirects axis 0 to axis 3');
+  var d = selCfg(function (sfs) { sfs.string.reverseOrder = true; sfs.string.mapping = [0, 1, 2, 3]; });
+  check(GMB.decodeStringCc(d.sfs, d.p, 1) === 3, 'reverse then identity mapping still reverses');
+  var e = selCfg(function (sfs) { sfs.string.mapping = [0, 1]; });
+  check(GMB.decodeStringCc(e.sfs, e.p, 3) === -1, 'an index past a short mapping is rejected');
+});
+
+test('fret CC range-checks before applying its offset', function () {
+  var c = selCfg();
+  check(GMB.decodeFretCc(c.sfs, 0) === 0, 'value 0 is fret 0');
+  check(GMB.decodeFretCc(c.sfs, 24) === 24, 'value 24 is fret 24');
+  check(GMB.decodeFretCc(c.sfs, 25) === -1, 'above the maximum is rejected');
+  var d = selCfg(function (sfs) { sfs.fret.offset = -2; sfs.fret.minimum = 0; });
+  check(GMB.decodeFretCc(d.sfs, 1) === -1, 'a negative result is rejected, not clamped');
+  check(GMB.decodeFretCc(d.sfs, 5) === 3, 'the offset shifts the fret');
+});
+
+test('CC encoding is the exact inverse of decoding', function () {
+  // Brute-force inverse: it has to survive reverseOrder + an arbitrary mapping,
+  // which no closed-form inverse would.
+  var c = selCfg(function (sfs) { sfs.string.reverseOrder = true; sfs.string.mapping = [2, 0, 3, 1]; });
+  for (var axis = 0; axis < 4; axis++) {
+    var v = GMB.encodeStringCc(c.sfs, c.p, axis);
+    check(v >= 0, 'axis ' + axis + ' has a CC value');
+    check(GMB.decodeStringCc(c.sfs, c.p, v) === axis, 'CC ' + v + ' decodes back to axis ' + axis);
+  }
+  var d = selCfg(function (sfs) { sfs.fret.offset = 3; sfs.fret.minimum = 0; });
+  var fv = GMB.encodeFretCc(d.sfs, 7);
+  check(GMB.decodeFretCc(d.sfs, fv) === 7, 'the fret value round-trips through the offset');
+});
+
+// ---------------------------------------------------------------------------
 // Small utilities that other modules rely on.
 // ---------------------------------------------------------------------------
 
