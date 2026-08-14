@@ -1,23 +1,21 @@
 {
   "project": "Stepper-Plucked-Strings-GMB",
-  "profileVersion": 2,
+  "profileVersion": 1,
   "capabilitiesRevision": 1,
   "instrument": {
-    "name": "Bass Guitar 4-string EADG",
-    "description": "Long-scale 4-string bass, lead-screw transmission, individual pluck.",
+    "name": "Ukulele GCEA",
+    "description": "Soprano ukulele, re-entrant G tuning, individual pluck.",
     "stringCount": 4,
-    "type": "bass",
-    "gmProgram": 33,
-    "typeId": 5,
+    "type": "ukulele",
+    "gmProgram": 24,
+    "typeId": 4,
     "capo": 0,
-    "transpose": 0,
-    "polyphonyMax": 0
+    "transpose": 0
   },
   "board": {
     "profile": "esp32-s3-devkitc-1",
     "reserveUsb": true,
-    "automaticPinAssignment": false,
-    "estopNormallyClosed": false
+    "automaticPinAssignment": false
   },
   "pins": [
     {
@@ -101,28 +99,12 @@
       "gpio": 47
     }
   ],
-  "hardware": {
-    "oePullup": false,
-    "oeGate": false,
-    "estopCutsPower": false,
-    "estopCutsDriverEnable": false,
-    "mainSwitch": false,
-    "mainFuse": false,
-    "branchFuses": false,
-    "servoIdleMa": 10,
-    "servoMoveMa": 250,
-    "servoStallMa": 800,
-    "stepperHoldMa": 400,
-    "stepperMoveMa": 800,
-    "extPullupOhm0": 0,
-    "extPullupOhm1": 0,
-    "pcaPullups": []
-  },
   "network": {
     "mode": "accessPoint",
     "ssid": "",
-    "hostname": "gmb-bass",
-    "apSsid": "Stepper-Plucked-Strings-GMB"
+    "hostname": "gmb-ukulele",
+    "apSsid": "Stepper-Plucked-Strings-GMB",
+    "staticIp": false
   },
   "midi": {
     "globalChannel": 0,
@@ -157,7 +139,7 @@
     "fret": {
       "ccNumber": 21,
       "minimum": 0,
-      "maximum": 20,
+      "maximum": 12,
       "offset": 0,
       "invalidValuePolicy": "automaticFallback"
     },
@@ -167,37 +149,23 @@
       "expiredSelectionPolicy": "automaticAllocation"
     }
   },
-  "power": {
-    "maxConcurrentMoves": 3,
-    "maxConcurrentPerBoard": 0,
-    "staggerMs": 8
-  },
-  "pluck": {
-    "strokeMs": 0,
-    "minStrikePct": 0,
-    "fretToPluckMs": 0,
-    "muteSource": "auto",
-    "muteHoldMs": 60,
-    "liftMuteOnNoteOff": false,
-    "liftEngage": "lowerToPlay"
-  },
   "strings": [
     {
-      "openNote": 28,
-      "maxFret": 20,
-      "scaleLengthMm": 864,
-      "transmission": "screw",
+      "openNote": 67,
+      "maxFret": 12,
+      "scaleLengthMm": 330,
+      "transmission": "beltGt2",
       "stepsPerRevolution": 200,
       "microsteps": 16,
       "pulleyTeeth": 20,
       "beltPitchMm": 2,
       "leadPerRevolutionMm": 8,
-      "customStepsPerMm": 400,
+      "customStepsPerMm": 80,
       "invertDirection": false,
       "minPositionMm": 0,
-      "maxPositionMm": 600,
-      "maxSpeedMmS": 160,
-      "maxAccelMmS2": 1500,
+      "maxPositionMm": 173,
+      "maxSpeedMmS": 250,
+      "maxAccelMmS2": 2500,
       "calibratedFretMm": [],
       "homing": {
         "direction": -1,
@@ -206,26 +174,26 @@
         "backoffMm": 3,
         "offsetMm": 0,
         "timeoutMs": 8000,
-        "maxSearchMm": 650,
+        "maxSearchMm": 223,
         "sensorActiveHigh": true
       }
     },
     {
-      "openNote": 33,
-      "maxFret": 20,
-      "scaleLengthMm": 864,
-      "transmission": "screw",
+      "openNote": 60,
+      "maxFret": 12,
+      "scaleLengthMm": 330,
+      "transmission": "beltGt2",
       "stepsPerRevolution": 200,
       "microsteps": 16,
       "pulleyTeeth": 20,
       "beltPitchMm": 2,
       "leadPerRevolutionMm": 8,
-      "customStepsPerMm": 400,
+      "customStepsPerMm": 80,
       "invertDirection": false,
       "minPositionMm": 0,
-      "maxPositionMm": 600,
-      "maxSpeedMmS": 160,
-      "maxAccelMmS2": 1500,
+      "maxPositionMm": 173,
+      "maxSpeedMmS": 250,
+      "maxAccelMmS2": 2500,
       "calibratedFretMm": [],
       "homing": {
         "direction": -1,
@@ -234,26 +202,26 @@
         "backoffMm": 3,
         "offsetMm": 0,
         "timeoutMs": 8000,
-        "maxSearchMm": 650,
+        "maxSearchMm": 223,
         "sensorActiveHigh": true
       }
     },
     {
-      "openNote": 38,
-      "maxFret": 20,
-      "scaleLengthMm": 864,
-      "transmission": "screw",
+      "openNote": 64,
+      "maxFret": 12,
+      "scaleLengthMm": 330,
+      "transmission": "beltGt2",
       "stepsPerRevolution": 200,
       "microsteps": 16,
       "pulleyTeeth": 20,
       "beltPitchMm": 2,
       "leadPerRevolutionMm": 8,
-      "customStepsPerMm": 400,
+      "customStepsPerMm": 80,
       "invertDirection": false,
       "minPositionMm": 0,
-      "maxPositionMm": 600,
-      "maxSpeedMmS": 160,
-      "maxAccelMmS2": 1500,
+      "maxPositionMm": 173,
+      "maxSpeedMmS": 250,
+      "maxAccelMmS2": 2500,
       "calibratedFretMm": [],
       "homing": {
         "direction": -1,
@@ -262,26 +230,26 @@
         "backoffMm": 3,
         "offsetMm": 0,
         "timeoutMs": 8000,
-        "maxSearchMm": 650,
+        "maxSearchMm": 223,
         "sensorActiveHigh": true
       }
     },
     {
-      "openNote": 43,
-      "maxFret": 20,
-      "scaleLengthMm": 864,
-      "transmission": "screw",
+      "openNote": 69,
+      "maxFret": 12,
+      "scaleLengthMm": 330,
+      "transmission": "beltGt2",
       "stepsPerRevolution": 200,
       "microsteps": 16,
       "pulleyTeeth": 20,
       "beltPitchMm": 2,
       "leadPerRevolutionMm": 8,
-      "customStepsPerMm": 400,
+      "customStepsPerMm": 80,
       "invertDirection": false,
       "minPositionMm": 0,
-      "maxPositionMm": 600,
-      "maxSpeedMmS": 160,
-      "maxAccelMmS2": 1500,
+      "maxPositionMm": 173,
+      "maxSpeedMmS": 250,
+      "maxAccelMmS2": 2500,
       "calibratedFretMm": [],
       "homing": {
         "direction": -1,
@@ -290,7 +258,7 @@
         "backoffMm": 3,
         "offsetMm": 0,
         "timeoutMs": 8000,
-        "maxSearchMm": 650,
+        "maxSearchMm": 223,
         "sensorActiveHigh": true
       }
     }
@@ -306,14 +274,12 @@
       "gpio": -1,
       "pulseMinUs": 500,
       "pulseMaxUs": 2500,
-      "restUs": 1000,
-      "activeUs": 1900,
+      "restUs": 1050,
+      "activeUs": 1750,
       "inverted": false,
-      "travelMs": 140,
-      "settleMs": 35,
-      "disableAtRest": true,
-      "i2cBus": 0,
-      "muteUs": 0
+      "travelMs": 90,
+      "settleMs": 25,
+      "disableAtRest": true
     },
     {
       "enabled": true,
@@ -325,14 +291,12 @@
       "gpio": -1,
       "pulseMinUs": 500,
       "pulseMaxUs": 2500,
-      "restUs": 1000,
-      "activeUs": 1900,
+      "restUs": 1050,
+      "activeUs": 1750,
       "inverted": false,
-      "travelMs": 140,
-      "settleMs": 35,
-      "disableAtRest": true,
-      "i2cBus": 0,
-      "muteUs": 0
+      "travelMs": 90,
+      "settleMs": 25,
+      "disableAtRest": true
     },
     {
       "enabled": true,
@@ -344,14 +308,12 @@
       "gpio": -1,
       "pulseMinUs": 500,
       "pulseMaxUs": 2500,
-      "restUs": 1000,
-      "activeUs": 1900,
+      "restUs": 1050,
+      "activeUs": 1750,
       "inverted": false,
-      "travelMs": 140,
-      "settleMs": 35,
-      "disableAtRest": true,
-      "i2cBus": 0,
-      "muteUs": 0
+      "travelMs": 90,
+      "settleMs": 25,
+      "disableAtRest": true
     },
     {
       "enabled": true,
@@ -363,14 +325,12 @@
       "gpio": -1,
       "pulseMinUs": 500,
       "pulseMaxUs": 2500,
-      "restUs": 1000,
-      "activeUs": 1900,
+      "restUs": 1050,
+      "activeUs": 1750,
       "inverted": false,
-      "travelMs": 140,
-      "settleMs": 35,
-      "disableAtRest": true,
-      "i2cBus": 0,
-      "muteUs": 0
+      "travelMs": 90,
+      "settleMs": 25,
+      "disableAtRest": true
     },
     {
       "enabled": true,
@@ -383,13 +343,11 @@
       "pulseMinUs": 500,
       "pulseMaxUs": 2500,
       "restUs": 1000,
-      "activeUs": 1700,
+      "activeUs": 1600,
       "inverted": false,
-      "travelMs": 80,
-      "settleMs": 25,
-      "disableAtRest": true,
-      "i2cBus": 0,
-      "muteUs": 0
+      "travelMs": 70,
+      "settleMs": 20,
+      "disableAtRest": true
     },
     {
       "enabled": true,
@@ -402,13 +360,11 @@
       "pulseMinUs": 500,
       "pulseMaxUs": 2500,
       "restUs": 1000,
-      "activeUs": 1700,
+      "activeUs": 1600,
       "inverted": false,
-      "travelMs": 80,
-      "settleMs": 25,
-      "disableAtRest": true,
-      "i2cBus": 0,
-      "muteUs": 0
+      "travelMs": 70,
+      "settleMs": 20,
+      "disableAtRest": true
     },
     {
       "enabled": true,
@@ -421,13 +377,11 @@
       "pulseMinUs": 500,
       "pulseMaxUs": 2500,
       "restUs": 1000,
-      "activeUs": 1700,
+      "activeUs": 1600,
       "inverted": false,
-      "travelMs": 80,
-      "settleMs": 25,
-      "disableAtRest": true,
-      "i2cBus": 0,
-      "muteUs": 0
+      "travelMs": 70,
+      "settleMs": 20,
+      "disableAtRest": true
     },
     {
       "enabled": true,
@@ -440,13 +394,11 @@
       "pulseMinUs": 500,
       "pulseMaxUs": 2500,
       "restUs": 1000,
-      "activeUs": 1700,
+      "activeUs": 1600,
       "inverted": false,
-      "travelMs": 80,
-      "settleMs": 25,
-      "disableAtRest": true,
-      "i2cBus": 0,
-      "muteUs": 0
+      "travelMs": 70,
+      "settleMs": 20,
+      "disableAtRest": true
     }
   ]
 }

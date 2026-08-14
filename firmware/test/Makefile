@@ -50,7 +50,8 @@ TEST_SRC := \
   test_udp_source_gate.cpp \
   test_governor.cpp \
   test_actuator_manager.cpp \
-  test_transport.cpp
+  test_transport.cpp \
+  test_device_instrument.cpp
 
 BIN := run_tests
 
