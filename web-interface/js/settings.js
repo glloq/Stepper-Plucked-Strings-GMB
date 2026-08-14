@@ -1,26 +1,28 @@
 /*
- * settings.js — the device Settings modal (gear button, top-right).
+ * settings.js — the Settings modal (gear button, top-right).
  *
- * UI redesign: the WHOLE instrument creation now lives on the Setup main page
- * (one ordered flow), so this modal holds only what belongs to the device rather
- * than the instrument, behind two tabs:
+ * Building an instrument lives on the Setup page. This modal holds everything
+ * that is NOT that, split strictly by what a thing belongs to — mixing the three
+ * is what produced two editors for the Wi-Fi and a profile library no route
+ * reached:
  *
- *   • Network  — network mode, SSIDs, hostname, Wi-Fi credentials (write-only)
- *                and the on-demand hotspot switch.
- *   • Advanced — GMB identity & capabilities (SysEx) + the live MIDI monitor
- *                and integrated tester (diagnostics).
+ *   Profiles     the instrument LIBRARY: slots, startup slot, import/export.
+ *   Network      device link: mode, SSIDs, hostname, write-only credentials,
+ *                the on-demand hotspot. Stays with the machine, not the tune.
+ *   Security     device: admin token and the network-MIDI source policy.
+ *   Diagnostics  read-only runtime telemetry (GET /api/diagnostics).
+ *   Tools        bench instruments: SysEx identity/tester, MIDI monitor, the
+ *                integrated note tester.
  *
- * Profiles are intentionally not exposed here (a hidden, non-user setting). The
- * Simplified / Advanced toggle is mirrored in the footer because the overlay
- * covers the sidebar. The Advanced tab owns a live MIDI socket, torn down on
- * every tab switch and on close.
+ * The Tools tab owns a live MIDI socket, torn down on every tab switch and on
+ * close.
  */
 (function (global) {
   'use strict';
   var GMB = global.GMB, h = GMB.h;
 
   var overlay = null;
-  var activeTab = 'network';
+  var activeTab = 'profiles';
   // openNetwork/pickedSsid: the "no password needed" state is only trusted while
   // the SSID field still holds the exact network picked from the scan — a manual
   // edit falls back to "unknown security" and shows the password field again.
@@ -35,10 +37,20 @@
     return wifi.openNetwork && net && net.ssid === wifi.pickedSsid;
   }
 
+  // Three categories, kept strictly apart, because mixing them is what produced
+  // two editors for the network and a profile library nobody could reach:
+  //
+  //   INSTRUMENT config  -> Profiles (the library; the instrument itself is built
+  //                         on the Setup page)
+  //   DEVICE config      -> Network, Security  (they stay with the machine)
+  //   DIAGNOSTIC tools   -> Diagnostics (read-only telemetry), Tools (SysEx +
+  //                         MIDI monitor + note tester)
   var TABS = [
+    { id: 'profiles',    label: 'Profiles' },
     { id: 'network',     label: 'Network' },
+    { id: 'security',    label: 'Security' },
     { id: 'diagnostics', label: 'Diagnostics' },
-    { id: 'advanced',    label: 'Advanced' }
+    { id: 'tools',       label: 'Tools' }
   ];
 
   function section(title, children, hint) {
@@ -79,8 +91,10 @@
     if (!body) return;
     teardownTab();
     body.innerHTML = '';
-    if (activeTab === 'advanced') advancedTab(body);
+    if (activeTab === 'tools') toolsTab(body);
+    else if (activeTab === 'security') securityTab(body);
     else if (activeTab === 'diagnostics') diagnosticsTab(body);
+    else if (activeTab === 'profiles') profilesTab(body);
     else networkTab(body);
   }
 
@@ -431,18 +445,38 @@
     }, 2000);
   }
 
-  function advancedTab(host) {
-    // No "switch to Advanced" hint any more: the expert mode is gone and this tab
-    // IS the detailed view — everything below is on this one scrolling panel.
+  // ---- Profiles tab ---------------------------------------------------------
+  // profiles.js has always been complete — slots, save, copy, rename, delete,
+  // startup slot, import/export, restore — and until now nothing navigated to it,
+  // so a whole working feature was invisible. It belongs here: the instrument
+  // LIBRARY is not part of building one instrument (that is the Setup page), and
+  // it is not a device setting either.
+  function profilesTab(host) {
     host.appendChild(h('div.note-box',
-      'Advanced tools, in order below: device security (admin token, network MIDI ' +
-      'policy), GMB identity & capabilities (SysEx) with its tester, then the live ' +
-      'MIDI monitor and the integrated note tester.'));
+      'Saved instruments. Each slot holds a complete instrument profile; the ' +
+      'startup slot is what the device loads when it boots. The network settings ' +
+      'and Wi-Fi passwords are NOT part of a profile — they stay with the machine.'));
+    if (GMB.views.profiles && GMB.views.profiles.render) GMB.views.profiles.render(host);
+  }
+
+  // ---- Security tab (device) ------------------------------------------------
+  function securityTab(host) {
+    host.appendChild(h('div.note-box',
+      'Who may change this device, and who may play it over the network. Both ' +
+      'are stored on the device and are never part of an exported profile.'));
     var sec = h('div', { id: 'security-section' });
     host.appendChild(sec);
     renderSecurity(sec, null);
     GMB.api.getStatus().then(function (st) { renderSecurity(sec, st); })
       .catch(function () {});
+  }
+
+  // ---- Tools tab (diagnostics, not configuration) ---------------------------
+  function toolsTab(host) {
+    host.appendChild(h('div.note-box',
+      'Bench tools: what the instrument announces over SysEx and a tester for it, ' +
+      'the live MIDI monitor, and the integrated note tester that walks the real ' +
+      'string/fret selection chain.'));
     if (GMB.views.sysex && GMB.views.sysex.render) GMB.views.sysex.render(host);
     if (GMB.midiSettings && GMB.midiSettings.tools) GMB.midiSettings.tools(host);
   }
@@ -450,7 +484,7 @@
   // ---- open / close ---------------------------------------------------------
   function open(tab) {
     if (!GMB.state.profile) { GMB.toast('Configuration still loading…', 'warn'); return; }
-    activeTab = (tab && TABS.some(function (t) { return t.id === tab; })) ? tab : 'network';
+    activeTab = (tab && TABS.some(function (t) { return t.id === tab; })) ? tab : 'profiles';
     if (overlay) overlay.remove();
     build();
     // rAF so the .open transition runs from the hidden state.

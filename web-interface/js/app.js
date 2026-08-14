@@ -50,6 +50,9 @@
     el.appendChild(document.createTextNode(String(children)));
   }
   GMB.h = h;
+  // Exposed so a view can refresh a live sub-block in place (the Instrument
+  // dashboard repaints on every status frame) without rebuilding the page.
+  GMB.appendChildren = appendChildren;
 
   // Labelled form field helper.
   GMB.field = function (label, control, hint) {
@@ -168,15 +171,55 @@
     if (b) b.classList.add('visible');
   };
 
-  // The expert-mode TOGGLE is gone: there is one interface, and it is the detailed
-  // one. Views still ask this before rendering their fine-tuning blocks (steps per
-  // revolution, homing speeds, servo pulse windows, the SysEx block switches…), so
-  // it answers TRUE — returning false would not "simplify" anything, it would make
-  // that content permanently unreachable, which is precisely what a bench needs.
-  // Kept as a function so an old profile carrying a `mode` field is harmless.
+  // ---- progressive disclosure ------------------------------------------------
+  //
+  // The old global Simplified / Advanced toggle is gone, and putting it back would
+  // be the wrong shape: a mode that hides content everywhere means the one field
+  // you need at the bench is unreachable, and it doubles every page into two
+  // variants to maintain. Disclosure is LOCAL instead — each step shows the few
+  // parameters you must decide, and parks the fine-tuning in a block you open on
+  // the spot. Nothing is ever unreachable; it is just not in the way.
+  //
+  // Open/closed state is per block and remembered for the session, so a bench user
+  // who opens "Homing speeds" once keeps it open while they work through the
+  // strings. It is deliberately NOT persisted to the profile: it is a view
+  // preference, not instrument configuration.
+  var disclosed = {};
+  GMB.details = function (key, title, buildBody, opts) {
+    opts = opts || {};
+    var open = disclosed[key] !== undefined ? disclosed[key] : !!opts.open;
+    var wrap = h('div.disclose' + (open ? '.open' : ''));
+    var body = h('div.disclose-body');
+    var caret = h('span.disclose-caret', open ? '▾' : '▸');
+    var head = h('button.disclose-head', { type: 'button' }, [
+      caret, h('span.disclose-title', title),
+      opts.hint ? h('span.muted.disclose-hint', opts.hint) : null
+    ]);
+    var built = false;
+    function fill() {
+      if (built) return;
+      built = true;
+      // Built on first open: a closed block costs nothing, which matters on the
+      // per-string steps where several of these exist at once.
+      var kids = buildBody();
+      if (kids) appendChildren(body, kids);
+    }
+    head.addEventListener('click', function () {
+      open = !open;
+      disclosed[key] = open;
+      wrap.classList.toggle('open', open);
+      caret.textContent = open ? '▾' : '▸';
+      if (open) fill();
+    });
+    if (open) fill();
+    wrap.appendChild(head);
+    wrap.appendChild(body);
+    return wrap;
+  };
+  // Old callers asked this before rendering a fine-tuning block. Everything is
+  // reachable now (behind GMB.details), so it answers true; kept so an old profile
+  // carrying a `mode` field, or a stale call, is harmless.
   GMB.isAdvanced = function () { return true; };
-  // There is one mode now. Kept so the body attribute (and any CSS keyed on it)
-  // stays defined, and so an old caller does not throw.
   function setMode() { state.mode = 'detailed'; document.body.setAttribute('data-mode', 'detailed'); }
   GMB.setMode = setMode;
 

@@ -222,6 +222,79 @@ body {
 .form-grid > p, .form-grid > .toolbar { grid-column: 1 / -1; margin: 0; }
 /* A field whose value is too long for one 210px column (a full board name). */
 .form-grid > .field.wide { grid-column: span 2; }
+
+/* ---- progressive disclosure (GMB.details) -------------------------------- */
+.disclose { border: 1px solid var(--border); border-radius: 10px; margin: 12px 0; overflow: hidden; }
+.disclose-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 10px 12px; background: var(--surface-2); border: 0; cursor: pointer;
+  font: inherit; color: var(--text); text-align: left;
+}
+.disclose-head:hover { background: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); }
+.disclose-caret { color: var(--muted); width: 12px; flex: 0 0 auto; }
+.disclose-title { font-weight: 600; font-size: 13px; }
+.disclose-hint { font-size: 12px; margin-left: auto; text-align: right; }
+.disclose-body { display: none; padding: 12px; }
+.disclose.open > .disclose-body { display: block; }
+.disclose-body > .form-grid { margin: 0; }
+
+/* ---- fret calibration assistant ------------------------------------------ */
+.cal-assist {
+  border: 1px solid var(--border); border-radius: 12px;
+  padding: 14px; margin: 12px 0; background: var(--surface-2);
+}
+.cal-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+.cal-fret { display: flex; align-items: baseline; gap: 8px; flex: 0 0 auto; }
+.cal-fret-num {
+  font-size: 34px; font-weight: 800; line-height: 1;
+  font-variant-numeric: tabular-nums; color: var(--accent);
+}
+.cal-fret-note { font-weight: 700; color: var(--muted); }
+.cal-readouts { display: flex; gap: 18px; flex-wrap: wrap; flex: 1 1 auto; }
+.cal-readout { display: flex; flex-direction: column; gap: 2px; }
+.cal-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
+.cal-value { font-weight: 700; font-variant-numeric: tabular-nums; }
+/* The fret rail: where you are, and what is already measured, at a glance. */
+.caldots { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 12px; }
+.caldot {
+  min-width: 26px; padding: 3px 4px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--muted); font: inherit; font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.caldot.done { border-color: var(--ok); color: var(--ok); font-weight: 700; }
+.caldot.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+
+/* ---- step status + guarded actions --------------------------------------- */
+.stepper-legend { font-size: 12px; margin: 4px 0 0; }
+.step.st-valid .step-num { background: var(--ok); border-color: var(--ok); color: #fff; }
+.step.st-tested .step-num { background: var(--ok); border-color: var(--ok); color: #fff; font-size: 10px; }
+.step.st-incomplete .step-num { background: var(--surface-2); color: var(--muted); }
+/* A blocked action is visibly inert but still clickable, so pressing it explains
+   itself instead of doing nothing — a disabled button answers no questions. */
+.btn.blocked { opacity: .5; border-style: dashed; cursor: help; }
+
+/* ---- Instrument operating dashboard -------------------------------------- */
+.dash { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+.dash-tile {
+  display: flex; flex-direction: column; gap: 3px; min-width: 132px;
+  padding: 9px 13px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--surface-2);
+}
+.dash-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
+.dash-value { font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.dash-tile.ok { border-color: var(--ok); }
+.dash-tile.ok .dash-value { color: var(--ok); }
+.dash-tile.warn { border-color: var(--warn); }
+.dash-tile.warn .dash-value { color: var(--warn); }
+.dash-tile.error { border-color: var(--error); }
+.dash-tile.error .dash-value { color: var(--error); }
+.dash-faults {
+  border: 1px solid var(--error); border-radius: 10px;
+  padding: 10px 14px; margin: 10px 0;
+  background: color-mix(in srgb, var(--error) 7%, var(--surface));
+}
+.dash-faults h3 { margin: 0; font-size: 14px; }
 .field { display: flex; flex-direction: column; gap: 4px; }
 /* A checkbox is not a text box: the blanket `input { width:100% }` below made it
    sit adrift in the middle of the field instead of under the start of its label. */
