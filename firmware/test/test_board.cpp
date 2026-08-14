@@ -76,3 +76,89 @@ TEST(step_on_input_incapable_pin_rejected) {
     pm.assign("STEP1", SignalKind::Step, 26);
     CHECK(!pm.validate(true).empty());
 }
+
+// ---- audit P1.14 / P1.15: every announced board, and GPIO0 reserved on all ----
+
+// A board is only "supported" if the firmware can validate against it. All four
+// announced identifiers must resolve; anything else must not silently fall back.
+TEST(all_announced_boards_resolve) {
+    for (const char* id : {"esp32-s3-devkitc-1", "esp32-s3-devkitc-1-v1.1",
+                           "esp32-wroom-32", "esp32-devkit-v1"}) {
+        const BoardProfile* b = builtinBoardProfile(id);
+        CHECK(b != nullptr);
+        if (b) CHECK(b->identifier == std::string(id));
+    }
+    CHECK(builtinBoardProfile("not-a-board") == nullptr);
+}
+
+// GPIO0 is the BOOT button the firmware samples to force the Wi-Fi hotspot, so it
+// must never be assignable to ANY signal on ANY board — otherwise the escape hatch
+// (and the bootloader entry) fights whatever we drive on it.
+TEST(gpio0_boot_button_reserved_on_all_boards) {
+    const SignalKind kinds[] = {SignalKind::Step, SignalKind::Dir, SignalKind::Enable,
+                                SignalKind::Home, SignalKind::Limit, SignalKind::Diag,
+                                SignalKind::I2cSda, SignalKind::I2cScl,
+                                SignalKind::ServoOe, SignalKind::Generic,
+                                SignalKind::SafetyInput};
+    for (const char* id : {"esp32-s3-devkitc-1", "esp32-s3-devkitc-1-v1.1",
+                           "esp32-wroom-32", "esp32-devkit-v1"}) {
+        const BoardProfile* b = builtinBoardProfile(id);
+        CHECK(b != nullptr);
+        if (!b) continue;
+        const PinCapability* p = b->find(0);
+        CHECK(p != nullptr);
+        if (p) CHECK(p->reserved);
+        for (SignalKind k : kinds) {
+            CHECK(!b->supports(0, k));
+            // ...and it never turns up as an auto-assignment candidate either.
+            for (const PinCapability* c : b->candidatesFor(k)) CHECK(c->gpio != 0);
+        }
+    }
+}
+
+// The two DevKitC-1 revisions differ ONLY in which GPIO carries the RGB LED: the
+// LED pin is reserved on each, and free on the other.
+TEST(s3_devkit_revisions_differ_only_by_the_led_pin) {
+    const BoardProfile* v10 = builtinBoardProfile("esp32-s3-devkitc-1");
+    const BoardProfile* v11 = builtinBoardProfile("esp32-s3-devkitc-1-v1.1");
+    CHECK(v10 != nullptr && v11 != nullptr);
+    if (!v10 || !v11) return;
+    CHECK(v10->find(48)->reserved);    // v1.0: LED on 48
+    CHECK(!v10->find(38)->reserved);
+    CHECK(v11->find(38)->reserved);    // v1.1: LED moved to 38
+    CHECK(!v11->find(48)->reserved);
+    CHECK(v10->pins.size() == v11->pins.size());
+}
+
+// Classic-ESP32 input-only pins (34/35/36/39) can carry no OUTPUT signal — a STEP
+// or DIR line there would simply never toggle.
+TEST(classic_esp32_input_only_pins_carry_no_output_signal) {
+    for (const char* id : {"esp32-wroom-32", "esp32-devkit-v1"}) {
+        const BoardProfile* b = builtinBoardProfile(id);
+        CHECK(b != nullptr);
+        if (!b) continue;
+        for (int8_t g : {34, 35, 36, 39}) {
+            CHECK(!b->supports(g, SignalKind::Step));
+            CHECK(!b->supports(g, SignalKind::Dir));
+            CHECK(!b->supports(g, SignalKind::I2cSda));
+            CHECK(!b->supports(g, SignalKind::ServoOe));
+        }
+    }
+}
+
+// The hardware E-stop needs an interrupt-capable input WITH an internal pull-up and
+// must never sit on a strapping pin: the recommended normally-closed loop holds the
+// pin LOW while the machine may run, including through a reset.
+TEST(safety_input_refuses_strapping_and_pull_less_pins) {
+    const BoardProfile* w = builtinBoardProfile("esp32-wroom-32");
+    CHECK(w != nullptr);
+    if (!w) return;
+    CHECK(!w->supports(0, SignalKind::SafetyInput));   // BOOT / strapping
+    CHECK(!w->supports(2, SignalKind::SafetyInput));   // strapping
+    CHECK(!w->supports(12, SignalKind::SafetyInput));  // MTDI strapping
+    CHECK(!w->supports(15, SignalKind::SafetyInput));  // MTDO strapping
+    CHECK(!w->supports(34, SignalKind::SafetyInput));  // input-only, no pull-up
+    CHECK(w->supports(13, SignalKind::SafetyInput));   // an ordinary GPIO is fine
+    for (const PinCapability* c : w->candidatesFor(SignalKind::SafetyInput))
+        CHECK(!c->strapping && c->internalPullUp);
+}

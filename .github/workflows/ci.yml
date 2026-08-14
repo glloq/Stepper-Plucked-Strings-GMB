@@ -1,95 +1,110 @@
 name: CI
 
+# Runs on every push and pull request. Four independent jobs:
+#   host-tests  — native C++ core unit tests (with -Werror and ASan/UBSan), the
+#                 platform compile-check (main.cpp + ESP32 adapters) and the
+#                 ServoBank / StepperBank runtime checks.
+#   profiles    — JSON format lint, the generated board profiles, and the C++
+#                 profile validator over every shipped instrument profile.
+#   web-js      — syntax-checks every web JS file + behavioural tests of the pure UI logic.
+#   firmware    — builds the ANNOUNCED ESP32 boards with PlatformIO (a board is only
+#                 claimed as supported if it compiles here) and reports flash/RAM size.
 on:
   push:
-    branches: ["**"]
   pull_request:
 
 jobs:
-  native-tests:
-    name: Firmware core — native unit tests
+  host-tests:
+    name: Host tests (core + sanitizers + platform compile)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install toolchain
-        run: sudo apt-get update && sudo apt-get install -y g++ make
-
-      - name: Build & run the native test suite
+      - name: Native core unit tests (-Wall -Wextra -Werror)
         working-directory: firmware/test
-        run: make
+        run: make CXXFLAGS="-std=c++17 -Wall -Wextra -Werror -O1 -g"
+      - name: Native tests under AddressSanitizer + UBSan
+        working-directory: firmware/test
+        run: |
+          make clean
+          make CXXFLAGS="-std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all -O1 -g"
+      - name: Host compile-check (main.cpp + platform adapters)
+        run: bash firmware/test/hostcheck/run.sh
+      - name: ServoBank routing + controlled-park + ActuatorResult check
+        run: bash firmware/test/servobankcheck/run.sh
+      - name: StepperBank motion + hard-stop + ActuatorResult check
+        run: bash firmware/test/stepperbankcheck/run.sh
 
-  esp32-compile-check:
-    name: Firmware — ESP32 platform compile-check (host stubs)
+  profiles:
+    name: Profile validation (JSON + generated boards + C++ validator)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install g++
-        run: sudo apt-get update && sudo apt-get install -y g++ curl
-      - name: Compile the ESP32 platform layer against real ArduinoJson + stubs
-        working-directory: firmware/test/hostcheck
-        run: ./run.sh
+      - name: JSON format lint (board + instrument profiles)
+        run: |
+          fail=0
+          for f in board-profiles/*.json instrument-profiles/*.json; do
+            echo "checking $f"
+            jq empty "$f" || fail=1
+          done
+          exit $fail
+      - name: Board profiles match BoardProfile.cpp (generated, never hand-edited)
+        run: bash firmware/test/boardcheck/run.sh --check
+      - name: C++ profile validator (profilecheck)
+        run: bash firmware/test/profilecheck/run.sh
 
-  profile-roundtrip:
-    name: Profiles — firmware parser round-trip
+  web-js:
+    name: Web interface JS syntax + behaviour
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install g++
-        run: sudo apt-get update && sudo apt-get install -y g++ curl
-      - name: Load every shipped profile through the real firmware parser
-        working-directory: firmware/test/profilecheck
-        run: ./run.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: node --check every web JS file
+        run: |
+          fail=0
+          for f in web-interface/js/*.js; do
+            echo "checking $f"
+            node --check "$f" || fail=1
+          done
+          exit $fail
+      - name: Behavioural tests of the pure UI logic
+        run: node web-interface/test/run-tests.js
 
-  esp32-build:
-    name: Firmware — ESP32-S3 build (PlatformIO)
+  firmware:
+    name: Firmware build (${{ matrix.env }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env:
+          - esp32-s3-devkitc-1
+          - esp32-wroom-32
+          - esp32-devkit-v1
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: Cache PlatformIO
+          python-version: '3.12'
+      - name: Cache PlatformIO packages
         uses: actions/cache@v4
         with:
           path: |
             ~/.platformio
             ~/.cache/pip
           key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
       - name: Install PlatformIO
         run: pip install --upgrade platformio
-      - name: Sync web UI into the LittleFS image
+      - name: Build ${{ matrix.env }} (reports flash/RAM size)
         working-directory: firmware
-        run: ./sync_web_data.sh
-      - name: Build firmware (esp32-s3-devkitc-1)
-        working-directory: firmware
-        run: pio run -e esp32-s3-devkitc-1
-
-  web-lint:
-    name: Web interface — JS syntax check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - name: node --check every JS file
         run: |
-          set -e
-          for f in web-interface/js/*.js; do
-            echo "checking $f"
-            node --check "$f"
-          done
-
-  json-validate:
-    name: Profiles — JSON validation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Validate board & instrument profiles
-        run: |
-          set -e
-          for f in board-profiles/*.json instrument-profiles/*.json; do
-            echo "validating $f"
-            python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f"
-          done
+          set -o pipefail
+          pio run -e ${{ matrix.env }} | tee build.log
+          {
+            echo "### ${{ matrix.env }}"
+            echo '```'
+            grep -E "RAM:|Flash:" build.log || echo "(size line not found)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,7 +1,7 @@
 {
-  "identifier": "esp32-s3-devkitc-1",
-  "displayName": "ESP32-S3-DevKitC-1 v1.0 (RGB LED on GPIO48)",
-  "description": "GPIO capability map for the Espressif ESP32-S3-DevKitC-1 v1.0 (RGB LED on GPIO48), mirroring firmware/src/core/board/BoardProfile.cpp (makeEsp32S3DevKitC1). GPIO22-25 do not exist on the ESP32-S3 and are omitted. GPIO0 is reserved: it is the BOOT button that forces the Wi-Fi hotspot.",
+  "identifier": "esp32-s3-devkitc-1-v1.1",
+  "displayName": "ESP32-S3-DevKitC-1 v1.1 (RGB LED on GPIO38)",
+  "description": "GPIO capability map for the Espressif ESP32-S3-DevKitC-1 v1.1 (RGB LED moved to GPIO38, so GPIO48 is free), mirroring firmware/src/core/board/BoardProfile.cpp (makeEsp32S3DevKitC1V11). Check the silkscreen to tell the two revisions apart.",
   "reference": "SPECIFICATION.md sections 11.4 / 11.5",
   "generatedBy": "firmware/tools/dump_board_profiles.cpp — do not edit by hand; edit firmware/src/core/board/BoardProfile.cpp and regenerate",
   "recommendedAssignment": {
@@ -598,16 +598,16 @@
       "input": true,
       "output": true,
       "interrupt": true,
-      "internalPullUp": true,
-      "internalPullDown": true,
-      "highSpeedOutput": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
+      "highSpeedOutput": false,
       "adc": false,
-      "reserved": false,
+      "reserved": true,
       "strapping": false,
       "usb": false,
-      "onboardPeripheral": false,
-      "preference": "recommended",
-      "note": ""
+      "onboardPeripheral": true,
+      "preference": "reserved",
+      "note": "On-board RGB LED (DevKitC-1 v1.1)"
     },
     {
       "gpio": 39,
@@ -768,16 +768,16 @@
       "input": true,
       "output": true,
       "interrupt": true,
-      "internalPullUp": false,
-      "internalPullDown": false,
-      "highSpeedOutput": false,
+      "internalPullUp": true,
+      "internalPullDown": true,
+      "highSpeedOutput": true,
       "adc": false,
-      "reserved": true,
+      "reserved": false,
       "strapping": false,
       "usb": false,
-      "onboardPeripheral": true,
-      "preference": "reserved",
-      "note": "On-board RGB LED (DevKitC-1 v1.0)"
+      "onboardPeripheral": false,
+      "preference": "recommended",
+      "note": ""
     }
   ]
 }

@@ -219,6 +219,47 @@ void WebApi::registerRoutes() {
         req->send(200, "application/json", String(s.c_str()));
     });
 
+    // ---- POST /api/auth/check (does this token authorise writes?) ----
+    server_->on("/api/auth/check", HTTP_POST, [this](AsyncWebServerRequest* req) {
+        JsonDocument doc;
+        if (!authOk(req)) {
+            doc["ok"] = false;
+            doc["error"] = "unauthorized";
+            sendJson(req, doc, 401);
+            return;
+        }
+        doc["ok"] = true;
+        sendJson(req, doc);
+    });
+
+    // ---- POST /api/hotspot (switch to the access point on demand) ----
+    server_->on("/api/hotspot", HTTP_POST, [this](AsyncWebServerRequest* req) {
+        if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized";
+                            sendJson(req, d, 401); return; }
+        JsonDocument doc;
+        if (ctx_.onStartHotspot) ctx_.onStartHotspot();
+        doc["ok"] = true;
+        doc["note"] = "Switching to access point — rejoin the device's Wi-Fi network.";
+        // Serviced on the main loop; the station link (and this response's route home)
+        // may drop as the radio switches, which is expected.
+        sendJson(req, doc, 202);
+    });
+
+    // ---- GET /api/wifi/scan[?start=1] (network picker survey) ----
+    server_->on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest* req) {
+        if (!ctx_.wifiScanJson) {
+            JsonDocument d; d["ok"] = false; d["error"] = "unsupported";
+            sendJson(req, d, 501);
+            return;
+        }
+        if (req->hasParam("start")) {
+            if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized";
+                                sendJson(req, d, 401); return; }
+            if (ctx_.onWifiScanStart) ctx_.onWifiScanStart();
+        }
+        req->send(200, "application/json", String(ctx_.wifiScanJson().c_str()));
+    });
+
     // ---- GET /api/diagnostics (runtime telemetry for the bench, P2.19) ----
     // The body is built by loop() via the callback (accumulated counters + the
     // cached PCA health), so the async web task never touches live I2C or state.

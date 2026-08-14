@@ -17,9 +17,10 @@ SignalKind signalKindFromName(const std::string& signal) {
     if (startsWith(signal, "LIMIT")) return SignalKind::Limit;
     if (startsWith(signal, "DIAG")) return SignalKind::Diag;
     if (startsWith(signal, "ENABLE")) return SignalKind::Enable;
-    if (signal == "SDA") return SignalKind::I2cSda;
-    if (signal == "SCL") return SignalKind::I2cScl;
+    if (signal == "SDA" || signal == "SDA2") return SignalKind::I2cSda;   // SDA2 = 2nd I2C bus
+    if (signal == "SCL" || signal == "SCL2") return SignalKind::I2cScl;   // SCL2 = 2nd I2C bus
     if (startsWith(signal, "SERVO_OE") || signal == "OE") return SignalKind::ServoOe;
+    if (startsWith(signal, "ESTOP")) return SignalKind::SafetyInput;  // hardware E-stop input
     return SignalKind::Generic;
 }
 
@@ -135,6 +136,12 @@ std::vector<PinError> PinManager::validate(bool reserveUsb) const {
                 why = "Pin is not suitable for a high-speed STEP output";
             } else if (a.kind == SignalKind::Home || a.kind == SignalKind::Limit) {
                 why = "Pin cannot be used as an interrupt-capable input";
+            } else if (a.kind == SignalKind::SafetyInput) {
+                why = "Pin cannot carry the hardware E-stop input (needs an "
+                      "interrupt-capable pin with an internal pull-up, and must not "
+                      "be a strapping pin)";
+            } else if (a.kind == SignalKind::I2cSda || a.kind == SignalKind::I2cScl) {
+                why = "Pin cannot be used for the open-drain I2C bus";
             }
             errors.push_back({a.signal, a.gpio, why,
                               "Pick a pin compatible with this function", ""});

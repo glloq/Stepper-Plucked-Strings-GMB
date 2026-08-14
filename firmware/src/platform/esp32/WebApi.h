@@ -43,6 +43,12 @@ struct WebContext {
     std::function<uint32_t(int, double)> onJog;      // enqueue an axis jog (axis, deltaMm)
     std::function<std::string(uint32_t)> commandState;
     std::function<std::string()> diagnosticsJson;  // GET /api/diagnostics body (P2.19)
+    // Switch to the access point on demand (POST /api/hotspot) — the web twin of
+    // the BOOT-button hotspot, for when the station link is unreachable.
+    std::function<void()> onStartHotspot;
+    // Asynchronous Wi-Fi survey for the network picker (GET /api/wifi/scan).
+    std::function<std::string()> wifiScanJson;
+    std::function<void()> onWifiScanStart;
     // Live UDP source posture (audit P1.11) so the Settings UI shows the real state.
     std::function<std::string()> midiSourcePolicy;
     std::function<bool()> midiSourceLocked;  // queued/succeeded/refused/unknown

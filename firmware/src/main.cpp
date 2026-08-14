@@ -34,6 +34,7 @@
 #include "core/motion/HomingController.h"
 #include "core/safety/SafetyManager.h"
 #include "core/util/CommandResultRing.h"
+#include "core/util/HoldButton.h"
 #include "platform/esp32/MidiDinTransport.h"
 #include "platform/esp32/MidiUsbTransport.h"
 #include "platform/esp32/MidiWifi.h"
@@ -92,6 +93,19 @@ ProfileActivation g_activation;
 std::vector<HomingController> g_homing;
 std::vector<bool> g_anchored;
 std::vector<bool> g_axisFaulted;  // runtime fault (homing fail, LIMIT, etc.)
+
+// BOOT button (GPIO0) forces the Wi-Fi hotspot (AP + captive portal) on a long
+// press, so a wrong station config can never lock the user out. GPIO0 is the
+// universal ESP32 dev-board BOOT button — held LOW while pressed (INPUT_PULLUP).
+// A ~2 s hold avoids accidental triggers; the switch is live (no reboot).
+constexpr uint8_t kBootButtonPin = 0;
+constexpr uint32_t kBootHoldMs = 2000;
+HoldButton g_bootHold;  // long-press on BOOT -> force hotspot (host-tested, P2.17)
+std::atomic<bool> g_hotspotRequested{false};   // BOOT button / web -> force AP
+std::atomic<bool> g_wifiScanRequested{false};  // GET /api/wifi/scan?start=1
+std::string g_wifiScanJson =                   // guarded by g_stateMutex
+    "{\"ok\":true,\"scanning\":false,\"networks\":[]}";
+uint32_t g_seenScanGeneration = 0;
 
 int8_t g_estopPin = -1;
 Debouncer g_estopDeb;  // debounced E-stop input (avoids a spurious trip)
@@ -1248,6 +1262,52 @@ std::string buildDiagnosticsJson() {
     return out;
 }
 
+// Force the Wi-Fi hotspot (AP + captive portal) from a BOOT-button long-press or a
+// web "Start hotspot" request. Runs on the main loop (owns Net + WiFi). Switching
+// the radio is independent of the instrument state, so it works in any phase — the
+// point is precisely to stay reachable when the machine will not arm.
+void serviceHotspotRequests(uint32_t nowMs) {
+    bool down = digitalRead(kBootButtonPin) == LOW;  // active-low BOOT button
+    if (g_bootHold.update(down, nowMs)) g_hotspotRequested.store(true);  // long-press
+    if (g_hotspotRequested.exchange(false)) {
+        g_net.forceAccessPoint();
+        Serial.println(F("BOOT/web: forced Wi-Fi hotspot (AP + captive portal)"));
+    }
+}
+
+// Serialize the latest Wi-Fi scan state into the snapshot the web task serves
+// (GET /api/wifi/scan reads it under the state lock — never the live vectors).
+void refreshWifiScanJson() {
+    JsonDocument doc;
+    doc["ok"] = true;
+    doc["scanning"] = g_net.scanInProgress();
+    JsonArray arr = doc["networks"].to<JsonArray>();
+    for (const auto& r : g_net.scanResults()) {
+        JsonObject o = arr.add<JsonObject>();
+        o["ssid"] = r.ssid;
+        o["rssi"] = r.rssi;
+        o["secure"] = r.secure;
+        o["channel"] = r.channel;
+    }
+    std::string out;
+    serializeJson(doc, out);
+    StateGuard lock;
+    g_wifiScanJson = out;
+}
+
+// Scan requests. Runs on the main loop (owner of Net/WiFi): the web handler only
+// sets a flag, so the async task never touches the radio.
+void serviceWifiRequests() {
+    if (g_wifiScanRequested.exchange(false)) {
+        g_net.startScan();
+        refreshWifiScanJson();  // snapshot now says scanning:true
+    }
+    if (g_net.scanGeneration() != g_seenScanGeneration) {
+        g_seenScanGeneration = g_net.scanGeneration();
+        refreshWifiScanJson();  // fresh results landed
+    }
+}
+
 void refreshDiagnosticsJson() {
     std::string out = buildDiagnosticsJson();  // built outside the lock
     StateGuard lock;
@@ -1266,6 +1326,9 @@ void setup() {
     g_stateMutex = xSemaphoreCreateMutex();
     g_storageMutex = xSemaphoreCreateMutex();
     g_resultMutex = xSemaphoreCreateMutex();
+
+    pinMode(kBootButtonPin, INPUT_PULLUP);  // BOOT button -> force hotspot (long press)
+    g_bootHold.configure(kBootHoldMs);
 
     g_storage.begin();
     if (g_storage.degraded()) {
@@ -1356,6 +1419,9 @@ void setup() {
         return udpSourcePolicyName(g_midi.sourcePolicy());
     };
     ctx.midiSourceLocked = []() -> bool { return g_midi.sourceLocked(); };
+    ctx.onStartHotspot = []() { g_hotspotRequested.store(true); };
+    ctx.onWifiScanStart = []() { g_wifiScanRequested.store(true); };
+    ctx.wifiScanJson = []() -> std::string { StateGuard lock; return g_wifiScanJson; };
     // Storage reformat runs in the web task under the storage lock (loop() never
     // touches LittleFS, so this can't stall the safety loop).
     ctx.onFormatStorage = []() -> bool { return g_storage.format(); };
@@ -1433,6 +1499,8 @@ void loop() {
     uint32_t nowMs = millis();
 
     g_net.tick(nowMs);
+    serviceHotspotRequests(nowMs);  // BOOT long-press / web "Start hotspot"
+    serviceWifiRequests();          // network survey for the Settings picker
     g_steppers.updateSensors(nowMs);  // debounce HOME/LIMIT before any read
 
     // SAFETY FIRST, before any queued command runs this tick:
