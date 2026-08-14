@@ -7,8 +7,14 @@ banjo for you — a stepper motor slides a "finger" along each string to pick th
 note, and small servos press the string and pluck it. Everything is configured
 from a **web page in your browser**; no app to install.
 
-> Built for the **ESP32-S3**. The brain is a portable, unit-tested C++ core; the
-> ESP32 part is just the hardware glue.
+> Built for the **ESP32-S3** (and the classic ESP32 boards). The brain is a
+> portable, unit-tested C++ core; the ESP32 part is just the hardware glue.
+
+[![CI](https://github.com/glloq/Stepper-Plucked-Strings-GMB/actions/workflows/ci.yml/badge.svg)](https://github.com/glloq/Stepper-Plucked-Strings-GMB/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/ESP32-S3%20%7C%20WROOM--32%20%7C%20DevKit%20v1-informational.svg)](https://www.espressif.com/en/products/socs/esp32)
+[![Build](https://img.shields.io/badge/build-PlatformIO%20%7C%20Arduino-orange.svg)](https://platformio.org/)
+[![MIDI](https://img.shields.io/badge/MIDI-Wi--Fi%20(UDP)-green.svg)](https://www.midi.org/)
 
 ---
 
@@ -58,6 +64,31 @@ understand?"* and adapt automatically.
 
 ---
 
+## What it looks like
+
+Everything is configured and played from a web page served by the ESP32 — three
+pages and a settings modal, no app to install.
+
+![The Instrument page](img/screenshots/instrument.png)
+
+*The **Instrument** page: one lane per string with each carriage drawn where it
+actually is. Click a fret to play it — that sends a real MIDI note through the
+whole chain, so it tests what a controller would get.*
+
+| | |
+| --- | --- |
+| [![Setup wizard](img/screenshots/setup-mechanics.png)](docs/WEB_INTERFACE.md#3-setup--nine-steps) | [![Wiring harness](img/screenshots/wiring.png)](docs/WEB_INTERFACE.md#41-harness) |
+| **Setup** — nine steps from identity to validation | **Wiring & GPIO** — the harness of *your* configuration |
+| [![Power and safety](img/screenshots/wiring-power.png)](docs/WEB_INTERFACE.md#42-power--safety) | [![Diagnostics](img/screenshots/settings-diagnostics.png)](docs/WEB_INTERFACE.md#52-diagnostics) |
+| **Power & safety** — the reference circuit, sized for your currents | **Diagnostics** — loop jitter, dropped MIDI, motion counters |
+
+The full tour, with every page, is in
+[`docs/WEB_INTERFACE.md`](docs/WEB_INTERFACE.md). All the screenshots are
+generated from the real interface running its mock backend — no device needed:
+`node web-interface/tools/screenshots.js`.
+
+---
+
 ## Features
 
 - 🎸 **1–6 strings**, each with its own motor, finger, plucker and optional damper.
@@ -69,9 +100,21 @@ understand?"* and adapt automatically.
 - 🖥️ **Local web interface** — setup wizard, live dashboard, MIDI monitor, SysEx
   tester. Runs entirely on the ESP32, no cloud.
 - 🧩 **Capability announcement (SysEx)** so a host discovers the instrument.
-- 🛡️ **Safety first** — homing before any play, emergency-stop handling, endstop
-  monitoring, and a fail-safe boot.
-- 🔧 **Servo driving your way** — a PCA9685 board over I²C *or* direct ESP32 pins.
+- 🛡️ **Safety first** — homing before any play, a **boot-safe** start (with no
+  valid profile it locks into CONFIG_SAFE instead of inventing one), a real
+  hard-stop path distinct from the controlled park, per-axis fault isolation,
+  endstop monitoring and fail-safe E-stop wiring.
+- ⚡ **In-rush governor** — chords stagger the current-hungry starts (carriage
+  repositioning, finger presses) while the strikes that carry the sound are
+  never throttled.
+- 📈 **Runtime diagnostics** — `GET /api/diagnostics`: loop latency and jitter,
+  dropped MIDI, homing failures, LIMIT trips, move timeouts, per-board PCA
+  health.
+- 🔧 **Servo driving your way** — PCA9685 boards over **either** of the ESP32-S3's
+  two I²C buses *or* direct ESP32 pins, mixable per servo.
+- 🧰 **Three boards supported** — ESP32-S3-DevKitC-1 (both revisions),
+  ESP32-WROOM-32 and ESP32 DevKit v1; each one is compiled in CI, which is what
+  "supported" means here.
 
 ### Instruments it already knows
 
@@ -92,7 +135,8 @@ cd firmware/test
 make            # builds and runs the unit-test suite
 ```
 
-You should see `129 tests, … checks, 0 failures`.
+You should see `… tests, … checks, 0 failures` (the CI badge is the source of
+truth for the count).
 
 ### 2. Build and flash the firmware
 
@@ -103,7 +147,8 @@ You can use **PlatformIO** or the **Arduino IDE** — same source.
 ```bash
 cd firmware
 ./sync_web_data.sh          # copy the web UI into the LittleFS image
-pio run                     # build for the ESP32-S3-DevKitC-1
+pio run                     # build for the ESP32-S3-DevKitC-1 (default)
+pio run -e esp32-wroom-32   # …or a classic ESP32 board
 pio run -t uploadfs         # upload the web interface
 pio run -t upload           # flash the firmware
 ```
@@ -131,8 +176,8 @@ Stepper-Plucked-Strings-GMB/
 │   └── test/            Native test suite (runs with g++)
 ├── web-interface/       Local web app (wizard, dashboard, MIDI monitor, SysEx tester)
 ├── instrument-profiles/ Example instruments (ukulele, guitar, bass, mandolin, banjo)
-├── board-profiles/      Board pin maps (ESP32-S3-DevKitC-1)
-├── hardware/            Reference electronics, wiring, bill of materials
+├── board-profiles/      Board pin maps — GENERATED from BoardProfile.cpp
+├── hardware/            Reference electronics, schematics, commissioning, BOM
 ├── mechanics/           Per-string mechanical design
 └── docs/                Guides and reference (see below)
 ```
@@ -154,7 +199,13 @@ Arduino dependency, tested on a PC) plus thin ESP32 adapters
 | [MIDI protocol](docs/MIDI_PROTOCOL.md) | Notes, CC string/fret selection, SysEx |
 | [Pin configuration](docs/PIN_CONFIGURATION.md) | GPIO assignment & validation |
 | [Calibration](docs/CALIBRATION.md) | Fret positions, homing, mechanics |
-| [Safety](docs/SAFETY.md) | Homing, E-stop, fault handling |
+| [Safety](docs/SAFETY.md) | Boot-safe, homing, hard-stop vs park, E-stop, faults |
+| [Power & safety circuit](hardware/POWER_AND_SAFETY.md) | The reference electrical architecture: three rails, E-stop chain, `/OE` and driver `ENABLE` |
+| [Commissioning](hardware/COMMISSIONING.md) | Staged power-up acceptance procedure |
+| [Schematics](hardware/schematics/README.md) | Power distribution, E-stop, PCA branch, stepper driver |
+| [Network & hotspot](docs/NETWORK_HOTSPOT.md) | Station/AP, the BOOT-button hotspot, captive portal |
+| [Device vs instrument](docs/DEVICE_INSTRUMENT.md) | What travels with the machine and what travels with the instrument |
+| [Generalisation](docs/GENERALIZATION.md) | Where the 6-string / 24-fret assumptions live |
 | [Arduino IDE](docs/ARDUINO_IDE.md) | Building without PlatformIO |
 
 The original specifications are the three markdown files at the repository root:
@@ -168,15 +219,27 @@ the SysEx capability protocol ([`SYSEX_CAPABILITIES.md`](SYSEX_CAPABILITIES.md))
 
 **What is done and verified in CI:**
 
-- Complete, unit-tested logic core (129 native tests, 0 failures).
-- Real ESP32-S3 firmware build (PlatformIO) and a fast host compile-check.
-- Every shipped instrument profile is loaded through the real firmware parser.
-- Web interface (vanilla JS, no build step) and JSON profiles validated.
+- Complete, unit-tested logic core (native tests under `-Werror`, and again
+  under AddressSanitizer + UBSan).
+- Three ESP32 board builds (PlatformIO) plus a fast host compile-check of
+  `main.cpp` and every platform adapter.
+- Runtime harnesses for the Arduino-gated code that unit tests cannot reach:
+  `servobankcheck` (dual-bus routing, controlled park, `ActuatorResult`) and
+  `stepperbankcheck` (hard-stop vs controlled stop, refused moves, soft limits,
+  a missing step generator).
+- Every shipped instrument profile loaded through the real firmware parser,
+  plus the v1→v2 migration and the split-slot round trip.
+- The JSON board profiles are checked to still match `BoardProfile.cpp` — the
+  wizard's pin table and the validator's pin table cannot drift apart.
+- Web interface (vanilla JS, no build step) syntax-checked and behaviourally
+  tested.
 
 **Not yet done — hardware validation.** The firmware has **not** been run against
 a physical instrument. STEP timing on a logic analyzer, six simultaneous axes,
-MIDI endurance, and faulty/missing/inverted sensor behavior still need a real
-test bench. Treat the current state as **ready for bench bring-up**, not for an
+MIDI endurance, faulty/missing/inverted sensor behaviour, the real in-rush of a
+chord even with the governor, and whether a hard stop cuts fast enough under
+load all still need a real test bench. Everything above is verified *in
+software*. Start with [`hardware/COMMISSIONING.md`](hardware/COMMISSIONING.md). Treat the current state as **ready for bench bring-up**, not for an
 unattended, fully-strung instrument under power.
 
 Known limitations and roadmap are listed at the bottom of
@@ -185,5 +248,10 @@ Known limitations and roadmap are listed at the bottom of
 ### Safety note
 
 The software emergency-stop is a convenience, **not** a substitute for a hardware
-cut of the driver `ENABLE` / motor power. Wire a physical E-stop before putting
-motors under load. See [`docs/SAFETY.md`](docs/SAFETY.md).
+cut of the driver `ENABLE` and of motor power. A stepper holds its position by
+burning current in its coils: stopping the STEP pulses stops *motion*, but the
+driver stays energised, the motor stays hot and the carriage stays clamped until
+`ENABLE` goes inactive or the rail disappears. Wire a physical E-stop before
+putting motors under load — reference circuit in
+[`hardware/POWER_AND_SAFETY.md`](hardware/POWER_AND_SAFETY.md), firmware
+behaviour in [`docs/SAFETY.md`](docs/SAFETY.md).

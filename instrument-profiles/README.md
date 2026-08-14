@@ -39,14 +39,35 @@ The set is intentionally diverse so it exercises the schema:
   `SDA=40` / `SCL=41`, global `ENABLE=42`, PCA9685 `SERVO_OE=47`. Only the first
   *N* rows are used for an *N*-string instrument. `board.automaticPinAssignment`
   is `false` because the pins are written out explicitly.
-* **Servos on the PCA9685** — finger servos on channels `0 … N−1` and
-  individual pluck servos on channels `6 … 6+N−1`.
+* **Servos on the PCA9685** — one finger servo per string on channels `0 … N−1`
+  and individual pluck servos on channels `6 … 6+N−1`, all on I²C bus 0, board 0
+  (`0x40`). One board covers a typical instrument: the fret is chosen by the
+  carriage, so a string needs only a couple of servo channels.
 * **One `strings[]` entry per string**, each with its own `homing` block.
 * **Selection ranges track the instrument** — `stringFretSelection.string.maximum`
   equals the string count and `.fret.maximum` equals the largest `maxFret`.
 * `calibratedFretMm` is left empty (`[]`); positions are computed from the
   theoretical fret formula (§14.2) until you run manual calibration (§14.3),
   after which the calibrated table takes priority.
+* **Schema v2** (`profileVersion: 2`). Every profile carries the blocks the
+  firmware now expects, at their documented defaults:
+  * `power` — the in-rush governor caps (`maxConcurrentMoves` 3, no per-board
+    cap, `staggerMs` 8);
+  * `pluck` — the plucking gesture and Note-Off mute behaviour, all zeroes /
+    `auto`, i.e. the historical behaviour;
+  * `hardware` — what safety hardware is declared as fitted (nothing, by
+    default) plus the per-servo and per-axis currents the web power estimator
+    sizes from. It drives no runtime behaviour;
+  * `instrument.polyphonyMax: 0` (automatic) and
+    `board.estopNormallyClosed: false` (the legacy normally-open button —
+    a NC loop is safer, see `hardware/POWER_AND_SAFETY.md`);
+  * each servo names its `i2cBus` (0 or 1) and its `muteUs` (0 = no
+    plectrum-as-mute position).
+
+  A **v1** profile still loads: `ProfileStorage::migrate()` upgrades it
+  explicitly on every load and import (v1 → v2 drops the no-op `network.staticIp`
+  flag), and every absent v2 block falls back to the defaults above, so an old
+  file behaves exactly as it used to.
 
 ## Editing / validating
 
@@ -57,4 +78,13 @@ python3 -m json.tool instrument-profiles/guitar-standard.json > /dev/null
 ```
 
 The firmware `ProfileValidator` performs the full semantic check (pin conflicts,
-servo channel ranges, selection bounds) when a profile is imported.
+servo channel ranges, selection bounds, governor caps, timing bounds) when a
+profile is imported. To run that check on every shipped profile at once — through
+the *real* firmware parser, not a re-implementation — use:
+
+```sh
+bash firmware/test/profilecheck/run.sh
+```
+
+which CI also runs. It additionally covers the v1 → v2 migration and the split
+device/instrument slot round trip.

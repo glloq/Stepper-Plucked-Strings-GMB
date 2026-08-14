@@ -51,6 +51,9 @@ enum class SignalKind : uint8_t {
     I2cScl,   // PCA9685 SCL
     ServoOe,  // PCA9685 output-enable / safety
     Generic,  // any usable output
+    SafetyInput,  // hardware E-stop input (`ESTOP`): input + interrupt + internal
+                  // pull-up, never a strapping pin (an NC loop idles the pin LOW
+                  // through boot, which would corrupt the boot strap)
 };
 
 struct BoardProfile {
@@ -67,8 +70,25 @@ struct BoardProfile {
     bool supports(int8_t gpio, SignalKind kind) const;
 };
 
-// Built-in profile for the reference board (spec 11.4 / 11.5).
-BoardProfile makeEsp32S3DevKitC1();
+// Built-in profiles (spec 11.4 / 11.5). The S3-DevKitC-1 is the reference board;
+// the classic ESP32-WROOM-32 (38-pin DevKitC) and ESP32 DevKit v1 (30-pin) are
+// the common cheaper boards — same die, so they share a GPIO capability model and
+// differ only in which pins are broken out.
+//
+// Espressif shipped TWO revisions of the ESP32-S3-DevKitC-1 that differ in where
+// the on-board RGB LED (WS2812) sits: the initial release drives it from GPIO48,
+// the v1.1 revision from GPIO38. The pin the LED occupies must stay reserved, so
+// each revision is its own profile — check the silkscreen / Espressif user guide
+// to pick the right one. `esp32-s3-devkitc-1` keeps naming the original (v1.0)
+// board so existing stored profiles keep their meaning.
+//
+// A classic ESP32 has only 8 usable high-speed outputs left after the STEP lines,
+// so a 6-axis instrument is realistically an S3 job; the smaller boards suit 1..3
+// strings. The validator enforces the real per-board limits either way.
+BoardProfile makeEsp32S3DevKitC1();     // v1.0 — RGB LED on GPIO48, GPIO38 free
+BoardProfile makeEsp32S3DevKitC1V11();  // v1.1 — RGB LED on GPIO38, GPIO48 free
+BoardProfile makeEsp32Wroom32();
+BoardProfile makeEsp32DevKitV1();
 
 // Returns the built-in profile with a matching identifier, or nullptr.
 const BoardProfile* builtinBoardProfile(const std::string& identifier);

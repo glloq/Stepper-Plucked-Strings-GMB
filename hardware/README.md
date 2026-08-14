@@ -10,15 +10,27 @@ Phase 5 CAD deliverables live alongside it.
 
 ```
 hardware/
-├── README.md          ← this file (electronics overview, §7)
-├── BOM.md             ← bill of materials / nomenclature (§26)
+├── README.md              ← this file (electronics overview, §7)
+├── POWER_AND_SAFETY.md    ← the REFERENCE circuit: three rails, E-stop chain,
+│                            fail-safe /OE and driver ENABLE, sizing method
+├── COMMISSIONING.md       ← staged power-up acceptance procedure
+├── I2C_PCA9685.md         ← bus topology, addressing, pull-ups
+├── BOM.md                 ← bill of materials / nomenclature (§26)
 ├── wiring/
-│   └── WIRING.md      ← connection guide, pinout, power rails (§7 / §22)
+│   └── WIRING.md          ← connection guide, pinout, power rails (§7 / §22)
 ├── schematics/
-│   └── README.md      ← Phase 5 placeholder (§24)
+│   ├── 01-power-distribution.md
+│   ├── 02-estop-and-servo-enable.md
+│   ├── 03-esp32-pca9685-one-string.md   (servo side of a string)
+│   └── 04-stepper-driver-one-axis.md    (motion side of a string)
 └── pcb/
-    └── README.md      ← Phase 5 placeholder (§24)
+    └── README.md          ← Phase 5 placeholder (§24)
 ```
+
+**Start with [`POWER_AND_SAFETY.md`](POWER_AND_SAFETY.md)** — it is the one
+circuit the firmware, the BOM and the web interface all describe. Then bring the
+machine up with [`COMMISSIONING.md`](COMMISSIONING.md), which is also mirrored as
+a live checklist in the web interface (*Wiring & GPIO → Commissioning*).
 
 ## Block diagram (§7)
 
@@ -94,17 +106,22 @@ homing state machine normalises the active level via `sensorActiveHigh`.
 
 ## Power (summary, §22)
 
-Four rails, servos on a **separate** supply from the ESP32 regulator:
+Four rails, servos and motors each on a **separate** supply from the ESP32
+regulator:
 
-| Rail | Feeds |
-| ---- | ----- |
-| 24 V | stepper motors (via the drivers) |
-| 5–7.4 V | servomotors |
-| 5 V | logic |
-| 3.3 V | ESP32-S3 |
+| Rail | Feeds | Dropped by the E-stop? |
+| ---- | ----- | ---------------------- |
+| 12–24 V | stepper motors (via the drivers' `VMOT`) | **yes — K2** |
+| 5–7.4 V | servomotors (PCA9685 `V+` and direct-GPIO servos) | **yes — K1** |
+| 5 V | logic | no |
+| 3.3 V | ESP32, PCA9685 `VCC`, driver logic, the `/OE` and `ENABLE` pull-ups | no |
 
 Fusing, reverse-polarity protection, a TVS on the motor rail, driver decoupling
-and a PCA9685 bulk capacitor are required — see `wiring/WIRING.md` §Power.
+and a PCA9685 bulk capacitor are required. **Both power rails must go away on an
+E-stop**, and so must the driver `ENABLE`: a stepper holds its position by
+burning current in the coils, so cutting the STEP pulses stops the *motion* while
+the driver stays energised, the motor stays hot and the carriage stays clamped.
+Full circuit and sizing method: [`POWER_AND_SAFETY.md`](POWER_AND_SAFETY.md).
 
 ## Capacity (§6)
 
@@ -115,6 +132,8 @@ and a PCA9685 bulk capacitor are required — see `wiring/WIRING.md` §Power.
 | Finger servos | 1 | 6 |
 | Pluck servos | 0 | 6 |
 | Auxiliary servos | 0 | 4 |
-| Total servo outputs | 1 | 16 |
+| Total servo outputs | 1 | 16 per PCA9685 board |
+| PCA9685 boards | 0 | 8 per I²C bus × 2 buses = 16 |
+| Direct-GPIO servos | 0 | 8 (one LEDC channel each) |
 
 Invariant: **active strings = active stepper axes = movable fingers**.

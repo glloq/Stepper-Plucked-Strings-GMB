@@ -78,13 +78,17 @@ inline void ledcDetachPin(int) {}
 
 struct SerialStub {
   void begin(unsigned long) {}
+  void println() {}
   template <typename T> void println(T) {}
   template <typename T> void print(T) {}
+  template <typename... Args> void printf(const char*, Args...) {}
 };
 static SerialStub Serial;
 
-// Minimal ESP object (chip identity).
+// Minimal ESP object (chip identity + heap telemetry for diagnostics).
 struct EspClass {
   uint64_t getEfuseMac() { return 0; }
+  uint32_t getFreeHeap() { return 0; }
+  uint32_t getMinFreeHeap() { return 0; }
 };
 static EspClass ESP;

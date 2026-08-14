@@ -12,6 +12,8 @@
 #include <vector>
 
 #include "../../core/midi/MidiParser.h"
+#include "../../core/midi/MidiTransport.h"
+#include "../../core/net/UdpSourceGate.h"
 
 #if defined(ARDUINO)
 #include <WiFiUdp.h>
@@ -27,21 +29,27 @@ struct SysExPacket {
     uint16_t port = 0;
 };
 
-class MidiWifi {
+// Wi-Fi UDP MIDI transport (the MidiUdpTransport of spec §8.3). Conforms to the
+// transport-neutral MidiTransport interface so it can feed the InstrumentController
+// alongside a future USB / DIN / BLE transport, while keeping its UDP-specific SysEx
+// reply / notify back-channel.
+class MidiWifi : public MidiTransport {
 public:
     void begin(uint16_t port = 5006);
 
     // Pull a bounded number of received packets and decode them.
-    void poll(uint32_t nowUs);
+    void poll(uint32_t nowUs) override;
 
     // Decoded channel-voice events for this poll (consume then clear()).
-    std::vector<MidiEvent>& events() { return events_; }
+    std::vector<MidiEvent>& events() override { return events_; }
     // Complete SysEx requests received this poll, each with its sender.
     std::vector<SysExPacket>& sysexPackets() { return sysex_; }
-    void clear() {
+    void clear() override {
         events_.clear();
         sysex_.clear();
     }
+    MidiSource source() const override { return MidiSource::WifiUdp; }
+    const char* name() const override { return "wifiUdp"; }
 
     // Reply to a specific SysEx sender.
     void reply(const SysExPacket& to, const uint8_t* data, size_t len);
@@ -57,6 +65,19 @@ public:
     uint32_t droppedEvents() const { return droppedEvents_; }
     uint32_t droppedPackets() const { return droppedPackets_; }
 
+    // UDP source posture (P1.11). Default Open = accept any sender (unchanged
+    // behaviour). LockToFirst pins the session to the first sender; Disabled refuses
+    // all UDP. INERT until a runtime/DeviceConfig calls setSourcePolicy — the reject
+    // path is exercised by host tests, but the live-socket behaviour needs bench
+    // validation. rejectedCount() surfaces datagrams the gate refused (diagnostics).
+    void setSourcePolicy(UdpSourcePolicy p) { gate_.setPolicy(p); }
+    UdpSourcePolicy sourcePolicy() const { return gate_.policy(); }
+    // Forget the locked session so the next accepted datagram re-locks (the
+    // Settings "Unlock current sender" action, audit 4 P2.3).
+    void unlockSource() { gate_.unlock(); }
+    bool sourceLocked() const { return gate_.locked(); }
+    uint32_t rejectedPackets() const { return gate_.rejectedCount(); }
+
 private:
     static constexpr int kMaxPacketsPerTick = 8;
     static constexpr size_t kMaxEventsPerTick = 128;
@@ -68,6 +89,7 @@ private:
     uint16_t lastSenderPort_ = 0;
     uint32_t droppedEvents_ = 0;
     uint32_t droppedPackets_ = 0;
+    UdpSourceGate gate_;  // P1.11 source posture (Open by default -> no behaviour change)
 #if defined(ARDUINO)
     WiFiUDP udp_;
     IPAddress lastSenderIp_;

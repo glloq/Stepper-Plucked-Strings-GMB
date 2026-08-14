@@ -170,12 +170,14 @@ struct ServoConfig {
     int8_t stringIndex;           // owner string, -1 = shared/global
 
     ServoSource source;           // PCA9685 OR direct ESP32 GPIO
-    uint8_t pcaBoard;             // 0..3 : up to four PCA9685 (0x40..0x43)
+    uint8_t pcaBoard;             // 0..7 : address 0x40..0x47 within its bus
+    uint8_t i2cBus;               // 0 = Wire (SDA/SCL), 1 = Wire1 (SDA2/SCL2)
     uint8_t channel;              // PCA9685 channel 0..15   (source == Pca)
     int8_t  gpio;                 // ESP32 GPIO            (source == DirectGpio)
 
     uint16_t pulseMinUs, pulseMaxUs;
     uint16_t restUs, activeUs;    // rest / active position
+    uint16_t muteUs;              // plectrum-as-mute rest AGAINST the string (0 = none)
     bool inverted;
     uint16_t travelMs;            // travel time
     uint16_t settleMs;            // settle time
@@ -236,16 +238,25 @@ much the mechanics anticipate to keep that delay small:
 The system works **with or without a PCA9685**. Each servo independently chooses
 its source:
 
-* **PCA9685** — up to **four boards** (`pcaBoard` 0–3, addresses 0x40–0x43),
-  i.e. **64 channels** in total; each servo indicates its board and its `channel`
-  (0–15). Ideal when the number of servos exceeds the free PWM pins.
-* **Direct GPIO** — the servo is driven by a free pin on the ESP32-S3
-  (LEDC PWM 50 Hz). Useful without a PCA or for just a few servos.
+* **PCA9685** — up to **eight boards per I²C bus** (`pcaBoard` 0–7, addresses
+  0x40–0x47) on **either** of the ESP32-S3's two hardware I²C controllers
+  (`i2cBus` 0 = `Wire` on SDA/SCL, 1 = `Wire1` on SDA2/SCL2). That is up to 16
+  boards / 256 channels; splitting them over the two buses also halves the
+  traffic, so the servos refresh faster on a large instrument. Each servo names
+  its bus, board and `channel` (0–15).
+* **Direct GPIO** — the servo is driven by a free ESP32 pin (LEDC PWM 50 Hz),
+  capped at 8 (one LEDC channel each). Useful without a PCA or for a few servos.
 
-The two modes can be **mixed** on the same instrument. The validator rejects: a
-PCA channel (board + channel) used twice, a direct GPIO that is reserved or in
-conflict with a motor signal or another servo, and a per-string role pointing to
-a nonexistent string.
+The two modes can be **mixed** on the same instrument. A board is identified by
+`(i2cBus, pcaBoard)`, so the same address on the *other* bus is a different chip
+and not a conflict. The validator rejects: the same (bus, board, channel) used
+twice, a direct GPIO that is reserved or conflicts with a motor signal or another
+servo, a `muteUs` outside the servo's pulse window, and a per-string role
+pointing to a nonexistent string.
+
+Only the bus that actually carries a board needs its pins: a board on bus 1
+requires `SDA2`/`SCL2`, an empty bus requires nothing, and the second bus may
+share the single `/OE` line (`SERVO_OE2` is optional).
 
 ### 4.1 Per-string roles
 

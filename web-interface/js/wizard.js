@@ -255,7 +255,7 @@
         GMB.api.autoPins({ stringCount: p.instrument.stringCount, reserveUsb: p.board.reserveUsb })
           .then(function (res) { p.pins = res.pins; GMB.markDirty(); drawStep(); GMB.toast('Pins assigned.', 'ok'); });
       }, 'primary'),
-      GMB.button('Open full pin editor', function () { GMB.navigate('pins'); }, 'ghost')
+      GMB.button('Open full pin editor', function () { GMB.navigate('hardware'); }, 'ghost')
     ]));
     var tbl = h('table.mini-table', [
       h('thead', h('tr', [h('th', 'Signal'), h('th', 'Kind'), h('th', 'GPIO')])),
@@ -403,7 +403,8 @@
       if (used[cap.gpio]) return false;
       if (cap.reserved || cap.preference === 'reserved') return false;
       if (cap.usb && reserveUsb) return false;
-      if (cap.preference === 'caution' && !GMB.isAdvanced()) return false;
+      // Caution pins are offered here too (see pins.js): hiding them would leave
+      // a classic ESP32 with too few selectable pins to wire an instrument.
       return GMB.pinSupports(cap, wantKind);
     });
   }
@@ -428,7 +429,7 @@
   // ---- Step 5: Homing & endstops -------------------------------------------
   function stepHoming(body) {
     body.appendChild(h('h3', 'Homing & endstops per string'));
-    body.appendChild(h('p.muted', 'Each string homes on its own HOME switch. Pick the GPIO and the homing behaviour; a LIMIT switch is optional (Advanced).'));
+    body.appendChild(h('p.muted', 'Each string homes on its own HOME switch. Pick the GPIO and the homing behaviour; a LIMIT switch is optional but strongly recommended — without it, a missed HOME sensor is only caught by the search-distance timeout, after the carriage has run to the end of its travel.'));
     body.appendChild(stringTabs());
     var i = activeStr, s = GMB.state.profile.strings[i];
     if (!s) return;
@@ -847,7 +848,7 @@
     testWrap.appendChild(GMB.button('STOP', GMB.doPanic, 'danger'));
     body.appendChild(testWrap);
     body.appendChild(h('p.muted', 'Full note/string/fret testing with a step trace lives on the MIDI page.'));
-    body.appendChild(GMB.button('Open MIDI test tool', function () { GMB.navigate('midi'); }, 'primary'));
+    body.appendChild(GMB.button('Open MIDI test tool', function () { GMB.openSettings('advanced'); }, 'primary'));
   }
 
   // ---- Step 9: Validation ---------------------------------------------------
@@ -899,9 +900,14 @@
         else servoGpioSeen[sv.gpio] = lbl;
       } else {
         if (sv.channel < 0 || sv.channel > 15) out.push(lbl + ' has an invalid PCA channel (0–15).');
-        if (sv.pcaBoard < 0 || sv.pcaBoard > 3) out.push(lbl + ' has an invalid PCA board (0–3).');
-        var key = sv.pcaBoard + ':' + sv.channel;
-        if (pcaSeen[key]) out.push(lbl + ' shares PCA board ' + sv.pcaBoard + ' channel ' + sv.channel + ' with ' + pcaSeen[key] + '.');
+        if (sv.pcaBoard < 0 || sv.pcaBoard > 7) out.push(lbl + ' has an invalid PCA board (0–7 = 0x40–0x47).');
+        var bus = sv.i2cBus === 1 ? 1 : 0;
+        if (sv.i2cBus !== undefined && sv.i2cBus !== 0 && sv.i2cBus !== 1)
+          out.push(lbl + ' has an invalid I²C bus (0 or 1).');
+        // A board is identified by (bus, address): the same address on the OTHER
+        // bus is a different chip, so the bus is part of the clash key.
+        var key = bus + ':' + sv.pcaBoard + ':' + sv.channel;
+        if (pcaSeen[key]) out.push(lbl + ' shares I²C bus ' + bus + ' board ' + sv.pcaBoard + ' channel ' + sv.channel + ' with ' + pcaSeen[key] + '.');
         else pcaSeen[key] = lbl;
       }
     });
@@ -910,6 +916,19 @@
 
   GMB.views.wizard = {
     render: render,
+    // Jump to a step by index (0-based) or by its label. Used by the setup flow
+    // itself and by web-interface/tools/screenshots.js, which needs to walk every
+    // step to capture it — without a hook it would have to click through the
+    // stepper and guess when each render settled.
+    goto: function (which) {
+      var i = typeof which === 'number' ? which : STEPS.indexOf(which);
+      if (i < 0 || i >= STEPS.length) return false;
+      goto(i);
+      return true;
+    },
+    steps: function () { return STEPS.slice(); },
+    // Which string the per-string steps (Mechanics, Homing, Servos, Notes) show.
+    selectString: function (i) { activeStr = i | 0; drawStep(); },
     reset: function () {
       step = 0;
       activeStr = 0;

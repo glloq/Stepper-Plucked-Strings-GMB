@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "../../core/instrument/ActuatorResult.h"
 #include "../../core/motion/MotionPlanner.h"
 #include "../../core/motion/StepperAxis.h"
 #include "../../core/util/Debounce.h"
@@ -46,15 +47,38 @@ public:
     void enableDrivers(bool on);
     bool enabled() const { return enabled_; }
 
-    // Position-mode move to an absolute target (mm, soft-limited).
-    void moveToMm(size_t axis, double mm);
+    // Position-mode move to an absolute target (mm, soft-limited). Returns an
+    // ActuatorResult like every other actuator command (audit P1.4), so the
+    // playback scheduler always knows whether the move reached the step engine and,
+    // on failure, why — a refused move must fault the axis, never be assumed done.
+    //   InvalidIndex : no such axis
+    //   Disabled     : the profile disabled this axis
+    //   OutputFault  : the axis never attached a hardware step generator
+    ActuatorResult moveToMm(size_t axis, double mm);
     // Same but without soft-limit clamping (used during homing).
-    void moveToMmRaw(size_t axis, double mm);
+    ActuatorResult moveToMmRaw(size_t axis, double mm);
     // Velocity-mode cruise at a signed speed (mm/s), used by homing seeks.
-    void setVelocityMm(size_t axis, double mmS);
+    ActuatorResult setVelocityMm(size_t axis, double mmS);
     void stop(size_t axis);          // decelerated stop (normal musical stop)
     void emergencyStop(size_t axis); // immediate hard stop (LIMIT / E-stop)
     void stopAll();
+
+    // Immediate HARD STOP of the whole bank (E-stop / panic / major fault): every
+    // axis force-stopped where it stands and the shared driver ENABLE dropped, with
+    // no deceleration ramp and no dependency on a move completing first
+    // (spec P0 §21.2 — the motion-side twin of ServoBank::hardStop).
+    void hardStop();
+
+    // Controlled stop of the whole bank: every axis is asked for a DECELERATED stop
+    // and the drivers stay enabled, so the carriages come to rest without losing
+    // steps. The caller times the deceleration (stopDurationMs()) and only then cuts
+    // ENABLE. Used for a normal stop / profile change — never for an E-stop.
+    void controlledStopAll();
+
+    // Worst-case ms for a decelerated stop from full speed across all enabled axes
+    // (v/a, rounded up), i.e. how long controlledStopAll() needs before the
+    // carriages are guaranteed still. 0 when nothing can move.
+    uint32_t stopDurationMs() const;
 
     // Redefine the current physical position as `mm` (homing anchors home = 0).
     void setPositionReference(size_t axis, double mm);
@@ -80,6 +104,14 @@ public:
     void tick(uint32_t nowUs) { (void)nowUs; }
 
     size_t count() const { return axes_.size(); }
+    // Cumulative position moves actually accepted by the step engine (diagnostics,
+    // P2.19). Velocity cruises (homing seeks) are not counted — they are not
+    // musical carriage moves.
+    uint32_t moveCount() const { return moveCount_; }
+    // Governor bucket for an axis. Steppers hang off their own STEP/DIR drivers,
+    // not a PCA9685, so they share no per-board power window with the servos:
+    // 0xFF means "only the global concurrency cap applies" (see ActuatorManager).
+    uint8_t board(size_t axis) const { (void)axis; return 0xFF; }
 
 private:
     struct AxisRt {
@@ -96,10 +128,14 @@ private:
         Debouncer limitDeb;  // debounced raw HIGH level of the LIMIT pin
         AxisRt(const AxisConfig& c) : geom(c) {}
     };
+    // Can this axis accept a motion command at all? Ok, or the reason not.
+    ActuatorResult axisWritable(size_t axis) const;
+
     std::vector<AxisRt> axes_;
     int8_t enablePin_ = -1;
     bool enabled_ = false;
     bool attachFault_ = false;
+    uint32_t moveCount_ = 0;  // cumulative accepted position moves (diagnostics)
 
 #if defined(ARDUINO)
     FastAccelStepperEngine engine_;

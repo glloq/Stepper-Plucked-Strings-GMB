@@ -1,21 +1,23 @@
 {
   "project": "Stepper-Plucked-Strings-GMB",
-  "profileVersion": 1,
+  "profileVersion": 2,
   "capabilitiesRevision": 1,
   "instrument": {
     "name": "Guitar Standard EADGBE",
-    "description": "Six-string guitar, standard tuning — individual per-string pluck.",
+    "description": "Six-string guitar, standard tuning \u2014 individual per-string pluck.",
     "stringCount": 6,
     "type": "guitar",
     "gmProgram": 24,
     "typeId": 4,
     "capo": 0,
-    "transpose": 0
+    "transpose": 0,
+    "polyphonyMax": 0
   },
   "board": {
     "profile": "esp32-s3-devkitc-1",
     "reserveUsb": true,
-    "automaticPinAssignment": false
+    "automaticPinAssignment": false,
+    "estopNormallyClosed": false
   },
   "pins": [
     {
@@ -129,12 +131,28 @@
       "gpio": 47
     }
   ],
+  "hardware": {
+    "oePullup": false,
+    "oeGate": false,
+    "estopCutsPower": false,
+    "estopCutsDriverEnable": false,
+    "mainSwitch": false,
+    "mainFuse": false,
+    "branchFuses": false,
+    "servoIdleMa": 10,
+    "servoMoveMa": 250,
+    "servoStallMa": 800,
+    "stepperHoldMa": 400,
+    "stepperMoveMa": 800,
+    "extPullupOhm0": 0,
+    "extPullupOhm1": 0,
+    "pcaPullups": []
+  },
   "network": {
     "mode": "accessPoint",
     "ssid": "",
     "hostname": "gmb-guitar",
-    "apSsid": "Stepper-Plucked-Strings-GMB",
-    "staticIp": false
+    "apSsid": "Stepper-Plucked-Strings-GMB"
   },
   "midi": {
     "globalChannel": 0,
@@ -180,6 +198,20 @@
       "missingSelectionPolicy": "automaticAllocation",
       "expiredSelectionPolicy": "automaticAllocation"
     }
+  },
+  "power": {
+    "maxConcurrentMoves": 3,
+    "maxConcurrentPerBoard": 0,
+    "staggerMs": 8
+  },
+  "pluck": {
+    "strokeMs": 0,
+    "minStrikePct": 0,
+    "fretToPluckMs": 0,
+    "muteSource": "auto",
+    "muteHoldMs": 60,
+    "liftMuteOnNoteOff": false,
+    "liftEngage": "lowerToPlay"
   },
   "strings": [
     {
@@ -367,7 +399,9 @@
       "inverted": false,
       "travelMs": 120,
       "settleMs": 30,
-      "disableAtRest": true
+      "disableAtRest": true,
+      "i2cBus": 0,
+      "muteUs": 0
     },
     {
       "enabled": true,
@@ -384,7 +418,9 @@
       "inverted": false,
       "travelMs": 120,
       "settleMs": 30,
-      "disableAtRest": true
+      "disableAtRest": true,
+      "i2cBus": 0,
+      "muteUs": 0
     },
     {
       "enabled": true,
@@ -401,7 +437,9 @@
       "inverted": false,
       "travelMs": 120,
       "settleMs": 30,
-      "disableAtRest": true
+      "disableAtRest": true,
+      "i2cBus": 0,
+      "muteUs": 0
     },
     {
       "enabled": true,
@@ -418,7 +456,9 @@
       "inverted": false,
       "travelMs": 120,
       "settleMs": 30,
-      "disableAtRest": true
+      "disableAtRest": true,
+      "i2cBus": 0,
+      "muteUs": 0
     },
     {
       "enabled": true,
@@ -435,7 +475,9 @@
       "inverted": false,
       "travelMs": 120,
       "settleMs": 30,
-      "disableAtRest": true
+      "disableAtRest": true,
+      "i2cBus": 0,
+      "muteUs": 0
     },
     {
       "enabled": true,
@@ -452,7 +494,9 @@
       "inverted": false,
       "travelMs": 120,
       "settleMs": 30,
-      "disableAtRest": true
+      "disableAtRest": true,
+      "i2cBus": 0,
+      "muteUs": 0
     },
     {
       "enabled": true,
@@ -469,7 +513,9 @@
       "inverted": false,
       "travelMs": 60,
       "settleMs": 18,
-      "disableAtRest": true
+      "disableAtRest": true,
+      "i2cBus": 0,
+      "muteUs": 0
     },
     {
       "enabled": true,
@@ -486,7 +532,9 @@
       "inverted": false,
       "travelMs": 60,
       "settleMs": 18,
-      "disableAtRest": true
+      "disableAtRest": true,
+      "i2cBus": 0,
+      "muteUs": 0
     },
     {
       "enabled": true,
@@ -503,7 +551,9 @@
       "inverted": false,
       "travelMs": 60,
       "settleMs": 18,
-      "disableAtRest": true
+      "disableAtRest": true,
+      "i2cBus": 0,
+      "muteUs": 0
     },
     {
       "enabled": true,
@@ -520,7 +570,9 @@
       "inverted": false,
       "travelMs": 60,
       "settleMs": 18,
-      "disableAtRest": true
+      "disableAtRest": true,
+      "i2cBus": 0,
+      "muteUs": 0
     },
     {
       "enabled": true,
@@ -537,7 +589,9 @@
       "inverted": false,
       "travelMs": 60,
       "settleMs": 18,
-      "disableAtRest": true
+      "disableAtRest": true,
+      "i2cBus": 0,
+      "muteUs": 0
     },
     {
       "enabled": true,
@@ -554,7 +608,9 @@
       "inverted": false,
       "travelMs": 60,
       "settleMs": 18,
-      "disableAtRest": true
+      "disableAtRest": true,
+      "i2cBus": 0,
+      "muteUs": 0
     }
   ]
 }

@@ -11,4 +11,5 @@ class AsyncCallbackJsonWebHandler : public AsyncWebHandler {
 public:
   AsyncCallbackJsonWebHandler(const char*, ArJsonRequestHandlerFunction) {}
   void setMethod(WebRequestMethod) {}
+  void setMaxContentLength(int) {}
 };

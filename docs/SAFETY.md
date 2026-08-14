@@ -8,7 +8,9 @@ stop, and the fault log.
 
 ```cpp
 enum class SafetyState {
+    ConfigSafe,    // no valid profile — actuators locked out, awaiting configuration
     PowerOnSafe,   // drivers off, servos neutralised, queues empty
+    Homing,        // profile validated, outputs live, axes seeking their reference
     Armed,         // normal operation
     Panic,         // latched software panic
     EmergencyStop, // hardware stop asserted
@@ -16,13 +18,26 @@ enum class SafetyState {
 ```
 
 `actuatorsAllowed()` only returns `true` in the `Armed` state: no actuator moves
-in any other state.
+in any other state — `ConfigSafe`, `PowerOnSafe` and `Homing` all keep the note
+engine **and** every manual mechanical test locked out.
 
 ---
 
 ## 1. State at startup (§21.1)
 
-At power-on, `boot()` places the system into `PowerOnSafe`:
+### Boot-safe: no fabricated profile (audit P0.1)
+
+With **no valid stored profile** the firmware does **not** invent one. It holds
+an empty `Profile` (no axes, no servos, no actuator pins) and latches
+`ConfigSafe`: the network and web interface come up so a profile can be built or
+loaded, but no actuator can ever be driven and no MIDI reaches the mechanics.
+
+This matters because the alternative is worse than it looks: a synthesised
+"default ukulele" profile arms *someone else's* pin map at *someone else's*
+speeds on a real machine. The ukulele template still exists in the web UI — it is
+simply never applied behind the user's back.
+
+At power-on with a valid profile, `boot()` places the system into `PowerOnSafe`:
 
 ```text
 drivers disabled
@@ -34,11 +49,19 @@ GPIO validated
 ```
 
 The transition to `Armed` is only possible **after** validation of the profile
-and the GPIO pins:
+and the GPIO pins, and only through the `Homing` phase:
 
 ```cpp
-bool arm(bool profileValid, bool pinsValid);  // Armed only if both are true
+// PowerOnSafe -> Homing. releaseWaitMs is the time every finger servo needs to
+// lift clear of its string before a carriage may move (§16: never drag a finger).
+bool beginHoming(bool profileValid, bool pinsValid, uint32_t releaseWaitMs, uint32_t nowMs);
+bool releaseComplete(uint32_t nowMs);   // the seek may start
+bool armAfterHoming();                  // Homing -> Armed, once every axis is anchored
 ```
+
+Homing is **sensor-driven**, not a timer, so the final transition is commanded by
+the caller once every enabled axis has found HOME. The one timed sub-step lives
+in the state machine: the pre-seek finger release.
 
 No actuator is enabled in normal mode as long as critical errors remain
 uncorrected (see the wizard §9, [`WEB_INTERFACE.md`](WEB_INTERFACE.md)).
@@ -49,18 +72,27 @@ uncorrected (see the wizard §9, [`WEB_INTERFACE.md`](WEB_INTERFACE.md)).
 successful homing**, so that no axis moves from an unknown physical position:
 
 ```text
-Boot     : PowerOnSafe — profile loaded and validated, drivers OFF, servos at rest
-   │        (if the profile is invalid, it stays in Boot: no movement)
+ConfigSafe : no valid profile — web/network up, actuators locked out for good
+             (a profile must be loaded, which goes through reset())
+   │
+Boot       : PowerOnSafe — profile loaded and validated, drivers OFF, servos off
+   │          (if the profile is invalid, it stays here: no movement)
    ▼
-Homing   : drivers ON; each axis runs its HomingController (non-blocking,
-   │        in parallel). The origin is anchored on the HOME sensor (0 mm).
-   │        A faulty axis is disabled without blocking the others.
+Homing     : PCA channels cleared, THEN /OE enabled, THEN every servo walked to
+   │          rest through a GOVERNED park (so arming's in-rush is no worse than
+   │          normal play). A refused rest command ABORTS homing — a finger that
+   │          may still be pressed must never see a carriage seek.
+   │          Once the fingers are up: drivers ON, each axis runs its
+   │          HomingController (non-blocking, in parallel), origin anchored on
+   │          the HOME sensor (0 mm). A faulty axis is disabled without blocking
+   │          the others; with zero working axes the machine hard-stops and
+   │          stays out of Ready.
    ▼
-Ready    : all axes homed → arm() → MIDI notes are played.
+Ready      : armAfterHoming() → MIDI notes are played.
 ```
 
-During `Boot` and `Homing`, `Note On` messages are not played (only SysEx
-requests are processed). A mechanical configuration change from the Web
+During `ConfigSafe`, `Boot` and `Homing`, `Note On` messages are not played
+(only SysEx requests are processed). A mechanical configuration change from the Web
 interface triggers a new homing before playback resumes.
 
 ### Hardware emergency stop and limit switches
@@ -78,7 +110,7 @@ interface triggers a new homing before playback resumes.
 
 After a panic or an E-stop, the safety state is **locked**: neither loading a
 profile nor a new homing can re-enable the motors. Recovery is explicit via
-`POST /api/reset` (the "Reset & re-home" button on the dashboard), accepted only
+`POST /api/reset` (the "Reset & re-home" button on the Instrument page), accepted only
 if:
 
 * the E-stop is physically released;
@@ -96,8 +128,8 @@ If one or more axes fail their homing, the system still enters playback **but**:
 * the **polyphony announced** via SysEx is reduced to the number of functional
   axes and the **capabilities revision** is incremented (General-Midi-Boop stops
   sending the unplayable notes);
-* the exposed state becomes `readyDegraded` and the fault appears on the
-  dashboard.
+* the exposed state becomes `readyDegraded`, the affected lane is flagged on the
+  Instrument page, and the fault is logged.
 
 ### Wi-Fi secrets and access
 
@@ -170,17 +202,36 @@ The Web API exposes `POST /api/panic` ([`WEB_INTERFACE.md`](WEB_INTERFACE.md)).
 
 ## 4. Wi-Fi loss (§21.4)
 
-Configurable behavior (`WifiLossBehavior`):
+The policy is **fixed and deliberate**: on link loss the firmware cancels pending
+commands and releases the sounding notes, but **stays armed** — the instrument
+keeps its reference and its readiness, because losing the network is not a
+mechanical emergency.
 
-| Valeur | Comportement |
-| ------ | ------------ |
-| `FinishThenStop` (0) | **default**: cancel pending commands, controlled release, return to READY |
-| `StopImmediately` (1) | stop immediately |
-| `ContinueQueued` (2) | continue commands already queued |
-| `IdleKeepMotors` (3) | return to idle without disabling the motors |
+> A `WifiLossBehavior` enum (`FinishThenStop` / `StopImmediately` /
+> `ContinueQueued` / `IdleKeepMotors`) used to be documented here (audit P1.10).
+> It was **never wired to anything**: no config field selected it and the runtime
+> always applied the single policy above, so it advertised a configurability that
+> did not exist. It has been removed rather than left as a decorative option. A
+> real, selectable policy will return with the `DeviceConfig`/`SafetyConfig`
+> split — wired to the runtime at the same time, not before.
 
-Default behavior in detail: cancellation of pending commands, controlled
-release, return to the READY state.
+---
+
+---
+
+## 4b. hardStop vs controlledPark (audit P0.3)
+
+Two distinct stops, and conflating them is a safety bug:
+
+| | `hardStop` | controlled park |
+| --- | --- | --- |
+| **When** | E-stop, panic, unrecoverable fault | profile change, normal stop |
+| **Servos** | `/OE` off and direct PWM off **at once**; PCA channels cleared only afterwards, so a wedged I2C bus cannot delay the neutralisation | driven to rest with the outputs still live, then the caller waits `parkDurationMs()` before cutting power |
+| **Axes** | `stopAll()` (force-stop where they stand) then ENABLE dropped — no deceleration ramp | `controlledStopAll()` (decelerated), drivers left enabled for `stopDurationMs()` |
+| **Precondition** | none, ever — a movement is never a precondition for stopping | the rest commands must all be ACCEPTED; a refused one aborts the operation |
+
+A mechanical movement used to precede the stop on the old `neutraliseAll()` path.
+It does not any more: a real E-stop cuts first and tidies up afterwards.
 
 ---
 
@@ -196,7 +247,8 @@ const std::vector<FaultRecord>& faults() const;
 void clearFaults();
 ```
 
-Faults are displayed on the Web dashboard (§19).
+Faults are displayed live on the Instrument page, and the cumulative total is
+reported by `GET /api/diagnostics` (§19, [`WEB_INTERFACE.md`](WEB_INTERFACE.md) §5.2).
 
 ---
 

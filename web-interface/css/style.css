@@ -33,6 +33,44 @@
   --shadow: 0 1px 3px rgba(20, 30, 50, .08), 0 4px 16px rgba(20, 30, 50, .06);
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  /* Fretboard (playable neck) — wood tones read the same in both themes. */
+  --fb-neck-a: #4a3320;
+  --fb-neck-b: #6d4c2c;
+  --fb-body-a: #c89a56;
+  --fb-body-b: #a97c39;
+  --fb-headstock: #3f2c1c;
+  --fb-nut: #ece3d0;
+  --fb-fret: #c9ccd2;
+  --fb-inlay: #efe6d0;
+  --fb-string: #454b55;
+  --fb-string-active: var(--accent);
+  --fb-pad: #9fb4c9;
+  --fb-pad-ink: #2a3646;
+  --fb-pad-press: #ffce3a;
+  --fb-hole: #241812;
+  --fb-peg: #d8d2c4;
+  /* Wiring map — servo-function fills, bus/rail colours, module bodies. */
+  --wire-finger: #2f6df6;
+  --wire-pluck: #1f9d55;
+  --wire-strum: #0d9488;
+  --wire-lift: #7c5cff;
+  --wire-damper: #d9822b;
+  --wire-aux: #6b7789;
+  --wire-vplus: #d23b3b;
+  --wire-gnd: #4b5563;
+  --wire-v3: #c58b12;
+  --wire-sda: #1f9d55;
+  --wire-scl: #2f6df6;
+  --wire-sda2: #0891b2;
+  --wire-scl2: #db2777;
+  --wire-oe: #7c5cff;
+  --wire-oe2: #ea580c;
+  --wire-esp: #26324f;
+  --wire-psu: #5a2f34;
+  --wire-board: #e7f1ea;
+  --wire-board-stroke: #a3c2b1;
+  --wire-pad-free: #eef1f6;
+  --wire-pad-free-stroke: #cfd6e0;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -58,6 +96,40 @@
     --used: #8593a5;
     --used-bg: #232d3a;
     --shadow: 0 1px 3px rgba(0, 0, 0, .4), 0 6px 20px rgba(0, 0, 0, .35);
+    /* Slightly deeper wood + brighter strings on the dark surface. */
+    --fb-neck-a: #38271a;
+    --fb-neck-b: #573c24;
+    --fb-body-a: #9c7538;
+    --fb-body-b: #78591f;
+    --fb-headstock: #2c1f14;
+    --fb-fret: #aeb4bf;
+    --fb-string: #c2c9d4;
+    --fb-pad: #8aa0b8;
+    --fb-pad-ink: #0d1520;
+    --fb-hole: #160f0a;
+    --fb-peg: #b7b1a3;
+    /* Wiring map (dark): brighter fills on the deep surface. */
+    --wire-finger: #4f8bff;
+    --wire-pluck: #43c884;
+    --wire-strum: #2dd4bf;
+    --wire-lift: #a78bfa;
+    --wire-damper: #f0a24a;
+    --wire-aux: #8593a5;
+    --wire-vplus: #ff6b6b;
+    --wire-gnd: #94a3b8;
+    --wire-v3: #e0b24a;
+    --wire-sda: #43c884;
+    --wire-scl: #4f8bff;
+    --wire-sda2: #22d3ee;
+    --wire-scl2: #f472b6;
+    --wire-oe: #a78bfa;
+    --wire-oe2: #fb923c;
+    --wire-esp: #1c2740;
+    --wire-psu: #40242a;
+    --wire-board: #14251d;
+    --wire-board-stroke: #2f5a45;
+    --wire-pad-free: #1e2733;
+    --wire-pad-free-stroke: #34404f;
   }
 }
 
@@ -137,12 +209,21 @@ body {
 .card h3 { margin: 16px 0 8px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
 .card-head h2 { margin: 0; }
+.actuator { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin-top: 10px; }
+.actuator-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.actuator-head strong { font-size: 13px; }
 .muted { color: var(--muted); font-size: 13px; }
 .spacer { flex: 1; }
 
 /* ---- forms --------------------------------------------------------------- */
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+/* Prose and button rows are not fields: let them span the whole grid instead of
+   being squeezed into one 210px column beside the inputs. */
+.form-grid > p, .form-grid > .toolbar { grid-column: 1 / -1; margin: 0; }
 .field { display: flex; flex-direction: column; gap: 4px; }
+/* A checkbox is not a text box: the blanket `input { width:100% }` below made it
+   sit adrift in the middle of the field instead of under the start of its label. */
+.field > input[type="checkbox"] { width: auto; align-self: flex-start; margin-top: 2px; }
 .field-label { font-size: 12px; color: var(--muted); font-weight: 600; }
 .field-hint { font-size: 11px; color: var(--muted); }
 input, select {
@@ -150,7 +231,13 @@ input, select {
   padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--surface-2); color: var(--text); width: 100%;
 }
-input[type="checkbox"] { width: auto; accent-color: var(--accent); transform: scale(1.15); }
+/* Radios were missing here, so they inherited the text-input `width:100%` (plus
+   its padding and border) from the rule above and ate their whole row — the
+   MIDI-source options rendered as three lone dots with the labels pushed away. */
+input[type="checkbox"], input[type="radio"] {
+  width: auto; padding: 0; border: 0; background: none;
+  accent-color: var(--accent); transform: scale(1.15);
+}
 input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 0; border-color: var(--accent); }
 label.inline { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
 label.inline.big { font-weight: 600; margin-bottom: 8px; }
@@ -274,20 +361,6 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 .chan-chip.used { background: var(--recommended-bg); color: var(--recommended); border-color: var(--recommended); font-weight: 700; }
 .chan-chip.dup { background: var(--reserved-bg); color: var(--reserved); border-color: var(--reserved); font-weight: 700; }
 
-/* ---- endstop live readout ------------------------------------------------ */
-.endstop-readout { margin-top: 10px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
-.endstop-line { display: flex; gap: 8px; align-items: center; }
-.endstop-name { font-size: 12px; font-weight: 600; }
-
-/* ---- fret position editor ------------------------------------------------ */
-.motor-pos { font-size: 12px; font-weight: 700; color: var(--accent); background: var(--surface); border: 1px solid var(--border); padding: 3px 9px; border-radius: 6px; }
-.fret-editor td { vertical-align: middle; }
-.fret-editor .fret-cal { display: flex; gap: 6px; align-items: center; }
-.fret-editor .fret-cal input { width: 92px; }
-.fret-editor .cal-shown { min-width: 56px; }
-.btn.nudge { padding: 4px 11px; font-size: 16px; line-height: 1; }
-.fret-actions { display: flex; gap: 6px; white-space: nowrap; }
-
 /* ---- monitor / test log -------------------------------------------------- */
 .monitor-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
 .monitor-scroll { max-height: 320px; overflow-y: auto; }
@@ -306,6 +379,7 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 .bytes-row { display: flex; gap: 8px; align-items: baseline; margin: 4px 0; }
 .byte-label { font-size: 11px; color: var(--muted); text-transform: uppercase; width: 34px; flex: 0 0 34px; }
 .bytes-row code { font-family: var(--mono); font-size: 12px; word-break: break-all; background: var(--surface); padding: 4px 8px; border-radius: 6px; flex: 1; }
+.sysex-json { font-family: var(--mono); font-size: 12px; line-height: 1.5; background: var(--surface); padding: 12px; border-radius: 6px; overflow-x: auto; max-height: 60vh; white-space: pre; margin: 0; }
 
 /* ---- profiles ------------------------------------------------------------ */
 .profile-list { display: flex; flex-direction: column; gap: 8px; }
@@ -342,3 +416,452 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
   .panic-card { flex-direction: column; align-items: stretch; text-align: center; }
   .profile-item { flex-direction: column; align-items: stretch; }
 }
+
+/* ---- Servo-per-fret wizard / install helper ---- */
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; align-items: end; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.strtabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+.strtab { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border, #3a3f4b);
+  background: var(--surface-2, #22262e); color: inherit; cursor: pointer; }
+.strtab.active { background: var(--accent, #4f8cff); color: #fff; border-color: var(--accent, #4f8cff); }
+/* Fret calibration table. It USED to be a stack of cards, hence the old
+   `display:flex` here — but it is a <table> now, and flex on a table makes the
+   thead and tbody flex items, which collapses the column model and lets the
+   Abs (FDC) figure ride on top of the "+" nudge button. Style it as a table. */
+.fret-editor { width: 100%; }
+.fret-editor td, .fret-editor th { vertical-align: middle; }
+.fret-editor td:first-child { font-weight: 700; font-variant-numeric: tabular-nums; }
+.fret-cal { display: flex; align-items: center; gap: 6px; }
+.fret-cal input { width: 92px; font-variant-numeric: tabular-nums; }
+.btn.nudge { padding: 4px 9px; font-weight: 700; line-height: 1; min-width: 28px; }
+.cal-shown { min-width: 54px; text-align: right; font-variant-numeric: tabular-nums; }
+.fret-actions { display: flex; gap: 6px; }
+.chan-chip.strike { background: var(--accent-bg, #16324f); color: var(--accent, #4f8cff); border-color: var(--accent, #4f8cff); font-weight: 700; }
+
+/* ---- settings modal (gear button) --------------------------------------- */
+.icon-btn {
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  width: 34px; height: 34px; border-radius: 8px; cursor: pointer; font-size: 16px;
+  display: grid; place-items: center; line-height: 1;
+}
+.icon-btn:hover { background: var(--surface-2); }
+
+.settings-overlay {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(10, 15, 25, .55);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px 16px; overflow-y: auto;
+  opacity: 0; visibility: hidden; transition: opacity .18s ease, visibility .18s ease;
+}
+.settings-overlay.open { opacity: 1; visibility: visible; }
+/* Tall tabbed modal: head + footer pinned, the body scrolls inside the panel. */
+.settings-panel {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  width: 100%; max-width: 880px; margin: auto;
+  max-height: calc(100vh - 40px); display: flex; flex-direction: column; overflow: hidden;
+  transform: translateY(-8px); transition: transform .18s ease;
+}
+.settings-overlay.open .settings-panel { transform: none; }
+.settings-head {
+  flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 18px 0; border-bottom: 1px solid var(--border);
+  background: var(--surface); border-radius: var(--radius) var(--radius) 0 0;
+}
+.settings-head-top { display: flex; align-items: center; justify-content: space-between; }
+.settings-head h2 { margin: 0; font-size: 17px; }
+.settings-close {
+  border: 0; background: transparent; color: var(--muted);
+  font-size: 24px; line-height: 1; cursor: pointer; padding: 0 4px;
+}
+.settings-close:hover { color: var(--text); }
+
+/* Modal tab bar. */
+.settings-tabs { display: flex; gap: 2px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.settings-tab {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer;
+  padding: 9px 14px; font: inherit; font-size: 13px; font-weight: 600; white-space: nowrap;
+  border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0;
+}
+.settings-tab:hover { color: var(--text); background: var(--surface-2); }
+.settings-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Scrolling body. */
+.settings-body { flex: 1 1 auto; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+.settings-body > .card { box-shadow: none; }
+
+.settings-section { padding: 4px 0 14px; border-bottom: 1px solid var(--border); }
+.settings-section:last-child { border-bottom: 0; }
+.settings-section h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.settings-section .muted { margin: 0 0 10px; }
+.settings-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+
+/* Compact mode toggle mirrored in the modal footer (the sidebar one is covered). */
+.mode-toggle.mini { flex: 0 0 auto; }
+.mode-toggle.mini button { flex: 0 0 auto; padding: 5px 12px; font-size: 12px; }
+
+/* ---- Servos step: compact fret lines ------------------------------------ */
+.fret-lines { display: flex; flex-direction: column; gap: 6px; }
+.fret-line-wrap { display: flex; flex-direction: column; }
+.fret-line {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+}
+.fret-line.empty { opacity: .8; }
+.fret-line-id { display: flex; flex-direction: column; min-width: 88px; line-height: 1.2; }
+.fret-line-id strong { font-size: 14px; }
+.fret-gear { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.fret-slider-cell { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 190px; }
+.fret-slider-lbl { font-size: 11px; min-width: 46px; }
+.fret-slider-cell .install-slider-row { flex: 1; }
+.fret-detail { padding: 12px; margin-top: 2px; border: 1px dashed var(--border); border-radius: 8px; background: var(--surface-2); display: flex; flex-direction: column; gap: 10px; }
+.fret-angle-badge { font-variant-numeric: tabular-nums; font-size: 13px; }
+
+/* ---- Angle stepper: touch-precise −/+ degree control (replaces sliders) --- */
+.angle-stepper { display: inline-flex; align-items: center; gap: 6px; }
+.angle-stepper .btn { min-width: 40px; padding: 8px 0; font-size: 18px; line-height: 1; font-weight: 600; }
+.angle-num { width: 66px; text-align: center; font-variant-numeric: tabular-nums; font-size: 15px; }
+.angle-unit { color: var(--muted); font-size: 13px; }
+
+/* ---- Test bench (group testing: Frets / Plucking / Test steps) ----------- */
+.testbench {
+  border: 1px solid var(--accent); border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+  padding: 12px 14px; margin: 4px 0 4px;
+}
+.tb-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.tb-head strong { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); }
+.tb-status {
+  font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tb-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.tb-actions .btn { background: var(--surface); }
+.testbench .btn.danger:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ---- Install helper / Frets: fret progress strip ------------------------ */
+.fret-progress { margin: 10px 0 14px; }
+.fret-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.fret-chip {
+  min-width: 30px; height: 30px; padding: 0 8px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+  font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.fret-chip.none { color: var(--muted); background: transparent; }
+.fret-chip.equipped { background: var(--surface); }
+.fret-chip.current { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fret-chip.mini { min-width: 14px; width: 14px; height: 14px; padding: 0; pointer-events: none; }
+.fret-legend { display: flex; gap: 14px; margin-top: 8px; flex-wrap: wrap; }
+.fret-legend .lg { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+
+/* ---- Instrument Builder (creation flow) --------------------------------- */
+.builder-section { margin-bottom: 0; }
+.note-box .btn { margin-left: 6px; }
+
+/* Preset & mechanical-choice cards (selectable). */
+.preset-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.preset-card {
+  font: inherit; display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+  padding: 9px 14px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface-2); color: var(--text); cursor: pointer; min-width: 92px;
+}
+.preset-card strong { font-size: 14px; }
+.preset-card .muted { font-size: 11px; }
+.preset-card:hover { border-color: var(--accent); }
+.preset-card.selected {
+  border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.radio-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(232px, 1fr)); gap: 10px; }
+.radio-card {
+  font: inherit; text-align: left; display: flex; flex-direction: column; gap: 6px;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface); color: var(--text); cursor: pointer;
+}
+.radio-card:hover { border-color: var(--accent); }
+.radio-card.selected {
+  border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.rc-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.rc-head strong { font-size: 14px; }
+.rc-badge {
+  font-size: 11px; font-weight: 700; color: var(--accent); white-space: nowrap;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); padding: 2px 8px; border-radius: 20px;
+}
+.rc-desc { font-size: 12px; color: var(--muted); line-height: 1.35; }
+/* One radio/checkbox option per row. As plain `label.inline` these are
+   inline-flex, so three consecutive options FLOWED like words: the radios ended
+   up staggered mid-paragraph and each label wrapped into a narrow column. */
+label.inline.builder-opt { display: flex; align-items: flex-start; }
+.builder-opt { margin-top: 8px; }
+.builder-opt > input { flex: 0 0 auto; margin-top: 3px; }
+
+/* Strings & tuning rows. */
+.string-rows { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.string-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2);
+}
+.string-row .sr-idx { font-weight: 600; min-width: 66px; font-size: 13px; }
+.sr-cell { display: inline-flex; align-items: center; gap: 6px; }
+.sr-cell .muted { font-size: 11px; }
+.sr-cell input[type="number"] { width: 70px; }
+.sr-note { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 30px; }
+.string-row select { width: auto; min-width: 128px; margin-left: auto; }
+.tuning-helper { display: flex; flex-direction: column; gap: 6px; min-width: 240px; }
+
+/* Capacity meter. */
+.capacity-meter { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.cap-line { display: flex; align-items: center; gap: 10px; }
+.cap-label { font-size: 12px; color: var(--muted); min-width: 96px; }
+.cap-bar {
+  flex: 1; height: 10px; border-radius: 6px; background: var(--surface-2);
+  overflow: hidden; border: 1px solid var(--border);
+}
+.cap-bar span { display: block; height: 100%; background: var(--ok); }
+.cap-bar.over span { background: var(--error); }
+.cap-val { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 96px; text-align: right; }
+
+/* I²C bus topology (second-bus split). */
+.bus-topology { display: flex; flex-direction: column; gap: 10px; margin: 6px 0 10px; }
+.bus-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
+.bus-board { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
+.bus-board-id { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bus-board select { width: auto; min-width: 92px; flex: 0 0 auto; }
+
+/* Generate summary + nested strum block + fret guard-rail pills. */
+.summary { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.summary strong { font-size: 14px; }
+.card.inset { background: var(--surface-2); box-shadow: none; margin-top: 10px; padding: 12px 14px; }
+.fret-warn { display: inline-flex; margin: 2px 0; }
+
+/* ---- Fretboard (playable neck visualization) ---------------------------- */
+/* ---- Instrument page (fretboard + live carriage positions) --------------- */
+.fb-card { padding: 10px; }
+.fb-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.fb-svg { display: block; width: 100%; min-width: 660px; height: auto; touch-action: none; }
+.fb-svg text { font-family: var(--sans); }
+
+/* Fret wires + the nut. The nut is heavier: it is fret 0, the reference every
+   position is measured from. */
+.fb-fret { stroke: var(--fb-fret); stroke-width: 2; stroke-linecap: round; }
+.fb-nut { stroke: var(--text); stroke-width: 5; stroke-linecap: round; }
+.fb-fretnum { fill: var(--muted); font-size: 12px; font-weight: 700; font-family: var(--mono); }
+
+.fb-string { stroke: var(--fb-string); stroke-width: 2; stroke-linecap: round; }
+.fb-label { fill: var(--text); font-size: 12px; font-weight: 700; font-family: var(--mono); }
+.fb-fault { fill: var(--error); font-size: 10px; font-weight: 700; letter-spacing: .04em; }
+.fb-pos { fill: var(--muted); font-size: 12px; font-family: var(--mono); }
+
+/* A whole lane dims when its string is disabled, and reads as an error when the
+   axis has been faulted out at runtime (LIMIT trip, homing failure, servo fault). */
+.fb-lane.off { opacity: .38; }
+.fb-lane.faulted .fb-string { stroke: var(--error); stroke-dasharray: 6 4; }
+
+/* Live carriage: solid = where it IS, hollow = where it has been told to go. */
+.fb-carriage { fill: var(--accent); stroke: var(--surface); stroke-width: 2; transition: cx .12s linear; }
+.fb-carriage.sounding { fill: var(--fb-string-active); filter: drop-shadow(0 0 5px var(--fb-string-active)); }
+.fb-target { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 3 3; opacity: .75; }
+
+/* Click targets: transparent, pointer-catching, spanning to the next fret so the
+   high frets stay reachable when the wires crowd together. */
+.fb-hit { fill: transparent; pointer-events: all; cursor: pointer; outline: none; }
+.fb-hit:hover { fill: color-mix(in srgb, var(--accent) 12%, transparent); }
+.fb-hit:focus-visible { fill: color-mix(in srgb, var(--accent) 16%, transparent); stroke: var(--accent); stroke-width: 1.5; }
+.fb-hit.played { fill: color-mix(in srgb, var(--accent) 22%, transparent); }
+
+.chord-row { flex-wrap: wrap; gap: 6px; }
+.jog-axis { min-width: 190px; }
+
+/* ---- Wiring map (ESP32 + PCA9685 harness diagram) ------------------------ */
+.wire-card { padding: 10px; }
+.wire-toolbar { display: flex; align-items: center; gap: 10px; padding: 4px 6px 10px; flex-wrap: wrap; }
+.wire-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.wire-svg { display: block; width: 100%; height: auto; min-width: 360px; }
+.wire-svg text { font-family: var(--sans); }
+
+/* Power-wiring advice + per-board capacitor table (Wiring diagram tab). */
+.advice-list { margin: 4px 0 14px; padding-left: 20px; display: flex; flex-direction: column; gap: 7px; }
+.advice-list li { line-height: 1.45; }
+.cap-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cap-table th, .cap-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.cap-table th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.cap-table td { font-variant-numeric: tabular-nums; }
+.cap-table .cap-uf { font-weight: 700; white-space: nowrap; }
+
+/* Modules. */
+.wire-esp { fill: var(--wire-esp); stroke: rgba(0, 0, 0, .35); stroke-width: 1.4; }
+.wire-psu { fill: var(--wire-psu); stroke: rgba(0, 0, 0, .35); stroke-width: 1.4; }
+.wire-board { fill: var(--wire-board); stroke: var(--wire-board-stroke); stroke-width: 1.4; }
+.wire-board.direct { fill: var(--surface-2); stroke: var(--border); }
+.wire-title { fill: var(--text); font-size: 14px; font-weight: 700; }
+.wire-title.light { fill: #fff; }
+.wire-sub { fill: var(--muted); font-size: 11px; }
+.wire-sub.light { fill: rgba(255, 255, 255, .82); }
+.wire-pinlabel { fill: var(--muted); font-size: 9px; font-family: var(--mono); }
+.wire-pinlabel.light { fill: rgba(255, 255, 255, .85); }
+.wire-pinlabel.missing { fill: var(--error); font-weight: 700; }
+.wire-raillabel { fill: var(--muted); font-size: 9px; font-family: var(--mono); }
+.wire-raillabel.missing { fill: var(--error); font-weight: 700; }
+
+/* Buses, taps and junctions (colour per rail key). */
+.wire-rail { fill: none; stroke-width: 2.4; stroke-linecap: round; }
+.wire-lead { fill: none; stroke-width: 1.5; }
+.wire-lead.missing { stroke: var(--error) !important; stroke-dasharray: 3 3; }
+.wire-rail.vplus, .wire-lead.vplus { stroke: var(--wire-vplus); } .wire-dot.vplus { fill: var(--wire-vplus); }
+.wire-rail.gnd,   .wire-lead.gnd   { stroke: var(--wire-gnd); }   .wire-dot.gnd   { fill: var(--wire-gnd); }
+.wire-rail.v3,    .wire-lead.v3    { stroke: var(--wire-v3); }    .wire-dot.v3    { fill: var(--wire-v3); }
+.wire-rail.sda,   .wire-lead.sda   { stroke: var(--wire-sda); }   .wire-dot.sda   { fill: var(--wire-sda); }
+.wire-rail.scl,   .wire-lead.scl   { stroke: var(--wire-scl); }   .wire-dot.scl   { fill: var(--wire-scl); }
+.wire-rail.sda2,  .wire-lead.sda2  { stroke: var(--wire-sda2); }  .wire-dot.sda2  { fill: var(--wire-sda2); }
+.wire-rail.scl2,  .wire-lead.scl2  { stroke: var(--wire-scl2); }  .wire-dot.scl2  { fill: var(--wire-scl2); }
+.wire-rail.oe,    .wire-lead.oe    { stroke: var(--wire-oe); }    .wire-dot.oe    { fill: var(--wire-oe); }
+.wire-rail.oe2,   .wire-lead.oe2   { stroke: var(--wire-oe2); }   .wire-dot.oe2   { fill: var(--wire-oe2); }
+
+/* Channel pads. */
+.wire-pad.free { fill: var(--wire-pad-free); stroke: var(--wire-pad-free-stroke); stroke-width: 1; }
+.wire-pad.used { stroke: rgba(0, 0, 0, .22); stroke-width: 1; }
+.wire-pad.fn-finger { fill: var(--wire-finger); }
+.wire-pad.fn-pluck { fill: var(--wire-pluck); }
+.wire-pad.fn-strum { fill: var(--wire-strum); }
+.wire-pad.fn-lift { fill: var(--wire-lift); }
+.wire-pad.fn-damper { fill: var(--wire-damper); }
+.wire-pad.fn-aux { fill: var(--wire-aux); }
+.wire-pad.dup { stroke: var(--error); stroke-width: 2.4; }
+.wire-pad.off { opacity: .45; }
+.wire-chpin { fill: var(--muted); font-size: 10px; font-weight: 700; font-family: var(--mono); }
+.wire-chpin.on { fill: rgba(255, 255, 255, .95); }
+.wire-chlabel { fill: #fff; font-size: 10.5px; font-weight: 700; font-family: var(--mono); }
+.wire-sub.host { font-weight: 600; }
+
+/* Direct-GPIO rows. */
+.wire-swatch { stroke: rgba(0, 0, 0, .2); }
+.wire-swatch.fn-finger { fill: var(--wire-finger); } .wire-swatch.fn-pluck { fill: var(--wire-pluck); }
+.wire-swatch.fn-strum { fill: var(--wire-strum); } .wire-swatch.fn-lift { fill: var(--wire-lift); }
+.wire-swatch.fn-damper { fill: var(--wire-damper); } .wire-swatch.fn-aux { fill: var(--wire-aux); }
+.wire-directpin { fill: var(--text); font-size: 11px; font-weight: 600; font-family: var(--mono); }
+.wire-directpin.dup { fill: var(--error); }
+.wire-directlbl { fill: var(--muted); font-size: 10px; }
+
+/* Legend + warn variant of the issue item. */
+.wire-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; }
+.wire-lg { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.wire-lg-sw { width: 15px; height: 15px; border-radius: 4px; display: inline-block; border: 1px solid transparent; }
+.wire-lg-sw.fn-finger { background: var(--wire-finger); } .wire-lg-sw.fn-pluck { background: var(--wire-pluck); }
+.wire-lg-sw.fn-strum { background: var(--wire-strum); } .wire-lg-sw.fn-lift { background: var(--wire-lift); }
+.wire-lg-sw.fn-damper { background: var(--wire-damper); } .wire-lg-sw.fn-aux { background: var(--wire-aux); }
+.wire-lg-sw.free { background: var(--wire-pad-free); border-color: var(--wire-pad-free-stroke); }
+.wire-lg-rail { width: 20px; height: 4px; border-radius: 2px; display: inline-block; }
+.wire-lg-rail.vplus { background: var(--wire-vplus); } .wire-lg-rail.gnd { background: var(--wire-gnd); }
+.wire-lg-rail.v3 { background: var(--wire-v3); } .wire-lg-rail.sda { background: var(--wire-sda); }
+.wire-lg-rail.scl { background: var(--wire-scl); } .wire-lg-rail.oe { background: var(--wire-oe); }
+.wire-lg-rail.sda2 { background: var(--wire-sda2); } .wire-lg-rail.scl2 { background: var(--wire-scl2); }
+.wire-lg-rail.oe2 { background: var(--wire-oe2); }
+.err-item.warn { background: var(--warn-bg); border-color: var(--warn); }
+
+/* ---- Câblage & GPIO page (sub-tab switch) -------------------------------- */
+.hw-head .subtabs { margin-top: 4px; }
+.subtabs { display: inline-flex; background: var(--surface-2); border-radius: 8px; padding: 3px; gap: 2px; }
+.subtab {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer;
+  padding: 7px 14px; border-radius: 6px; font: inherit; font-size: 13px; font-weight: 600;
+}
+.subtab:hover { color: var(--text); }
+.subtab.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.hw-section { display: flex; flex-direction: column; gap: 16px; }
+
+/* Emergency-stop action row on the Instrument (fretboard) page. */
+.panic-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+/* ---- ESP32 board pinout diagram (GPIO sub-tab) --------------------------- */
+.esp-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.esp-svg { display: block; width: 100%; height: auto; max-width: 560px; min-width: 400px; margin: 0 auto; }
+.esp-svg text { font-family: var(--mono); }
+.esp-body { fill: #12433a; stroke: rgba(0, 0, 0, .35); stroke-width: 1.4; }
+.esp-ant { fill: #bdb49d; stroke: rgba(0, 0, 0, .3); stroke-width: 1; }
+.esp-usb { fill: #9aa3ad; stroke: rgba(0, 0, 0, .3); stroke-width: 1; }
+.esp-usb-lbl { fill: var(--muted); font-size: 10px; }
+.esp-pinlabel { fill: #eef4f1; font-size: 11px; font-weight: 600; }
+.esp-use { fill: var(--accent); font-size: 10px; font-weight: 700; }
+.esp-nub { stroke: rgba(0, 0, 0, .25); stroke-width: .8; }
+.esp-nub.recommended { fill: var(--recommended); }
+.esp-nub.caution { fill: var(--caution); }
+.esp-nub.reserved { fill: var(--reserved); }
+.esp-nub.used { fill: var(--accent); }
+.esp-nub.power { fill: var(--used); }
+.esp-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
+.swatch.esp-sw-power { background: var(--used); }
+
+/* ---- Instrument page redesign (GMB-style playable board) ---------------- */
+.fb-topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.fb-estop { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.fb-stop { font-size: 20px; font-weight: 800; letter-spacing: 1px; padding: 14px 32px; border-radius: 12px; }
+.fb-play { display: flex; align-items: center; gap: 10px; }
+
+/* Note circles on the neck (open string + equipped frets) — no colour coding. */
+.fb-notewrap { cursor: pointer; outline: none; }
+.fb-notewrap.disabled { pointer-events: none; opacity: .45; }
+.fb-note { fill: #f3ede0; stroke: #3b2c1c; stroke-width: 1.2; transition: fill .06s; }
+.fb-notewrap:hover .fb-note { fill: #fff6e2; }
+.fb-notewrap:focus-visible .fb-note { stroke: var(--accent); stroke-width: 2.4; }
+.fb-note.pressed { fill: var(--fb-pad-press); stroke: var(--fb-pad-press); }
+.fb-notetext { fill: #2a2016; font-size: 12px; font-weight: 700; font-family: var(--mono); pointer-events: none; }
+.fb-oor { fill: rgba(0, 0, 0, .28); }
+
+/* Chord bar below the board. */
+.fb-chordbar { display: flex; flex-direction: column; gap: 10px; }
+.fb-chordhead { display: flex; align-items: baseline; gap: 10px; }
+.fb-rootrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.fb-rootlbl { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.fb-roots { display: flex; flex-wrap: wrap; gap: 4px; }
+.fb-root {
+  min-width: 34px; padding: 6px 8px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+  font: inherit; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.fb-root:hover { border-color: var(--accent); }
+.fb-root.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.fb-chords { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+.fb-chord {
+  padding: 12px 10px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  font: inherit; font-size: 15px; font-weight: 700;
+}
+.fb-chord:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
+.fb-chord:active { transform: translateY(1px); }
+
+/* ---- Power & safety / I²C & PCA / Commissioning sub-tabs ------------------ */
+.ps-row { display: flex; align-items: baseline; gap: 8px; margin: 6px 0; }
+/* A declaration/checklist line. `label.inline` is inline-flex, so on the
+   commissioning page two SHORT consecutive items packed onto one line and read
+   as a single check — exactly the kind of misreading a safety checklist must not
+   invite. One item, one row: block-level flex, top-aligned so a long item wraps
+   under its own text rather than under the box. */
+label.inline.ps-decl { display: flex; align-items: flex-start; }
+.ps-decl { margin: 8px 0 2px; }
+.ps-decl > input[type="checkbox"] { flex: 0 0 auto; margin-top: 3px; }
+.ps-hint { font-size: 12px; margin: 0 0 6px 26px; }
+.ps-chain { fill: var(--surface-2); stroke: var(--wire-vplus); stroke-width: 1.6; }
+.ps-missing { stroke-dasharray: 5 4; opacity: .8; }
+.ps-warn { fill: var(--warn); font-weight: 700; }
+.commissioning-blocked { opacity: .55; }
+
+/* A table row whose subject is out of service (a faulted axis in the Axes table). */
+.cap-table tr.row-error td { color: var(--error); }
+.cap-table tr.row-error { background: var(--error-bg); }
+
+/* Diagnostics table (Settings → Diagnostics). Fixed layout with explicit column
+   widths: the hint column is prose and must WRAP inside the modal rather than be
+   clipped at its edge, which is what an auto layout does once the value column
+   carries a long bold string. */
+.diag-table { table-layout: fixed; }
+.diag-table td:nth-child(1) { width: 30%; }
+/* The value column also has to wrap: the global `td { white-space: nowrap }`
+   let the longest reading ("11 deadline / 13 staggerable") run straight over
+   the hint beside it. */
+.diag-table td:nth-child(2) { width: 26%; white-space: normal; line-height: 1.4; }
+.diag-table td:nth-child(3) { width: 44%; white-space: normal; line-height: 1.4; }

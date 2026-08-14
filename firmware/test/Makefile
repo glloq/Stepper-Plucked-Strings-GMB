@@ -24,7 +24,8 @@ CORE_SRC := \
   $(CORE)/configuration/ProfileValidator.cpp \
   $(CORE)/gmb/Capabilities.cpp \
   $(CORE)/gmb/GmbSysEx.cpp \
-  $(CORE)/safety/SafetyManager.cpp
+  $(CORE)/safety/SafetyManager.cpp \
+  $(ROOT)/src/platform/esp32/ServoBank.cpp
 
 TEST_SRC := \
   test_main.cpp \
@@ -40,7 +41,20 @@ TEST_SRC := \
   test_servos.cpp \
   test_planner.cpp \
   test_audit.cpp \
-  test_debounce.cpp
+  test_debounce.cpp \
+  test_safety.cpp \
+  test_app_phase.cpp \
+  test_readiness.cpp \
+  test_diagnostics.cpp \
+  test_holdbutton.cpp \
+  test_command_ring.cpp \
+  test_udp_source_gate.cpp \
+  test_governor.cpp \
+  test_actuator_manager.cpp \
+  test_transport.cpp \
+  test_device_instrument.cpp \
+  test_profile_activation.cpp \
+  test_servobank_park.cpp
 
 BIN := run_tests
 

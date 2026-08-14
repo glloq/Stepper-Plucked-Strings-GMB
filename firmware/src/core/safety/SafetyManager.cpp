@@ -15,6 +15,7 @@ void SafetyManager::emergencyStop(uint32_t nowMs) {
 void SafetyManager::recordFault(const std::string& source, const std::string& msg,
                                 uint32_t nowMs) {
     faults_.push_back({source, msg, nowMs});
+    ++faultCount_;  // cumulative total, survives clearFaults() (diagnostics P2.19)
     // Keep the log bounded (fixed memory on the ESP32).
     if (faults_.size() > 64) faults_.erase(faults_.begin());
 }

@@ -10,7 +10,7 @@
 namespace gmb {
 
 struct PinAssignment {
-    std::string signal;   // e.g. "STEP1", "HOME3", "SDA"
+    std::string signal;   // e.g. "STEP1", "HOME3", "SDA", "SDA2", "ESTOP"
     SignalKind kind = SignalKind::Generic;
     int8_t gpio = -1;
 };

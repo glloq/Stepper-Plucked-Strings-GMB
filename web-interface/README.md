@@ -6,7 +6,7 @@ phone, tablet or desktop, with no app to install and no source code to edit.
 
 It implements the interface described in the project specs:
 
-- `SPECIFICATION.md` — dashboard (§19), setup wizard (§10), configurable
+- `SPECIFICATION.md` — live status (§19), setup wizard (§10), configurable
   GPIO management (§11), motor/servo/note config (§12–15), MIDI parameters
   (§18), profile storage (§20), safety/panic (§21).
 - `STRING_FRET_SELECTION.md` — explicit string/fret selection over MIDI CC,
@@ -34,7 +34,7 @@ The firmware serves the static files from LittleFS at the device root:
 /js/*.js
 /api/...     -> REST endpoints (below)
 /ws/midi     -> WebSocket, live MIDI monitor stream
-/ws/status   -> WebSocket, live dashboard/state stream
+/ws/status   -> WebSocket, live state stream
 ```
 
 Reach it at the device IP (station mode) or the captive-portal address in
@@ -69,23 +69,41 @@ web-interface/
 ├── css/style.css         responsive styling, light/dark via prefers-color-scheme
 ├── js/
 │   ├── api.js            REST + WebSocket client, board profile, mock backend
-│   ├── app.js            shell, routing, DOM helpers, draft-profile state, mode toggle
-│   ├── dashboard.js      dashboard (§19)
+│   ├── app.js            shell, routing, DOM helpers, draft-profile state
+│   ├── fretboard.js      Instrument page: live carriage positions, play, jog
+│   ├── wizard.js         Setup page: the 9-step instrument builder (§10)
+│   ├── hardware.js       Wiring & GPIO page: hosts the five sub-tabs below
+│   ├── wiring.js         harness diagram (ESP32 + drivers + PCA9685) + issues
+│   ├── wiringpower.js    power tree, E-stop//OE chain, current estimator
+│   ├── wiringi2c.js      I²C buses, addresses/jumpers, pull-up equivalents
+│   ├── commissioning.js  the staged power-up checklist (bench state)
 │   ├── pins.js           GPIO assignment grid (§11)
-│   ├── wizard.js         9-step setup wizard (§10)
+│   ├── settings.js       Settings modal: Network / Diagnostics / Advanced
 │   ├── midimonitor.js    reusable real-time MIDI monitor (§15)
-│   ├── midiselect.js     MIDI page: string/fret selection (§14) + params (§18) + test tool (§16)
+│   ├── midiselect.js     string/fret selection (§14) + MIDI params (§18) + test tool (§16)
 │   ├── sysex.js          GMB identity & capabilities + SysEx tester (§17/§18)
 │   └── profiles.js       profile list/create/copy/rename/delete/export/import/restore (§20)
+├── test/run-tests.js     behavioural tests of the pure logic (run by CI)
+├── test/smoke.js         mounts every view in a real browser (needs Playwright)
+├── tools/screenshots.js  regenerates img/screenshots/ with Playwright
 └── README.md
 ```
 
-## Simplified vs Advanced mode
+## Three pages, one modal
 
-A toggle in the sidebar switches between **Simplified** (beginner: recommended
-values, hidden fine-tuning, only recommended GPIOs) and **Advanced** (manual
-GPIO assignment including caution pins, detailed motor/servo/homing parameters,
-SysEx block toggles, raw byte views), per SPECIFICATION.md §9.2.
+**Instrument** (play it, watch the carriages), **Setup** (build it, in order) and
+**Wiring & GPIO** (harness, power & safety, I²C, pins, commissioning), plus a
+Settings modal behind the gear button for device Wi-Fi, runtime diagnostics and
+the SysEx / MIDI tools.
+
+There is no simplified/advanced toggle any more. The expert mode existed to hide
+fine-tuning from beginners, but it also hid the fields a builder needed at the
+bench and split every page into two variants to maintain. The details now live on
+the page they belong to. `GMB.isAdvanced()` remains as a no-op returning `false`,
+so a lingering caller — or an old profile carrying a `mode` field — is harmless.
+
+See [`../docs/WEB_INTERFACE.md`](../docs/WEB_INTERFACE.md) for the full tour,
+with screenshots.
 
 ## Per-string servos, endstops & fret editor (wizard steps 5–7)
 
@@ -96,25 +114,27 @@ servos per string, **with or without a PCA9685**:
   **finger**, **strum**, an optional **strum lift** (raises/lowers the strum
   servo per stroke), **damper** and an optional **pluck**. Each servo picks its
   signal **source**:
-  - **PCA9685** — choose `pcaBoard` (0–3, i.e. up to four boards / 64 channels)
-    and `channel` (0–15). A compact channel-availability map flags duplicate
-    `board+channel` in red.
+  - **PCA9685** — choose the `i2cBus` (0 = `Wire`, 1 = `Wire1`), the `pcaBoard`
+    (0–7, i.e. addresses 0x40–0x47, so up to 8 boards per bus and 16 in total)
+    and the `channel` (0–15). A compact channel-availability map flags a
+    duplicate in red; a board is identified by `(bus, address)`, so the same
+    address on the *other* bus is a different chip and not a clash.
   - **Direct GPIO** — choose a free ESP32 pin, filtered with the same
     green/yellow/red capability rules as the pin grid (reserved/USB pins hidden,
-    caution pins Advanced-only, pins already used by a stepper signal or another
-    servo excluded).
+    caution pins flagged, pins already used by a stepper signal or another servo
+    excluded).
 
   The system works with **no PCA at all** (every servo on a direct GPIO) or any
-  mix. Per-string servos get their `stringIndex` set automatically; Advanced mode
-  also exposes **shared/auxiliary** servos (`stringIndex = -1`, e.g.
-  `sharedDamper`/`aux`). Each servo carries its calibration (rest/active µs,
-  pulse min/max, inverted, travelMs, settleMs, disableAtRest) and **Test
-  rest/active** buttons (`POST /api/test/servo`).
+  mix. Per-string servos get their `stringIndex` set automatically; **shared and
+  auxiliary** servos use `stringIndex = -1` (e.g. `sharedDamper`/`aux`). Each
+  servo carries its calibration (rest/active/mute µs, pulse min/max, inverted,
+  travelMs, settleMs, disableAtRest, stroke shaping) and **Test rest/active**
+  buttons (`POST /api/test/servo`).
 
 - **Endstops per string (step 5).** Each string's HOME switch GPIO
   (input+interrupt capable) plus the full homing sub-object
   (`sensorActiveHigh/direction/fast+slow speed/backoff/offset/timeout/maxSearch`),
-  and an optional **LIMIT** switch GPIO (Advanced). A **Test endstop** button
+  and an optional **LIMIT** switch GPIO. A **Test endstop** button
   shows a live HIGH/LOW readout (`POST /api/test/endstop`).
 
 - **Fret positions per string (step 7).** A per-string table with one row per
@@ -131,7 +151,8 @@ REST (all JSON):
 
 | Method | Path | Purpose |
 | ------ | ---- | ------- |
-| GET  | `/api/status` | dashboard live state (§19) |
+| GET  | `/api/status` | live state: phase, per-string carriage position, faults (§19) |
+| GET  | `/api/diagnostics` | runtime telemetry: loop latency/jitter, dropped MIDI, motion counters, PCA health |
 | GET  | `/api/profile` | active working profile |
 | PUT  | `/api/profile` | validate + atomically activate a profile; returns new `capabilitiesRevision` |
 | GET  | `/api/profiles` | list of saved profile slots |
@@ -156,7 +177,7 @@ WebSocket:
 | Path | Streams |
 | ---- | ------- |
 | `/ws/midi` | MIDI monitor events `{timeMs, channel, type, cc/note, value, interpretation}` |
-| `/ws/status` | live dashboard/state snapshots (same shape as `GET /api/status`) |
+| `/ws/status` | live state snapshots (same shape as `GET /api/status`) |
 
 ## Profile JSON
 

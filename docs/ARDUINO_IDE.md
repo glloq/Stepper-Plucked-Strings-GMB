@@ -16,8 +16,11 @@ therefore compiled automatically. `setup()` and `loop()` are in
 ## 1. Prerequisites
 
 * **Arduino IDE 2.x** (recommended) — <https://www.arduino.cc/en/software>.
-* The reference board **ESP32-S3-DevKitC-1** (or an equivalent ESP32-S3
-  board).
+* The reference board **ESP32-S3-DevKitC-1** (either revision — they differ only
+  in which GPIO carries the RGB LED, which is a board-*profile* choice, not a
+  compile-time one). A classic **ESP32-WROOM-32** or **ESP32 DevKit v1** also
+  works, with fewer free RMT/MCPWM units — so 1–3 axes rather than 6. All three
+  are compiled in CI; that is what "supported" means here.
 
 ## 2. Install ESP32 board support
 
@@ -37,13 +40,19 @@ therefore compiled automatically. `setup()` and `loop()` are in
 | Library | Author / fork | Role |
 | ------------ | ------------- | ---- |
 | **ArduinoJson** (v7) | Benoît Blanchon | JSON profiles |
+| **FastAccelStepper** (≥ 1.2.7) | gin66 | STEP pulse generation in hardware (RMT/MCPWM) |
 | **Adafruit PWM Servo Driver Library** | Adafruit | Servos via PCA9685 |
 | **ESPAsyncWebServer** | ESP32Async (or `mathieucarbou`) | Web interface |
 | **AsyncTCP** | ESP32Async | ESPAsyncWebServer dependency |
 
+> **FastAccelStepper 0.30.x does not build** against ESP-IDF 5.3 (Arduino-ESP32
+> 3.1.x): it fails on the MCPWM / gpio_matrix API. Install 1.2.7 or newer — the
+> version `firmware/platformio.ini` pins.
+
 > Servos in **direct GPIO** mode use only the ESP32 core (LEDC); Adafruit
 > PCA9685 is required only if you use at least one PCA9685. The other libraries
-> are still required to compile.
+> are all required to compile, including FastAccelStepper — `StepperBank.cpp`
+> includes it unconditionally on an Arduino build.
 
 ## 4. Open the sketch
 
@@ -101,6 +110,8 @@ At power-on, the ESP32 creates the Wi-Fi access point
 | Symptom | Cause / solution |
 | -------- | ---------------- |
 | `fatal error: ArduinoJson.h: No such file or directory` | Library not installed — see §3. |
+| `fatal error: FastAccelStepper.h: No such file or directory` | Same — see §3. It is required even if you only want to test the servos. |
+| FastAccelStepper errors about `mcpwm_*` / `gpio_matrix_*` | You have 0.30.x against Arduino-ESP32 3.x. Update to ≥ 1.2.7. |
 | `ledcAttach was not declared` | ESP32 core is version 2.x — update to 3.x (§2). |
 | Empty Web interface / 404 | LittleFS image not uploaded — redo §7 after `sync_web_data.sh`. |
 | `Sketch too big` / no FS | Choose a *Partition Scheme* with a filesystem (§5). |

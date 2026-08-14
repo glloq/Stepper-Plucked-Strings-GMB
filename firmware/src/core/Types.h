@@ -9,10 +9,23 @@
 namespace gmb {
 
 // Hard capacity limits derived from the spec (section 6).
+// The kMaxStrings / kMaxFret bounds and the frettedNote() gamme law below are the
+// three points that assume a 6-string, 24-fret, note=open+fret instrument. They are
+// intentionally centralised here; docs/GENERALIZATION.md (audit P2.18) maps every
+// dependent site and sketches the future Voice/Course abstraction. Do not scatter
+// new copies.
 constexpr uint8_t kMaxStrings = 6;      // 1..6 strings / stepper axes / fingers
-constexpr uint8_t kMaxServoOutputs = 16; // PCA9685 channels
+constexpr uint8_t kMaxServoOutputs = 16; // PCA9685 channels per board
 constexpr uint8_t kMaxAuxPower = 8;
 constexpr uint8_t kMinProfiles = 8;
+
+// Highest fret index the selector / capability blocks can address.
+constexpr uint8_t kMaxFret = 24;
+
+// Up to eight PCA9685 boards per I2C bus (addresses 0x40..0x47), on either of the
+// ESP32-S3's two hardware I2C controllers — so up to 16 distinct boards. Spreading
+// boards over the two buses halves the traffic and refreshes the servos faster.
+constexpr uint8_t kMaxPca = 8;
 
 // A MIDI CC number is 7-bit. 120..127 are Channel Mode messages and must not be
 // offered as string/fret selectors.

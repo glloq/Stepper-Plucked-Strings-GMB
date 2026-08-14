@@ -31,3 +31,23 @@ connection with the code implemented in `firmware/src/core/*`:
 | [`CALIBRATION.md`](CALIBRATION.md) | steps/mm, homing, frets, servos | §12–15 |
 | [`SAFETY.md`](SAFETY.md) | safe states, panic, E-stop, power supply | §21, §22 |
 | [`FIRST_CONFIGURATION.md`](FIRST_CONFIGURATION.md) | beginner's guide to the wizard | §26 |
+| [`NETWORK_HOTSPOT.md`](NETWORK_HOTSPOT.md) | station/AP, BOOT-button hotspot, captive portal, Setup vs Performance postures | §8, §20 |
+| [`DEVICE_INSTRUMENT.md`](DEVICE_INSTRUMENT.md) | what belongs to the machine vs to the instrument, and the split on-disk slot layout | §20 |
+| [`GENERALIZATION.md`](GENERALIZATION.md) | where the 6-string / 24-fret / equal-temperament assumptions live | §6, §14 |
+
+## Hardware reference (`hardware/` folder)
+
+The electrical architecture is documented beside the parts it describes:
+
+| Document | Objective |
+| -------- | --------- |
+| [`../hardware/POWER_AND_SAFETY.md`](../hardware/POWER_AND_SAFETY.md) | the reference circuit: three rails, E-stop chain, fail-safe `/OE` and driver `ENABLE`, sizing method |
+| [`../hardware/COMMISSIONING.md`](../hardware/COMMISSIONING.md) | staged power-up acceptance procedure, with the measurements to record |
+| [`../hardware/I2C_PCA9685.md`](../hardware/I2C_PCA9685.md) | bus topology, addressing, pull-ups |
+| [`../hardware/schematics/README.md`](../hardware/schematics/README.md) | text schematic sheets 01–04 (power, E-stop, PCA branch, stepper driver) |
+
+## Audit
+
+[`../AUDIT_REPORT.md`](../AUDIT_REPORT.md) records what was ported from the
+servo-per-fret sibling project, what had to be answered differently for a
+carriage-based machine, and what remains to be validated on real hardware.

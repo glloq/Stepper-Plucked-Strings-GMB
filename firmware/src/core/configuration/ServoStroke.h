@@ -32,13 +32,36 @@ inline uint16_t servoStrikeTargetUs(const ServoConfig& s, double intensity,
     int span = activeEnd - static_cast<int>(s.restUs);
     double target = static_cast<double>(s.restUs) + intensity * span;
 
-    // Guaranteed minimum depth toward the active side (grattage angle floor).
+    // Guaranteed minimum strike DEPTH, applied toward the endpoint of the stroke
+    // actually selected. minStrikeUs is calibrated as an absolute pulse on the
+    // rest->activeUs side; its distance from rest is the depth, mirrored onto the
+    // alternate side for up-strokes. The old absolute one-sided compare left the
+    // floor inert on every second (alternate) stroke, so soft notes silently
+    // missed the string half the time (audit). The depth is capped to THIS
+    // stroke's own amplitude: with an asymmetric calibration (shorter alternate
+    // side) the mirrored floor must never push the servo past the calibrated
+    // endpoint (audit follow-up).
     if (s.minStrikeUs != 0) {
+        int depth = static_cast<int>(s.minStrikeUs) - static_cast<int>(s.restUs);
+        if (depth < 0) depth = -depth;
+        int amplitude = span >= 0 ? span : -span;
+        if (depth > amplitude) depth = amplitude;
+        double floorUs = span >= 0 ? static_cast<double>(s.restUs) + depth
+                                   : static_cast<double>(s.restUs) - depth;
         if (span >= 0) {
-            if (target < s.minStrikeUs) target = s.minStrikeUs;
+            if (target < floorUs) target = floorUs;
         } else {
-            if (target > s.minStrikeUs) target = s.minStrikeUs;
+            if (target > floorUs) target = floorUs;
         }
+    }
+
+    // Never leave THIS stroke's calibrated interval [rest, activeEnd]: the pulse
+    // window bounds the servo, the stroke interval bounds the calibrated gesture.
+    {
+        double lo = span >= 0 ? static_cast<double>(s.restUs) : static_cast<double>(activeEnd);
+        double hi = span >= 0 ? static_cast<double>(activeEnd) : static_cast<double>(s.restUs);
+        if (target < lo) target = lo;
+        if (target > hi) target = hi;
     }
 
     // Clamp to the servo's mechanical pulse window.

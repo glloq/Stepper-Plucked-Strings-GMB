@@ -79,16 +79,107 @@ TEST(duplicate_pca_channel_rejected) {
     CHECK(!ProfileValidator::isActivatable(p));
 }
 
-// Up to four PCA boards addressable (0..3); board 4 is rejected.
+// Up to eight PCA boards addressable per bus (0..7, i.e. 0x40..0x47); board 8 is
+// rejected. Two hardware I2C controllers means 16 distinct boards in total.
 TEST(pca_board_range) {
     Profile p = uke();
     ServoConfig ok;
     ok.enabled = true; ok.function = "strum"; ok.stringIndex = 0;
-    ok.source = ServoSource::Pca; ok.pcaBoard = 3; ok.channel = 5;
+    ok.source = ServoSource::Pca; ok.pcaBoard = 7; ok.channel = 5;
     p.servos.push_back(ok);
     CHECK(ProfileValidator::isActivatable(p));
 
-    p.servos.back().pcaBoard = 4;  // out of range
+    p.servos.back().pcaBoard = 8;  // out of range (only 0x40..0x47 exist)
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
+// The same board index + channel on the OTHER I2C bus is a DIFFERENT physical
+// chip, so it must not be reported as a channel clash. A real clash on the same
+// bus still is one, and bus 1 requires its own SDA2/SCL2 pins.
+TEST(pca_channel_key_includes_the_i2c_bus) {
+    Profile p = uke();
+    ServoConfig a;
+    a.enabled = true; a.function = "strum"; a.stringIndex = 0;
+    a.source = ServoSource::Pca; a.pcaBoard = 1; a.channel = 5; a.i2cBus = 0;
+    ServoConfig b = a;
+    b.function = "damper"; b.i2cBus = 1;      // same board+channel, other bus
+    p.servos.push_back(a);
+    p.servos.push_back(b);
+    // Bus 1 is in use, so its own I2C pins become mandatory.
+    CHECK(!ProfileValidator::isActivatable(p));
+    PinAssignment sda2; sda2.signal = "SDA2"; sda2.gpio = 38; sda2.kind = SignalKind::I2cSda;
+    PinAssignment scl2; scl2.signal = "SCL2"; scl2.gpio = 39; scl2.kind = SignalKind::I2cScl;
+    p.pins.push_back(sda2);
+    p.pins.push_back(scl2);
+    CHECK(ProfileValidator::isActivatable(p));
+
+    p.servos.back().i2cBus = 0;  // now a REAL clash on one bus
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
+// An out-of-range I2C bus is refused outright (only Wire and Wire1 exist).
+TEST(pca_i2c_bus_must_be_0_or_1) {
+    Profile p = uke();
+    ServoConfig s;
+    s.enabled = true; s.function = "strum"; s.stringIndex = 0;
+    s.source = ServoSource::Pca; s.pcaBoard = 0; s.channel = 9; s.i2cBus = 2;
+    p.servos.push_back(s);
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
+// A plectrum mute position must sit inside the servo's calibrated pulse window,
+// otherwise the "rest against the string" pose would be clamped somewhere else.
+TEST(mute_pulse_must_be_inside_the_pulse_window) {
+    Profile p = uke();
+    ServoConfig s;
+    s.enabled = true; s.function = "pluck"; s.stringIndex = 1;
+    s.source = ServoSource::Pca; s.pcaBoard = 2; s.channel = 4;
+    s.pulseMinUs = 600; s.pulseMaxUs = 2400;
+    s.restUs = 1000; s.activeUs = 1800;
+    s.muteUs = 0;                       // no mute position: always fine
+    p.servos.push_back(s);
+    CHECK(ProfileValidator::isActivatable(p));
+    p.servos.back().muteUs = 1200;      // inside the window
+    CHECK(ProfileValidator::isActivatable(p));
+    p.servos.back().muteUs = 300;       // below pulseMinUs
+    CHECK(!ProfileValidator::isActivatable(p));
+    p.servos.back().muteUs = 2900;      // above pulseMaxUs
+    CHECK(!ProfileValidator::isActivatable(p));
+}
+
+// The governor caps and the global timing fields are bounded: a mis-typed value
+// would either stall notes for tens of seconds or claim more concurrent starts
+// than a PCA9685 has channels.
+TEST(power_and_timing_bounds_are_enforced) {
+    Profile p = uke();
+    CHECK(ProfileValidator::isActivatable(p));
+    p.power.maxConcurrentPerBoard = 17;          // a PCA9685 has 16 channels
+    CHECK(!ProfileValidator::isActivatable(p));
+    p.power.maxConcurrentPerBoard = 0;           // 0 = no per-board limit
+    CHECK(ProfileValidator::isActivatable(p));
+    p.power.staggerMs = 2000;
+    CHECK(!ProfileValidator::isActivatable(p));
+    p.power.staggerMs = 8;
+    p.midi.noteExecutionDelayMs = 60000;
+    CHECK(!ProfileValidator::isActivatable(p));
+    p.midi.noteExecutionDelayMs = 0;
+    p.midi.fingerLeadMs = 9000;
+    CHECK(!ProfileValidator::isActivatable(p));
+    p.midi.fingerLeadMs = 0;
+    p.pluck.minStrikePct = 150;                  // a percentage
+    CHECK(!ProfileValidator::isActivatable(p));
+    p.pluck.minStrikePct = 40;
+    CHECK(ProfileValidator::isActivatable(p));
+}
+
+// Announced polyphony is 0 (automatic) or at most the physical string count.
+TEST(polyphony_max_is_bounded_by_the_string_count) {
+    Profile p = uke();
+    CHECK(p.instrument.polyphonyMax == 0);       // automatic by default
+    CHECK(ProfileValidator::isActivatable(p));
+    p.instrument.polyphonyMax = 4;
+    CHECK(ProfileValidator::isActivatable(p));
+    p.instrument.polyphonyMax = 7;               // > kMaxStrings
     CHECK(!ProfileValidator::isActivatable(p));
 }
 

@@ -53,12 +53,13 @@ The `PinPreference` enumeration drives the display:
 | `PinPreference` | Color | Meaning | UI access |
 | --------------- | ------- | ------------- | -------- |
 | `Recommended` (0) | 🟢 Green | recommended | visible to everyone (beginner included) |
-| `Caution` (1) | 🟡 Yellow | usable with caution | **advanced mode only**, with explanation |
+| `Caution` (1) | 🟡 Yellow | usable with caution | selectable, always shown with the reason |
 | `Reserved` (2) | 🔴 Red | reserved or incompatible | **not selectable** |
 | `Used` (3) | ⚪ Gray | already used (runtime state) | not selectable while assigned |
 
 Rule: by default a beginner sees only the **green** GPIOs. Yellow GPIOs appear
-only in advanced mode, with an explanation. Red GPIOs can never be selected.
+with the reason spelled out on the pin. Red GPIOs can never be selected — neither
+by hand nor by the automatic assignment.
 
 ---
 
@@ -120,7 +121,7 @@ The pin manager knows at minimum these restrictions:
 | PCA9685 safety output (`/OE`) | 47 |
 
 > This plan is an **initial software profile**, not a universal rule: it can be
-> replaced from the interface (advanced mode).
+> replaced from the interface.
 
 ### Pins kept reserved by default
 

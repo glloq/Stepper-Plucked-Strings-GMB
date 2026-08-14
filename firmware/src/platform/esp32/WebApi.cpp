@@ -83,7 +83,9 @@ bool fingerDown(StringState s, bool openString) {
 
 const char* safetyStateName(SafetyState s) {
     switch (s) {
+        case SafetyState::ConfigSafe:    return "configSafe";
         case SafetyState::PowerOnSafe:   return "powerOnSafe";
+        case SafetyState::Homing:        return "homing";
         case SafetyState::Armed:         return "armed";
         case SafetyState::Panic:         return "panic";
         case SafetyState::EmergencyStop: return "emergencyStop";
@@ -116,6 +118,9 @@ void WebApi::fillStatus(JsonDocument& doc) {
     wifi["ip"] = ctx_.net ? ctx_.net->ipAddress() : "";
     wifi["connected"] = ctx_.net ? ctx_.net->connected() : false;
     doc["midiSource"] = "wifiUdp";
+    // UDP source posture (audit P1.11) so the Settings UI shows the live state.
+    doc["midiSourcePolicy"] = ctx_.midiSourcePolicy ? ctx_.midiSourcePolicy() : "open";
+    doc["midiSourceLocked"] = ctx_.midiSourceLocked ? ctx_.midiSourceLocked() : false;
     doc["activeProfile"] = ctx_.profile ? ctx_.profile->instrument.name : "";
     doc["capabilitiesRevision"] =
         ctx_.sysex ? ctx_.sysex->snapshot().revision : 0;
@@ -211,6 +216,55 @@ void WebApi::registerRoutes() {
         // from the async web task.
         std::string s;
         { WebStateLock lk(ctx_); s = cachedStatus_; }
+        req->send(200, "application/json", String(s.c_str()));
+    });
+
+    // ---- POST /api/auth/check (does this token authorise writes?) ----
+    server_->on("/api/auth/check", HTTP_POST, [this](AsyncWebServerRequest* req) {
+        JsonDocument doc;
+        if (!authOk(req)) {
+            doc["ok"] = false;
+            doc["error"] = "unauthorized";
+            sendJson(req, doc, 401);
+            return;
+        }
+        doc["ok"] = true;
+        sendJson(req, doc);
+    });
+
+    // ---- POST /api/hotspot (switch to the access point on demand) ----
+    server_->on("/api/hotspot", HTTP_POST, [this](AsyncWebServerRequest* req) {
+        if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized";
+                            sendJson(req, d, 401); return; }
+        JsonDocument doc;
+        if (ctx_.onStartHotspot) ctx_.onStartHotspot();
+        doc["ok"] = true;
+        doc["note"] = "Switching to access point — rejoin the device's Wi-Fi network.";
+        // Serviced on the main loop; the station link (and this response's route home)
+        // may drop as the radio switches, which is expected.
+        sendJson(req, doc, 202);
+    });
+
+    // ---- GET /api/wifi/scan[?start=1] (network picker survey) ----
+    server_->on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest* req) {
+        if (!ctx_.wifiScanJson) {
+            JsonDocument d; d["ok"] = false; d["error"] = "unsupported";
+            sendJson(req, d, 501);
+            return;
+        }
+        if (req->hasParam("start")) {
+            if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized";
+                                sendJson(req, d, 401); return; }
+            if (ctx_.onWifiScanStart) ctx_.onWifiScanStart();
+        }
+        req->send(200, "application/json", String(ctx_.wifiScanJson().c_str()));
+    });
+
+    // ---- GET /api/diagnostics (runtime telemetry for the bench, P2.19) ----
+    // The body is built by loop() via the callback (accumulated counters + the
+    // cached PCA health), so the async web task never touches live I2C or state.
+    server_->on("/api/diagnostics", HTTP_GET, [this](AsyncWebServerRequest* req) {
+        std::string s = ctx_.diagnosticsJson ? ctx_.diagnosticsJson() : "{}";
         req->send(200, "application/json", String(s.c_str()));
     });
 

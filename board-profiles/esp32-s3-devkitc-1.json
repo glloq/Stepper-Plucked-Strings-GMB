@@ -1,33 +1,13 @@
 {
   "identifier": "esp32-s3-devkitc-1",
-  "displayName": "ESP32-S3-DevKitC-1",
-  "description": "GPIO capability map for the Espressif ESP32-S3-DevKitC-1 reference board, mirroring firmware/src/core/board/BoardProfile.cpp (makeEsp32S3DevKitC1). GPIO22-25 do not exist on the ESP32-S3 and are omitted.",
+  "displayName": "ESP32-S3-DevKitC-1 v1.0 (RGB LED on GPIO48)",
+  "description": "GPIO capability map for the Espressif ESP32-S3-DevKitC-1 v1.0 (RGB LED on GPIO48), mirroring firmware/src/core/board/BoardProfile.cpp (makeEsp32S3DevKitC1). GPIO22-25 do not exist on the ESP32-S3 and are omitted. GPIO0 is reserved: it is the BOOT button that forces the Wi-Fi hotspot.",
   "reference": "SPECIFICATION.md sections 11.4 / 11.5",
+  "generatedBy": "firmware/tools/dump_board_profiles.cpp — do not edit by hand; edit firmware/src/core/board/BoardProfile.cpp and regenerate",
   "recommendedAssignment": {
-    "STEP": [
-      4,
-      5,
-      6,
-      7,
-      15,
-      16
-    ],
-    "DIR": [
-      17,
-      18,
-      8,
-      9,
-      10,
-      11
-    ],
-    "HOME": [
-      12,
-      13,
-      14,
-      21,
-      38,
-      39
-    ],
+    "STEP": [4, 5, 6, 7, 15, 16],
+    "DIR": [17, 18, 8, 9, 10, 11],
+    "HOME": [12, 13, 14, 21, 38, 39],
     "SDA": 40,
     "SCL": 41,
     "ENABLE": 42,
@@ -40,6 +20,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -47,7 +29,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "reserved",
-      "note": "Strapping / BOOT button"
+      "note": "Strapping / BOOT button — forces the Wi-Fi hotspot (P1.15)"
     },
     {
       "gpio": 1,
@@ -55,6 +37,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -62,7 +46,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC1 capable general-purpose IO"
+      "note": ""
     },
     {
       "gpio": 2,
@@ -70,6 +54,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -77,7 +63,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC1 capable general-purpose IO"
+      "note": ""
     },
     {
       "gpio": 3,
@@ -85,6 +71,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -100,6 +88,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -107,7 +97,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC1 capable, high-speed output OK (STEP/DIR)"
+      "note": ""
     },
     {
       "gpio": 5,
@@ -115,6 +105,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -122,7 +114,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC1 capable, high-speed output OK (STEP/DIR)"
+      "note": ""
     },
     {
       "gpio": 6,
@@ -130,6 +122,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -137,7 +131,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC1 capable, high-speed output OK (STEP/DIR)"
+      "note": ""
     },
     {
       "gpio": 7,
@@ -145,6 +139,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -152,7 +148,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC1 capable, high-speed output OK (STEP/DIR)"
+      "note": ""
     },
     {
       "gpio": 8,
@@ -160,6 +156,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -167,7 +165,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC1 capable, high-speed output OK (STEP/DIR)"
+      "note": ""
     },
     {
       "gpio": 9,
@@ -175,6 +173,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -182,7 +182,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC1 capable, high-speed output OK (STEP/DIR)"
+      "note": ""
     },
     {
       "gpio": 10,
@@ -190,6 +190,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -197,7 +199,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC1 capable, high-speed output OK (STEP/DIR)"
+      "note": ""
     },
     {
       "gpio": 11,
@@ -205,6 +207,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -212,7 +216,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC2 capable, high-speed output OK (STEP/DIR/HOME)"
+      "note": ""
     },
     {
       "gpio": 12,
@@ -220,6 +224,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -227,7 +233,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC2 capable, high-speed output OK (STEP/DIR/HOME)"
+      "note": ""
     },
     {
       "gpio": 13,
@@ -235,6 +241,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -242,7 +250,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC2 capable, high-speed output OK (STEP/DIR/HOME)"
+      "note": ""
     },
     {
       "gpio": 14,
@@ -250,6 +258,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -257,7 +267,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC2 capable, high-speed output OK (STEP/DIR/HOME)"
+      "note": ""
     },
     {
       "gpio": 15,
@@ -265,6 +275,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -272,7 +284,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC2 capable, high-speed output OK (STEP/DIR/HOME)"
+      "note": ""
     },
     {
       "gpio": 16,
@@ -280,6 +292,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -287,7 +301,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC2 capable, high-speed output OK (STEP/DIR/HOME)"
+      "note": ""
     },
     {
       "gpio": 17,
@@ -295,6 +309,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -302,7 +318,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC2 capable, high-speed output OK (STEP/DIR/HOME)"
+      "note": ""
     },
     {
       "gpio": 18,
@@ -310,6 +326,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": true,
       "reserved": false,
@@ -317,7 +335,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "ADC2 capable, high-speed output OK (STEP/DIR/HOME)"
+      "note": ""
     },
     {
       "gpio": 19,
@@ -325,6 +343,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -340,6 +360,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -355,6 +377,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": false,
       "reserved": false,
@@ -362,7 +386,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "General-purpose IO (no ADC); good for HOME/ENABLE"
+      "note": ""
     },
     {
       "gpio": 26,
@@ -370,6 +394,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -385,6 +411,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -400,6 +428,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -415,6 +445,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -430,6 +462,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -445,6 +479,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -460,6 +496,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -475,6 +513,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": false,
       "reserved": false,
@@ -490,6 +530,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": false,
       "reserved": false,
@@ -505,6 +547,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -512,7 +556,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "reserved",
-      "note": "Octal Flash/PSRAM on some variants - verify module"
+      "note": "Octal Flash/PSRAM on some variants — verify module"
     },
     {
       "gpio": 36,
@@ -520,6 +564,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -527,7 +573,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "reserved",
-      "note": "Octal Flash/PSRAM on some variants - verify module"
+      "note": "Octal Flash/PSRAM on some variants — verify module"
     },
     {
       "gpio": 37,
@@ -535,6 +581,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -542,7 +590,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "reserved",
-      "note": "Octal Flash/PSRAM on some variants - verify module"
+      "note": "Octal Flash/PSRAM on some variants — verify module"
     },
     {
       "gpio": 38,
@@ -550,6 +598,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": false,
       "reserved": false,
@@ -557,7 +607,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "General-purpose IO (no ADC); good for HOME"
+      "note": ""
     },
     {
       "gpio": 39,
@@ -565,6 +615,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": false,
       "reserved": false,
@@ -572,7 +624,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "General-purpose IO (no ADC); good for HOME"
+      "note": ""
     },
     {
       "gpio": 40,
@@ -580,6 +632,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": false,
       "reserved": false,
@@ -595,6 +649,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": false,
       "reserved": false,
@@ -610,6 +666,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": false,
       "reserved": false,
@@ -617,7 +675,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "General-purpose IO; recommended global ENABLE"
+      "note": ""
     },
     {
       "gpio": 43,
@@ -625,6 +683,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -640,6 +700,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -655,6 +717,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -670,6 +734,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -685,6 +751,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": true,
+      "internalPullDown": true,
       "highSpeedOutput": true,
       "adc": false,
       "reserved": false,
@@ -692,7 +760,7 @@
       "usb": false,
       "onboardPeripheral": false,
       "preference": "recommended",
-      "note": "General-purpose IO; recommended PCA9685 /OE safety"
+      "note": ""
     },
     {
       "gpio": 48,
@@ -700,6 +768,8 @@
       "input": true,
       "output": true,
       "interrupt": true,
+      "internalPullUp": false,
+      "internalPullDown": false,
       "highSpeedOutput": false,
       "adc": false,
       "reserved": true,
@@ -707,7 +777,7 @@
       "usb": false,
       "onboardPeripheral": true,
       "preference": "reserved",
-      "note": "On-board RGB LED"
+      "note": "On-board RGB LED (DevKitC-1 v1.0)"
     }
   ]
 }

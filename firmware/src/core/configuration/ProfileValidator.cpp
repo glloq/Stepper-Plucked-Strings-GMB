@@ -44,12 +44,17 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
             if (a.signal == sig && a.gpio >= 0) return true;
         return false;
     };
-    bool anyPca = false;
+    bool anyPca = false, anyBus0 = false, anyBus1 = false;
     int directServos = 0;
     for (const auto& s : p.servos) {
         if (!s.enabled) continue;
-        if (s.source == ServoSource::Pca) anyPca = true;
-        else ++directServos;
+        if (s.source == ServoSource::Pca) {
+            anyPca = true;
+            if (s.i2cBus == 1) anyBus1 = true;
+            else anyBus0 = true;
+        } else {
+            ++directServos;
+        }
     }
     for (size_t i = 0; i < p.strings.size(); ++i) {
         if (!p.strings[i].enabled) continue;  // a disabled axis needs no pins
@@ -60,12 +65,15 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
     }
     if (!p.strings.empty() && !hasPin("ENABLE"))
         err("pins.ENABLE", "A driver ENABLE pin is required");
-    if (anyPca) {
-        if (!hasPin("SDA") || !hasPin("SCL"))
-            err("pins.i2c", "SDA and SCL are required when a PCA9685 is used");
-        if (!hasPin("SERVO_OE"))
-            err("pins.SERVO_OE", "The PCA9685 /OE safety pin is required");
-    }
+    // Each I2C bus that actually carries a board needs its own SDA/SCL; an empty
+    // bus needs nothing. The second bus may share the single /OE line (SERVO_OE2 is
+    // optional), so only the first /OE is mandatory.
+    if (anyBus0 && (!hasPin("SDA") || !hasPin("SCL")))
+        err("pins.i2c", "SDA and SCL are required when a PCA9685 is on I2C bus 0");
+    if (anyBus1 && (!hasPin("SDA2") || !hasPin("SCL2")))
+        err("pins.i2c2", "SDA2 and SCL2 are required when a PCA9685 is on I2C bus 1");
+    if (anyPca && !hasPin("SERVO_OE"))
+        err("pins.SERVO_OE", "The PCA9685 /OE safety pin is required");
     // ESP32-S3 has 8 LEDC channels; a direct servo consumes one.
     if (directServos > 8)
         err("servos.direct",
@@ -259,17 +267,37 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
                 (s.minStrikeUs < s.pulseMinUs || s.minStrikeUs > s.pulseMaxUs))
                 err(tag + ".minStrikeUs",
                     "Minimum strike pulse is outside the servo's min/max range");
+            // Plectrum-as-mute rest position, when set, must sit in the pulse window.
+            if (s.muteUs != 0 && (s.muteUs < s.pulseMinUs || s.muteUs > s.pulseMaxUs))
+                err(tag + ".muteUs",
+                    "Mute pulse is outside the servo's min/max range");
+            // A raise-to-play strum lift RESTS on the string — that rest position IS
+            // the mute — so cutting its PWM at rest lets it drift off and the note
+            // may not damp. disableAtRest should stay off for that servo.
+            if (s.function == "strumLift" && s.disableAtRest &&
+                p.pluck.liftEngage == LiftEngage::RaiseToPlay)
+                warn(tag + ".disableAtRest",
+                     "A raise-to-play strum lift holds its mute at rest; disableAtRest "
+                     "should be off so the plectrum keeps damping the string");
 
             if (s.source == ServoSource::Pca) {
-                if (s.pcaBoard > 3)
-                    err(tag + ".pcaBoard", "PCA board index must be 0..3 (max four PCA9685)");
+                if (s.pcaBoard > kMaxPca - 1)
+                    err(tag + ".pcaBoard",
+                        "PCA board index must be 0.." + std::to_string(kMaxPca - 1) +
+                            " (max " + std::to_string(kMaxPca) + " PCA9685 per bus)");
+                if (s.i2cBus > 1)
+                    err(tag + ".i2cBus", "I2C bus must be 0 or 1");
                 if (s.channel > 15)
                     err(tag + ".channel", "PCA channel must be 0..15");
-                std::pair<int, int> key{s.pcaBoard, s.channel};
+                // A board is (bus, address): the same board+channel on DIFFERENT buses
+                // is a different chip and allowed, so the bus is part of the key.
+                int bus = s.i2cBus > 1 ? 1 : s.i2cBus;
+                std::pair<int, int> key{bus * kMaxPca + s.pcaBoard, s.channel};
                 for (auto& u : usedPcaChannels)
                     if (u == key)
                         err(tag + ".channel",
-                            "PCA board " + std::to_string(s.pcaBoard) + " channel " +
+                            "PCA bus " + std::to_string(bus) + " board " +
+                                std::to_string(s.pcaBoard) + " channel " +
                                 std::to_string(s.channel) + " is already used by another servo");
                 usedPcaChannels.push_back(key);
             } else {  // DirectGpio
@@ -395,11 +423,43 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
         }
     }
 
+    // Actuator current-draw governor. Each cap is optional (0 = no limit); a per-PCA
+    // board never has more than its 16 channels moving at once.
+    if (p.power.maxConcurrentPerBoard > 16)
+        err("power.maxConcurrentPerBoard",
+            "Per-board concurrent moves exceeds a PCA9685's 16 channels");
+    if (p.power.staggerMs > 1000)
+        err("power.staggerMs", "Actuator start stagger exceeds a sane bound (1000 ms)");
+
+    // Global timing sanity: a mis-typed value would stall notes for tens of seconds
+    // while the FSM believes the mechanics are still moving.
+    constexpr uint16_t kMaxServoTimeMs = 5000;
+    if (p.midi.noteExecutionDelayMs > kMaxServoTimeMs)
+        err("midi.noteExecutionDelayMs", "Note-execution delay exceeds 5000 ms");
+    if (p.midi.fingerLeadMs > kMaxServoTimeMs)
+        err("midi.fingerLeadMs", "Finger lead exceeds 5000 ms");
+    if (p.midi.strumLeadMs > kMaxServoTimeMs)
+        err("midi.strumLeadMs", "Strum lead exceeds 5000 ms");
+    if (p.pluck.muteHoldMs > kMaxServoTimeMs)
+        err("pluck.muteHoldMs", "Mute hold exceeds 5000 ms");
+    if (p.pluck.fretToPluckMs > kMaxServoTimeMs)
+        err("pluck.fretToPluckMs", "Fret-to-pluck delay exceeds 5000 ms");
+    if (p.midi.chordWindowMs > 100)
+        warn("midi.chordWindowMs", "Chord window over 100 ms may merge unrelated notes");
+
     // MIDI ranges.
     if (p.midi.sustainCc > kMaxAssignableCc)
         err("midi.sustainCc", "Sustain CC must be 0..119");
     if (p.instrument.capo < 0 || p.instrument.capo > 24)
         err("instrument.capo", "Capo must be 0..24");
+    // Announced polyphony: 0 = automatic; a custom cap can never exceed the number
+    // of physical strings (the snapshot also clamps it to the active count).
+    if (p.instrument.polyphonyMax > kMaxStrings)
+        err("instrument.polyphonyMax",
+            "Polyphony must be 0 (automatic) or at most the string count");
+    else if (p.instrument.polyphonyMax > p.instrument.stringCount)
+        warn("instrument.polyphonyMax",
+             "Polyphony exceeds the string count and will be clamped");
     if (p.instrument.transpose < -48 || p.instrument.transpose > 48)
         err("instrument.transpose", "Transpose must be within +/-48 semitones");
     if (p.midi.transpose < -48 || p.midi.transpose > 48)
@@ -412,6 +472,10 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
     };
     enumOk(static_cast<int>(p.midi.velocityCurve), 4, "midi.velocityCurve");
     enumOk(static_cast<int>(p.midi.saturationStrategy), 5, "midi.saturationStrategy");
+    enumOk(static_cast<int>(p.pluck.muteSource), 4, "pluck.muteSource");
+    enumOk(static_cast<int>(p.pluck.liftEngage), 1, "pluck.liftEngage");
+    if (p.pluck.minStrikePct > 100)
+        err("pluck.minStrikePct", "Minimum strike depth must be 0..100 %");
     enumOk(static_cast<int>(p.selector.mode), 2, "selector.mode");
     enumOk(static_cast<int>(p.selector.notePositionPolicy), 2, "selector.notePositionPolicy");
     enumOk(static_cast<int>(p.selector.fret.invalidValuePolicy), 3, "selector.fret.invalidValuePolicy");
