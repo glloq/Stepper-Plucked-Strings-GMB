@@ -15,7 +15,7 @@ void InstrumentController::load(const Profile& p) {
     preparedFret_.clear();
     preparedId_.clear();
     preparedExpiryUs_.clear();
-    pedalDown_ = false;
+    for (auto& w : pedalMask_) w = 0;
 
     selector_.configure(p.selector);
     selector_.setInstrument(p.instrumentView());
@@ -98,8 +98,8 @@ void InstrumentController::prepareString(int stringIndex, int fret, uint32_t exp
 }
 
 bool InstrumentController::triggerPreparedNote(int stringIndex, int fret,
-                                               uint8_t channel, uint8_t note,
-                                               uint8_t velocity) {
+                                               uint8_t source, uint8_t channel,
+                                               uint8_t note, uint8_t velocity) {
     if (stringIndex < 0 || stringIndex >= static_cast<int>(strings_.size()))
         return false;
     if (preparedId_[stringIndex] == 0 || preparedFret_[stringIndex] != fret)
@@ -116,14 +116,14 @@ bool InstrumentController::triggerPreparedNote(int stringIndex, int fret,
     t.active = true;
     t.velocity = velocity;
     t.intensity = applyVelocityCurve(velocityCurve_, velocity) * attackGain();
-    active_.push_back({channel, note, stringIndex, false});
+    active_.push_back({noteKey(source, channel, note), channel, note, stringIndex, false});
     preparedFret_[stringIndex] = -1;
     preparedId_[stringIndex] = 0;
     return true;
 }
 
-void InstrumentController::startNote(int stringIndex, int fret, uint8_t channel,
-                                     uint8_t note, uint8_t velocity) {
+void InstrumentController::startNote(int stringIndex, int fret, uint8_t source,
+                                     uint8_t channel, uint8_t note, uint8_t velocity) {
     if (stringIndex < 0 || stringIndex >= static_cast<int>(strings_.size())) return;
     removeActiveByString(stringIndex);
     preparedFret_[stringIndex] = -1;  // supersede any anticipated prepare
@@ -143,7 +143,7 @@ void InstrumentController::startNote(int stringIndex, int fret, uint8_t channel,
     t.commandId = id;
     t.velocity = velocity;
     t.intensity = applyVelocityCurve(velocityCurve_, velocity) * attackGain();
-    active_.push_back({channel, note, stringIndex, false});
+    active_.push_back({noteKey(source, channel, note), channel, note, stringIndex, false});
 }
 
 void InstrumentController::stopString(int stringIndex) {
@@ -155,9 +155,9 @@ void InstrumentController::stopString(int stringIndex) {
     allocator_.release(stringIndex);
 }
 
-int InstrumentController::findActive(uint8_t channel, uint8_t note) const {
+int InstrumentController::findActive(uint16_t key) const {
     for (int i = static_cast<int>(active_.size()) - 1; i >= 0; --i) {
-        if (active_[i].channel == channel && active_[i].note == note) return i;
+        if (active_[i].key == key) return i;
     }
     return -1;
 }
@@ -179,18 +179,22 @@ void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
             return;
         }
         if (sustainEnabled_ && e.data1 == sustainCc_) {
+            const uint8_t sk = sourceChannelKey(e);
             bool down = e.data2 >= 64;
-            if (pedalDown_ && !down) {
-                // Pedal released: drop every note that was held by the pedal.
+            if (pedalDownFor(sk) && !down) {
+                // Pedal released: drop the notes THIS sender was holding. Another
+                // controller's pedal-held notes are none of its business.
                 for (int i = static_cast<int>(active_.size()) - 1; i >= 0; --i) {
-                    if (active_[i].heldByPedal) {
+                    if (active_[i].heldByPedal &&
+                        sourceChannelKey(static_cast<uint8_t>(active_[i].key >> 11),
+                                         active_[i].channel) == sk) {
                         int s = active_[i].stringIndex;
                         active_.erase(active_.begin() + i);
                         stopString(s);
                     }
                 }
             }
-            pedalDown_ = down;
+            setPedalDown(sk, down);
             return;
         }
         selector_.onControlChange(e);
@@ -215,12 +219,12 @@ void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
         if (r.source == ResolveSource::Explicit && explicitPlayable) {
             // Reuse the anticipated move if this string was prepared for this fret;
             // otherwise start a fresh note. Each string is plucked on its own.
-            if (!triggerPreparedNote(r.stringIndex, r.fret, e.channel, e.data1,
-                                     e.data2))
-                startNote(r.stringIndex, r.fret, e.channel, e.data1, e.data2);
+            if (!triggerPreparedNote(r.stringIndex, r.fret, e.source, e.channel,
+                                     e.data1, e.data2))
+                startNote(r.stringIndex, r.fret, e.source, e.channel, e.data1, e.data2);
         } else {
             // Automatic allocation is deferred to group chord notes (§17.2).
-            chordBuffer_.push_back({e.channel, e.data1, e.data2, nowUs});
+            chordBuffer_.push_back({noteKey(e), e.source, e.channel, e.data1, e.data2, nowUs});
             if (chordWindowUs_ == 0) flushChord();
         }
         return;
@@ -235,16 +239,15 @@ void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
         // Cancel a note still waiting in the chord buffer (ghost-note fix): the
         // Note Off arrived before the grouping window flushed.
         for (int i = static_cast<int>(chordBuffer_.size()) - 1; i >= 0; --i) {
-            if (chordBuffer_[i].channel == e.channel &&
-                chordBuffer_[i].note == e.data1) {
+            if (chordBuffer_[i].key == noteKey(e)) {
                 chordBuffer_.erase(chordBuffer_.begin() + i);
                 return;
             }
         }
 
-        int idx = findActive(e.channel, e.data1);
+        int idx = findActive(noteKey(e));
         if (idx < 0) return;
-        if (pedalDown_ && sustainEnabled_) {
+        if (sustainEnabled_ && pedalDownFor(sourceChannelKey(e))) {
             active_[idx].heldByPedal = true;  // keep sounding until pedal up
             return;
         }
@@ -277,7 +280,7 @@ void InstrumentController::flushChord() {
         t.commandId = id;
         t.velocity = src.velocity;
         t.intensity = applyVelocityCurve(velocityCurve_, src.velocity) * attackGain();
-        active_.push_back({src.channel, src.note, a.stringIndex, false});
+        active_.push_back({src.key, src.channel, src.note, a.stringIndex, false});
     }
     chordBuffer_.clear();
 }
@@ -324,7 +327,7 @@ void InstrumentController::panic() {
     std::fill(preparedId_.begin(), preparedId_.end(), 0u);
     active_.clear();
     chordBuffer_.clear();
-    pedalDown_ = false;
+    for (auto& w : pedalMask_) w = 0;
     volume_ = 1.0;
     expression_ = 1.0;
     selector_.reset();  // clear pending/active CC selections on panic

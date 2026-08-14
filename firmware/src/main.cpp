@@ -1207,6 +1207,11 @@ void loop() {
         if ((int32_t)(nowMs - g_testOffs[k].atMs) >= 0) {
             MidiEvent off;
             off.type = static_cast<uint8_t>(MidiType::NoteOff);
+            // MUST match the Note On's source: a note's identity is
+            // (source, channel, note), so a Note Off tagged Internal would look
+            // like a different note and the test note would never be released —
+            // finger down, string ringing, nothing left to stop it.
+            off.source = static_cast<uint8_t>(MidiSource::WebUiTest);
             off.channel = g_testOffs[k].channel; off.data1 = g_testOffs[k].note;
             off.timestampUs = nowUs;
             g_instrument.handleEvent(off, nowUs);

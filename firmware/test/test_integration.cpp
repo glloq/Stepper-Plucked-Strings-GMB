@@ -361,3 +361,145 @@ TEST(sysex_service_notification_after_change) {
                    ((uint32_t)note[8] << 21) | ((uint32_t)(note[9] & 0x0F) << 28);
     CHECK_EQ((int)rev, 2);
 }
+
+// ---- multi-transport note identity (audit: DIN + USB + Wi-Fi share the loop) --
+//
+// Every transport feeds the SAME InstrumentController, and a note used to be
+// identified by (channel, note) alone. Two controllers playing the same note on
+// the same channel is not a corner case — it is what happens the moment someone
+// plugs a DIN cable into a machine that is also on Wi-Fi.
+
+static MidiEvent from(MidiEvent e, MidiSource src) {
+    e.source = static_cast<uint8_t>(src);
+    return e;
+}
+
+// The failure this prevents: DIN's Note Off releasing Wi-Fi's string, leaving
+// DIN's own string pressed and ringing with nothing left to release it.
+TEST(note_off_only_releases_its_own_sources_note) {
+    Profile p = ukulele();
+    p.midi.omni = true;
+    p.midi.chordWindowMs = 0;   // no grouping window: each note starts at once
+    InstrumentController ic;
+    ic.load(p);
+
+    // Note 72 is reachable on every string, so the allocator really can give the
+    // two senders one each. (60 is the C string's OPEN note: both senders would
+    // land on the same physical string, where identity is unobservable.)
+    ic.handleEvent(from(noteOn(0, 72, 100), MidiSource::WifiUdp), 0);
+    ic.tick(1000);
+    ic.handleEvent(from(noteOn(0, 72, 100), MidiSource::Din), 1000);
+    ic.tick(2000);
+    CHECK_EQ(ic.soundingCount(), 2);   // two senders, two strings
+
+    // DIN releases ITS note. Wi-Fi's must keep sounding.
+    ic.handleEvent(from(noteOff(0, 72), MidiSource::Din), 3000);
+    ic.tick(4000);
+    CHECK_EQ(ic.soundingCount(), 1);
+
+    // ...and Wi-Fi can still release its own, leaving nothing stuck.
+    ic.handleEvent(from(noteOff(0, 72), MidiSource::WifiUdp), 5000);
+    ic.tick(6000);
+    CHECK_EQ(ic.soundingCount(), 0);
+}
+
+// A Note Off from a source that never played the note must do nothing at all —
+// not "release the closest match".
+TEST(note_off_from_a_silent_source_releases_nothing) {
+    Profile p = ukulele();
+    p.midi.omni = true;
+    p.midi.chordWindowMs = 0;
+    InstrumentController ic;
+    ic.load(p);
+    ic.handleEvent(from(noteOn(0, 60, 100), MidiSource::WifiUdp), 0);
+    ic.tick(1000);
+    CHECK_EQ(ic.soundingCount(), 1);
+    ic.handleEvent(from(noteOff(0, 60), MidiSource::Usb), 2000);
+    ic.tick(3000);
+    CHECK_EQ(ic.soundingCount(), 1);   // untouched
+}
+
+// The same isolation inside the chord buffer: a Note Off arriving before the
+// grouping window flushes must cancel only its own sender's pending note.
+TEST(chord_buffer_cancel_is_per_source) {
+    Profile p = ukulele();
+    p.midi.omni = true;
+    p.midi.chordWindowMs = 5;   // notes wait in the buffer
+    InstrumentController ic;
+    ic.load(p);
+    ic.handleEvent(from(noteOn(0, 60, 100), MidiSource::WifiUdp), 0);
+    ic.handleEvent(from(noteOn(0, 60, 100), MidiSource::Din), 0);
+    // DIN changes its mind before the window closes.
+    ic.handleEvent(from(noteOff(0, 60), MidiSource::Din), 1000);
+    ic.tick(20000);             // flush the window
+    CHECK_EQ(ic.soundingCount(), 1);   // only Wi-Fi's note survived
+}
+
+// Sustain is per sender too: one controller's pedal must neither hold nor release
+// another's notes.
+TEST(sustain_pedal_is_per_source) {
+    Profile p = ukulele();
+    p.midi.omni = true;
+    p.midi.chordWindowMs = 0;
+    p.midi.sustainPedal = true;
+    InstrumentController ic;
+    ic.load(p);
+
+    // Wi-Fi holds its pedal down, DIN does not.
+    // 67 and 69 are two different OPEN strings, so neither sender can displace
+    // the other by landing on the same one.
+    ic.handleEvent(from(cc(0, 64, 127), MidiSource::WifiUdp), 0);
+    ic.handleEvent(from(noteOn(0, 67, 100), MidiSource::WifiUdp), 0);
+    ic.tick(1000);
+    ic.handleEvent(from(noteOn(0, 69, 100), MidiSource::Din), 1000);
+    ic.tick(2000);
+    CHECK_EQ(ic.soundingCount(), 2);
+
+    // Both release. Wi-Fi's is held by ITS pedal; DIN's is not held by anything.
+    ic.handleEvent(from(noteOff(0, 67), MidiSource::WifiUdp), 3000);
+    ic.handleEvent(from(noteOff(0, 69), MidiSource::Din), 3000);
+    ic.tick(4000);
+    CHECK_EQ(ic.soundingCount(), 1);   // only the pedal-held one remains
+
+    // DIN lifting a pedal it never pressed must not drop Wi-Fi's held note.
+    ic.handleEvent(from(cc(0, 64, 0), MidiSource::Din), 5000);
+    ic.tick(6000);
+    CHECK_EQ(ic.soundingCount(), 1);
+
+    // Wi-Fi lifting its own pedal does.
+    ic.handleEvent(from(cc(0, 64, 0), MidiSource::WifiUdp), 7000);
+    ic.tick(8000);
+    CHECK_EQ(ic.soundingCount(), 0);
+}
+
+// A CC selection is one sender's statement about the note IT is about to play.
+// Keyed on the channel alone, a Note On from another transport consumed it — so a
+// controller's tablature position was applied to somebody else's note.
+TEST(cc_selection_is_not_consumed_by_another_source) {
+    Profile p = ukulele();
+    p.midi.omni = true;
+    p.midi.chordWindowMs = 0;
+    p.selector.enabled = true;
+    p.selector.mode = SelectionMode::Hybrid;
+    p.selector.perMidiChannel = true;
+    // Anticipated pre-positioning also marks a target active, which the scan below
+    // would then read instead of the note DIN actually played. Off, so this test
+    // observes exactly one thing: whether DIN consumed Wi-Fi's selection.
+    p.selector.prepareOnCompleteSelection = false;
+    InstrumentController ic;
+    ic.load(p);
+
+    // Wi-Fi selects string 2, fret 5 — and does NOT play yet.
+    ic.handleEvent(from(cc(0, p.selector.string.ccNumber, 2), MidiSource::WifiUdp), 0);
+    ic.handleEvent(from(cc(0, p.selector.fret.ccNumber, 5), MidiSource::WifiUdp), 0);
+    // DIN plays a note. It must NOT land on Wi-Fi's selection: with no selection of
+    // its own it falls back to automatic allocation.
+    ic.handleEvent(from(noteOn(0, 60, 100), MidiSource::Din), 1000);
+    ic.tick(2000);
+    CHECK_EQ(ic.soundingCount(), 1);
+    int played = -1;
+    for (size_t i = 0; i < ic.stringCount(); ++i)
+        if (ic.target(i).active) played = static_cast<int>(i);
+    CHECK(played >= 0);
+    if (played >= 0) CHECK(ic.target(played).fret != 5);
+}
