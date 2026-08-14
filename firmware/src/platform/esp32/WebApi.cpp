@@ -441,7 +441,22 @@ void WebApi::registerRoutes() {
     // currently-active profile.
     auto* pinsAuto = new AsyncCallbackJsonWebHandler(
         "/api/pins/auto", [this](AsyncWebServerRequest* req, JsonVariant& body) {
-            const BoardProfile* b = builtinBoardProfile("esp32-s3-devkitc-1");
+            // Assign against the board the request names — the DRAFT's board, not
+            // a hard-coded one. This used to always build a PinManager for the
+            // ESP32-S3 while the UI's offline mock was board-aware, so the browser
+            // demo produced a correct map and the real device handed out S3 pins
+            // that may not even exist on the selected board. An unknown board is
+            // refused rather than silently substituted.
+            std::string boardId = body["board"] | "";
+            if (boardId.empty() && ctx_.profile) boardId = ctx_.profile->boardIdentifier;
+            const BoardProfile* b = builtinBoardProfile(boardId);
+            if (!b) {
+                JsonDocument err;
+                err["ok"] = false;
+                err["error"] = "unknown board \"" + boardId + "\"";
+                sendJson(req, err, 422);
+                return;
+            }
             PinManager pm(*b);
             PinRequest r;
             int fallback = ctx_.profile ? ctx_.profile->instrument.stringCount : 4;
@@ -454,6 +469,7 @@ void WebApi::registerRoutes() {
             bool ok = pm.autoAssign(r);
             JsonDocument doc;
             doc["ok"] = ok;
+            doc["board"] = b->identifier;   // echo it: the caller can verify the target
             JsonArray pins = doc["pins"].to<JsonArray>();
             for (const auto& a : pm.assignments()) {
                 JsonObject o = pins.add<JsonObject>();
@@ -905,6 +921,48 @@ void WebApi::registerRoutes() {
         });
     setWifi->setMethod(HTTP_POST);
     server_->addHandler(setWifi);
+
+    // ---- POST /api/midi/source (UDP MIDI source posture) ----
+    // Body: { policy: "open"|"lockToFirst"|"disabled" (optional), unlock: bool }.
+    // The Settings > Security panel has always offered these controls; the route
+    // did not exist, so the browser mock accepted them and the real device 404ed.
+    // The policy is stored in NVS (device state, survives reboots) and applied by
+    // the main loop, which owns the MIDI transport.
+    auto* midiSource = new AsyncCallbackJsonWebHandler(
+        "/api/midi/source", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
+            JsonDocument doc;
+            if (!ctx_.onSetMidiSource) {
+                doc["ok"] = false;
+                doc["error"] = "not supported by this build";
+                sendJson(req, doc, 409);
+                return;
+            }
+            int policy = -1;   // -1 = leave the stored policy alone
+            if (!body["policy"].isNull()) {
+                std::string p = body["policy"] | "";
+                if (p == "open") policy = 0;
+                else if (p == "lockToFirst") policy = 1;
+                else if (p == "disabled") policy = 2;
+                else {
+                    doc["ok"] = false;
+                    doc["error"] = "policy must be open, lockToFirst or disabled";
+                    sendJson(req, doc, 422);
+                    return;
+                }
+            }
+            const bool unlock = body["unlock"] | false;
+            if (!ctx_.onSetMidiSource(policy, unlock)) {
+                doc["ok"] = false;
+                doc["error"] = "storing the MIDI source policy failed (NVS write error)";
+                sendJson(req, doc, 500);
+                return;
+            }
+            doc["ok"] = true;
+            sendJson(req, doc);
+        });
+    midiSource->setMethod(HTTP_POST);
+    server_->addHandler(midiSource);
 
     // ---- POST /api/auth (set the admin token; first-run bootstrap allowed) ----
     auto* setAuth = new AsyncCallbackJsonWebHandler(

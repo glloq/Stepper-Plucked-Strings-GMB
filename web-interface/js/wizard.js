@@ -445,9 +445,14 @@
   // S3 may not exist on a WROOM-32. Re-validate at once and say so, instead of
   // letting the operator reach the Validation step and wonder.
   function onBoardChange() {
-    if (GMB.views.pins && GMB.views.pins.reset) GMB.views.pins.reset();  // drop the cached board
+    // BOTH caches must go. This module keeps its own `board` profile for the GPIO
+    // capability filters on the Homing and Servos steps; clearing only pins.js's
+    // copy left the wizard filtering against the PREVIOUS board's table, offering
+    // GPIOs that may not exist on the one just selected.
+    board = null;
+    if (GMB.views.pins && GMB.views.pins.reset) GMB.views.pins.reset();
     GMB.markDirty();
-    drawStep();
+    GMB.render();   // re-render: render() re-fetches the board profile it needs
   }
 
   function checkBoardPins() {

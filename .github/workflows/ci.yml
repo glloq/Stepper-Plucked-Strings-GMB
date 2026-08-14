@@ -55,6 +55,8 @@ jobs:
         run: bash firmware/test/boardcheck/run.sh --check
       - name: C++ profile validator (profilecheck)
         run: bash firmware/test/profilecheck/run.sh
+      - name: REST contract (every route the UI calls exists in the firmware)
+        run: bash firmware/test/apicheck/run.sh
 
   web-js:
     name: Web interface JS syntax + behaviour

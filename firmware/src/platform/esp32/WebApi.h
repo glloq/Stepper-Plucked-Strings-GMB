@@ -59,6 +59,11 @@ struct WebContext {
     // Live UDP source posture (audit P1.11) so the Settings UI shows the real state.
     std::function<std::string()> midiSourcePolicy;
     std::function<bool()> midiSourceLocked;  // queued/succeeded/refused/unknown
+    // POST /api/midi/source. policy: -1 leave unchanged, 0 open, 1 lockToFirst,
+    // 2 disabled; `unlock` forgets the currently locked sender. Returns false when
+    // the setting could not be persisted (the caller then reports a real failure
+    // rather than claiming success).
+    std::function<bool(int, bool)> onSetMidiSource;
     std::function<bool()> onFormatStorage;       // deliberate LittleFS reformat
     // Guard shared state during read-only handlers so a reload in loop() is never
     // observed half-applied. Both may be null (host build / no locking).

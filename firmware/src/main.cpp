@@ -32,6 +32,7 @@
 #include "core/instrument/InstrumentController.h"
 #include "core/midi/MidiEvent.h"
 #include "core/motion/HomingController.h"
+#include "core/safety/EstopPolarity.h"
 #include "core/safety/SafetyManager.h"
 #include "core/util/CommandResultRing.h"
 #include "core/util/HoldButton.h"
@@ -103,6 +104,10 @@ constexpr uint32_t kBootHoldMs = 2000;
 HoldButton g_bootHold;  // long-press on BOOT -> force hotspot (host-tested, P2.17)
 std::atomic<bool> g_hotspotRequested{false};   // BOOT button / web -> force AP
 std::atomic<bool> g_wifiScanRequested{false};  // GET /api/wifi/scan?start=1
+// POST /api/midi/source. The web task must not touch the MIDI transport, so it
+// only records the request; loop() applies it. -1 = no policy change pending.
+std::atomic<int> g_midiSourceRequested{-1};
+std::atomic<bool> g_midiUnlockRequested{false};
 // POST /api/wifi with apply:true. The web task must never touch the radio, so it
 // only raises this flag; loop() (which owns Net) does the reconfiguration.
 std::atomic<bool> g_netApplyRequested{false};
@@ -419,7 +424,15 @@ void faultRuntimeAxis(size_t i, const char* reason, uint32_t nowMs) {
 //     unplugged connector all read HIGH (pull-up) = stop. Losing the E-stop chain
 //     then fails safe instead of silently disarming the E-stop.
 bool estopAsserted(bool pinHigh) {
-    return g_profile.estopNormallyClosed ? pinHigh : !pinHigh;
+    return estopAssertedFor(pinHigh, g_profile.estopNormallyClosed);
+}
+
+// Read the E-stop pin and normalise it. EVERY check goes through this — the bug
+// this replaces was two call sites keeping their own `digitalRead(pin) == LOW`.
+// Returns false when no E-stop pin is configured (nothing to assert).
+bool estopAssertedNow() {
+    if (g_estopPin < 0) return false;
+    return estopAsserted(digitalRead(g_estopPin) == HIGH);
 }
 
 // A PCA9685 stopped ACKing at runtime (unplugged / brown-out). Rather than a global
@@ -459,7 +472,11 @@ bool beginHoming(uint32_t nowMs) {
     if (safetyLocked()) return false;
     // Never enable drivers while a hardware E-stop is physically asserted, even
     // if the software state has not caught up yet (closes the power-on window).
-    if (g_estopPin >= 0 && digitalRead(g_estopPin) == LOW) {
+    // Through estopAssertedNow(), so the DECLARED polarity applies here too: this
+    // check used to test LOW directly, which on the recommended normally-closed
+    // chain is the HEALTHY level — it refused to home a safe machine and let a
+    // genuinely pressed E-stop through.
+    if (estopAssertedNow()) {
         g_safety.emergencyStop(nowMs);
         return false;
     }
@@ -521,7 +538,7 @@ bool anyLimitActive() {
 // Explicit recovery after a panic / E-stop: only proceeds when the E-stop is
 // released, no LIMIT is asserted, the profile is valid and all channels attached.
 bool doReset(uint32_t nowMs) {
-    if (g_estopPin >= 0 && digitalRead(g_estopPin) == LOW) return false;  // still pressed
+    if (estopAssertedNow()) return false;  // still asserted (either polarity)
     if (anyLimitActive()) return false;
     if (!ProfileValidator::isActivatable(g_profile)) return false;
     if (g_steppers.attachFault() || g_servos.directAttachFault() ||
@@ -1483,6 +1500,16 @@ void setup() {
     prefs.end();
     g_net.begin(g_profile.network, staPass.c_str(), apPass.c_str());
     g_midi.begin(5006);
+    // Restore the stored UDP MIDI source posture (device state, not part of an
+    // instrument profile): 0 open (default) / 1 lockToFirst / 2 disabled.
+    {
+        Preferences p;
+        p.begin("gmb", true);
+        int midiSrc = p.getInt("midisrc", 0);
+        p.end();
+        if (midiSrc >= 0 && midiSrc <= 2)
+            g_midi.setSourcePolicy(static_cast<UdpSourcePolicy>(midiSrc));
+    }
     g_usbMidi.begin();  // P1.7: inert until wired to native USB-MIDI (no-op elsewhere)
     g_dinMidi.begin(nullptr);  // P1.7: byte->event logic ready; inert until a DIN RX
                                // UART is bound here (a DeviceConfig pin, see P1.13)
@@ -1535,6 +1562,18 @@ void setup() {
         return udpSourcePolicyName(g_midi.sourcePolicy());
     };
     ctx.midiSourceLocked = []() -> bool { return g_midi.sourceLocked(); };
+    ctx.onSetMidiSource = [](int policy, bool unlock) -> bool {
+        if (policy >= 0 && policy <= 2) {
+            Preferences p;
+            if (!p.begin("gmb", false)) return false;
+            size_t written = p.putInt("midisrc", policy);
+            p.end();
+            if (written == 0) return false;   // NVS write failed: report, don't apply
+            g_midiSourceRequested.store(policy);  // applied on the main loop
+        }
+        if (unlock) g_midiUnlockRequested.store(true);
+        return true;
+    };
     ctx.onStartHotspot = []() { g_hotspotRequested.store(true); };
     ctx.onWifiScanStart = []() { g_wifiScanRequested.store(true); };
     ctx.wifiScanJson = []() -> std::string { StateGuard lock; return g_wifiScanJson; };
@@ -1631,6 +1670,14 @@ void loop() {
     uint32_t nowMs = millis();
 
     g_net.tick(nowMs);
+    // MIDI source posture changes from POST /api/midi/source. loop() owns the
+    // transport, so the web task only leaves a request here.
+    {
+        int midiPolicy = g_midiSourceRequested.exchange(-1);
+        if (midiPolicy >= 0 && midiPolicy <= 2)
+            g_midi.setSourcePolicy(static_cast<UdpSourcePolicy>(midiPolicy));
+        if (g_midiUnlockRequested.exchange(false)) g_midi.unlockSource();
+    }
     serviceHotspotRequests(nowMs);  // BOOT long-press / web "Start hotspot"
     serviceNetworkApply();          // POST /api/wifi with apply:true
     serviceWifiRequests();          // network survey for the Settings picker
@@ -1643,7 +1690,7 @@ void loop() {
     //    software safety, not a substitute for a hardware cut of ENABLE / power.)
     if (g_estopPin >= 0) {
         bool level = digitalRead(g_estopPin) == HIGH;
-        bool rawStop = estopAsserted(level);
+        bool rawStop = estopAsserted(level);  // same predicate as the pre-arm checks
         // The debounced level only filters the RELEASE, so contact bounce can never
         // un-latch a stop; the raw read trips immediately (a false trip fails safe).
         bool debouncedStop = estopAsserted(g_estopDeb.update(nowMs, level));

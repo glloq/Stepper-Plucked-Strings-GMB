@@ -325,3 +325,66 @@ TEST(an_expired_selection_does_not_shadow_a_valid_one) {
     CHECK_EQ((int)r.stringIndex, 2);  // string 3 -> axis 2
     CHECK_EQ((int)r.fret, 7);
 }
+
+// Clamp must clamp the value that was actually REQUESTED. An out-of-range CC is
+// recorded as invalid, and stringValue/fretValue only ever hold a value that
+// PASSED validation — so clamping those fields clamps their 0 default. "Fret 127,
+// bring it into range" then becomes fret 0: the far end of the fretboard, on a
+// carriage that really travels there.
+TEST(clamp_clamps_the_requested_fret_not_zero) {
+    StringFretSelector sel;
+    SelectorConfig cfg;
+    cfg.mode = SelectionMode::Explicit;
+    cfg.string.maximum = 4;
+    cfg.fret.maximum = 12;
+    cfg.fret.invalidValuePolicy = InvalidValuePolicy::Clamp;
+    sel.configure(cfg);
+    sel.setInstrument(makeView4());
+
+    sel.onControlChange(cc(0, 20, 2, 1000));    // string 2 -> axis 1, valid
+    sel.onControlChange(cc(0, 21, 127, 1100));  // fret 127: way out of range
+    NoteResolution r = sel.onNoteOn(noteOn(0, 72, 100, 1200), 1300);
+    CHECK(r.play);
+    CHECK_EQ((int)r.stringIndex, 1);
+    CHECK_EQ((int)r.fret, 12);   // clamped to the top fret, NOT dropped to 0
+}
+
+// The same for an out-of-range STRING: clamp to the last string, and keep going
+// through the ordering rules a valid value would have taken.
+TEST(clamp_clamps_the_requested_string_not_zero) {
+    StringFretSelector sel;
+    SelectorConfig cfg;
+    cfg.mode = SelectionMode::Explicit;
+    cfg.string.maximum = 9;      // let the raw value through the CC bound...
+    cfg.fret.maximum = 12;
+    cfg.fret.invalidValuePolicy = InvalidValuePolicy::Clamp;
+    sel.configure(cfg);
+    sel.setInstrument(makeView4());   // ...but the instrument only has 4 strings
+
+    sel.onControlChange(cc(0, 20, 9, 1000));   // string 9 on a 4-string instrument
+    sel.onControlChange(cc(0, 21, 5, 1100));
+    NoteResolution r = sel.onNoteOn(noteOn(0, 74, 100, 1200), 1300);
+    CHECK(r.play);
+    CHECK_EQ((int)r.stringIndex, 3);   // clamped to the last string, not string 1
+    CHECK_EQ((int)r.fret, 5);
+}
+
+// Clamping a string must respect reverseOrder: it re-enters the same pipeline a
+// valid value takes, rather than writing a raw index straight into the result.
+TEST(clamp_respects_reverse_string_order) {
+    StringFretSelector sel;
+    SelectorConfig cfg;
+    cfg.mode = SelectionMode::Explicit;
+    cfg.string.maximum = 9;
+    cfg.string.reverseOrder = true;
+    cfg.fret.maximum = 12;
+    cfg.fret.invalidValuePolicy = InvalidValuePolicy::Clamp;
+    sel.configure(cfg);
+    sel.setInstrument(makeView4());
+
+    sel.onControlChange(cc(0, 20, 9, 1000));   // clamps to logical index 3...
+    sel.onControlChange(cc(0, 21, 2, 1100));
+    NoteResolution r = sel.onNoteOn(noteOn(0, 74, 100, 1200), 1300);
+    CHECK(r.play);
+    CHECK_EQ((int)r.stringIndex, 0);   // ...which reversed is axis 0
+}

@@ -1055,10 +1055,18 @@
       return this._call('/api/boards', null, function () { return { boards: boardList() }; })
         .then(function (r) { return (r && r.boards) || []; });
     },
+    // POST /api/pins/auto. The board is injected HERE rather than left to each
+    // caller: the backend assigns against whichever board it is told, and a caller
+    // that forgot the field would silently get pins for the wrong one. Two of the
+    // three call sites did exactly that.
     autoPins: function (req) {
+      var draft = (global.GMB.state && global.GMB.state.profile) || MOCK.profile;
+      var body = {};
+      Object.keys(req || {}).forEach(function (k) { body[k] = req[k]; });
+      if (!body.board) body.board = draft && draft.board && draft.board.profile;
       return this._call('/api/pins/auto', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req)
-      }, function () { return mockAutoAssign(req); });
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      }, function () { return mockAutoAssign(body); });
     },
     // POST /api/pins/validate -> { ok, issues:[{field,message,severity}] }.
     // The backend decodes the body as a full Profile and runs its validator, so

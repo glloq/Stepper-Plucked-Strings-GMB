@@ -9,6 +9,7 @@
 #include "../src/core/configuration/Profile.h"
 #include "../src/core/configuration/ProfileValidator.h"
 #include "../src/core/instrument/InstrumentController.h"
+#include "../src/core/safety/EstopPolarity.h"
 #include "../src/core/safety/SafetyManager.h"
 
 using namespace gmb;
@@ -173,4 +174,50 @@ TEST(fault_count_is_cumulative_across_clear) {
     CHECK_EQ((int)s.faultCount(), 2);   // total survives
     s.panic("boom", 30);                // panic records a fault too
     CHECK_EQ((int)s.faultCount(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// E-stop pin polarity. This is one line of arithmetic, and it is here because
+// duplicating it is what broke it: estopAsserted() was correct in the continuous
+// supervision while beginHoming() and doReset() each kept a `digitalRead(pin) ==
+// LOW` test predating normally-closed support. On the RECOMMENDED normally-closed
+// chain a healthy loop reads LOW, so those pre-arm checks refused to home a safe
+// machine and passed a genuinely pressed E-stop. Every call site normalises
+// through estopAssertedFor() now, and the whole truth table is pinned here.
+// ---------------------------------------------------------------------------
+
+TEST(estop_polarity_truth_table) {
+    // Normally OPEN (legacy button): the button shorts the pin to GND.
+    CHECK(!estopAssertedFor(true, false));   // HIGH (pull-up) = released -> run
+    CHECK(estopAssertedFor(false, false));   // LOW = pressed          -> stop
+
+    // Normally CLOSED (recommended): a closed loop to GND holds the pin LOW to
+    // AUTHORISE running.
+    CHECK(!estopAssertedFor(false, true));   // LOW = healthy loop     -> run
+    CHECK(estopAssertedFor(true, true));     // HIGH = pressed OR CUT  -> stop
+}
+
+// The point of the normally-closed wiring: a broken chain must fail SAFE. A cut
+// wire, an unplugged connector and a corroded contact all leave the pull-up to
+// pull the pin HIGH, and that must read as "stop" — not as "everything is fine",
+// which is what the normally-open reading of the same level would say.
+TEST(estop_normally_closed_fails_safe_on_a_broken_chain) {
+    const bool chainBroken = true;   // pull-up wins: the pin floats HIGH
+    CHECK(estopAssertedFor(chainBroken, /*normallyClosed=*/true));
+    // The same level on a normally-open button means "released", which is exactly
+    // why the two wirings must never share a hard-coded level test.
+    CHECK(!estopAssertedFor(chainBroken, /*normallyClosed=*/false));
+}
+
+// The regression itself: a hard-coded `level == LOW` check agrees with
+// estopAssertedFor() only for the normally-open wiring, and is INVERTED for the
+// normally-closed one — in both directions.
+TEST(estop_a_hardcoded_low_test_is_inverted_on_a_closed_loop) {
+    auto hardcodedLowMeansStop = [](bool pinHigh) { return !pinHigh; };
+    for (bool pinHigh : {false, true}) {
+        CHECK_EQ((int)hardcodedLowMeansStop(pinHigh),
+                 (int)estopAssertedFor(pinHigh, /*normallyClosed=*/false));
+        CHECK(hardcodedLowMeansStop(pinHigh) !=
+              estopAssertedFor(pinHigh, /*normallyClosed=*/true));
+    }
 }
