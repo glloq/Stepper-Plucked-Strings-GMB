@@ -41,7 +41,11 @@ struct WebContext {
     std::function<uint32_t(uint8_t, uint8_t, uint8_t, uint16_t)> onTestNote;  // ch,note,vel,ms
     std::function<uint32_t(int, bool)> onTestServo;  // enqueue a servo pulse (index, active)
     std::function<uint32_t(int, double)> onJog;      // enqueue an axis jog (axis, deltaMm)
-    std::function<std::string(uint32_t)> commandState;  // queued/succeeded/refused/unknown
+    std::function<std::string(uint32_t)> commandState;
+    std::function<std::string()> diagnosticsJson;  // GET /api/diagnostics body (P2.19)
+    // Live UDP source posture (audit P1.11) so the Settings UI shows the real state.
+    std::function<std::string()> midiSourcePolicy;
+    std::function<bool()> midiSourceLocked;  // queued/succeeded/refused/unknown
     std::function<bool()> onFormatStorage;       // deliberate LittleFS reformat
     // Guard shared state during read-only handlers so a reload in loop() is never
     // observed half-applied. Both may be null (host build / no locking).

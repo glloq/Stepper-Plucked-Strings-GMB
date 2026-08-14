@@ -7,3 +7,4 @@ class TwoWire {
   uint8_t endTransmission() { return 0; }
 };
 static TwoWire Wire;
+static TwoWire Wire1;   // ESP32 has two hardware I2C controllers

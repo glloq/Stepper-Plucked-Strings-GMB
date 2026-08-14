@@ -65,28 +65,36 @@ void StepperBank::enableDrivers(bool on) {
     if (enablePin_ >= 0) digitalWrite(enablePin_, on ? LOW : HIGH);  // active-low
 }
 
-void StepperBank::moveToMm(size_t axis, double mm) {
-    if (axis >= steppers_.size() || !steppers_[axis]) return;
+ActuatorResult StepperBank::moveToMm(size_t axis, double mm) {
+    ActuatorResult g = axisWritable(axis);
+    if (g != ActuatorResult::Ok) return g;
     double clamped = axes_[axis].geom.clampToLimits(mm);
     axes_[axis].cmdTargetMm = clamped;
     axes_[axis].hasTarget = true;
     steppers_[axis]->moveTo(axes_[axis].geom.mmToSteps(clamped));
+    ++moveCount_;
+    return ActuatorResult::Ok;
 }
 
-void StepperBank::moveToMmRaw(size_t axis, double mm) {
-    if (axis >= steppers_.size() || !steppers_[axis]) return;
+ActuatorResult StepperBank::moveToMmRaw(size_t axis, double mm) {
+    ActuatorResult g = axisWritable(axis);
+    if (g != ActuatorResult::Ok) return g;
     axes_[axis].cmdTargetMm = mm;
     axes_[axis].hasTarget = true;
     steppers_[axis]->moveTo(axes_[axis].geom.mmToSteps(mm));
+    ++moveCount_;
+    return ActuatorResult::Ok;
 }
 
-void StepperBank::setVelocityMm(size_t axis, double mmS) {
-    if (axis >= steppers_.size() || !steppers_[axis]) return;
+ActuatorResult StepperBank::setVelocityMm(size_t axis, double mmS) {
+    ActuatorResult g = axisWritable(axis);
+    if (g != ActuatorResult::Ok) return g;
     axes_[axis].hasTarget = false;  // velocity cruise has no position target
     double hz = std::fabs(mmS) * axes_[axis].stepsPerMm;
     steppers_[axis]->setSpeedInHz(static_cast<uint32_t>(hz > 1 ? hz : 1));
     if (mmS >= 0) steppers_[axis]->runForward();
     else steppers_[axis]->runBackward();
+    return ActuatorResult::Ok;
 }
 
 void StepperBank::stop(size_t axis) {
@@ -101,6 +109,13 @@ void StepperBank::emergencyStop(size_t axis) {
 void StepperBank::stopAll() {
     for (auto* s : steppers_)
         if (s) s->forceStopAndNewPosition(s->getCurrentPosition());
+}
+
+void StepperBank::controlledStopAll() {
+    // Decelerated stop on every axis, drivers left ENABLED so the carriages ramp
+    // down under control instead of being abandoned mid-move. Never for an E-stop.
+    for (auto* s : steppers_)
+        if (s) s->stopMove();
 }
 
 void StepperBank::setPositionReference(size_t axis, double mm) {
@@ -173,25 +188,30 @@ void StepperBank::begin(const std::vector<AxisConfig>& axes,
 }
 void StepperBank::updateSensors(uint32_t) {}
 void StepperBank::enableDrivers(bool on) { enabled_ = on; }
-void StepperBank::moveToMm(size_t axis, double mm) {
-    if (axis < axes_.size()) {
-        double clamped = axes_[axis].geom.clampToLimits(mm);
-        axes_[axis].cmdTargetMm = clamped;
-        axes_[axis].hasTarget = true;
-        axes_[axis].position = axes_[axis].geom.mmToSteps(clamped);
-    }
+ActuatorResult StepperBank::moveToMm(size_t axis, double mm) {
+    ActuatorResult g = axisWritable(axis);
+    if (g != ActuatorResult::Ok) return g;
+    double clamped = axes_[axis].geom.clampToLimits(mm);
+    axes_[axis].cmdTargetMm = clamped;
+    axes_[axis].hasTarget = true;
+    axes_[axis].position = axes_[axis].geom.mmToSteps(clamped);
+    ++moveCount_;
+    return ActuatorResult::Ok;
 }
-void StepperBank::moveToMmRaw(size_t axis, double mm) {
-    if (axis < axes_.size()) {
-        axes_[axis].cmdTargetMm = mm;
-        axes_[axis].hasTarget = true;
-        axes_[axis].position = axes_[axis].geom.mmToSteps(mm);
-    }
+ActuatorResult StepperBank::moveToMmRaw(size_t axis, double mm) {
+    ActuatorResult g = axisWritable(axis);
+    if (g != ActuatorResult::Ok) return g;
+    axes_[axis].cmdTargetMm = mm;
+    axes_[axis].hasTarget = true;
+    axes_[axis].position = axes_[axis].geom.mmToSteps(mm);
+    ++moveCount_;
+    return ActuatorResult::Ok;
 }
-void StepperBank::setVelocityMm(size_t, double) {}
+ActuatorResult StepperBank::setVelocityMm(size_t axis, double) { return axisWritable(axis); }
 void StepperBank::stop(size_t) {}
 void StepperBank::emergencyStop(size_t) {}
 void StepperBank::stopAll() {}
+void StepperBank::controlledStopAll() {}
 void StepperBank::setPositionReference(size_t axis, double mm) {
     if (axis < axes_.size()) axes_[axis].position = axes_[axis].geom.mmToSteps(mm);
 }
@@ -206,5 +226,42 @@ bool StepperBank::homeRawHigh(size_t) const { return false; }
 bool StepperBank::limitActive(size_t) const { return false; }
 
 #endif
+
+// ---- portable, shared by both builds ---------------------------------------
+
+ActuatorResult StepperBank::axisWritable(size_t axis) const {
+    if (axis >= axes_.size()) return ActuatorResult::InvalidIndex;
+    if (!axes_[axis].geom.config().enabled) return ActuatorResult::Disabled;
+    if (axes_[axis].attachFault) return ActuatorResult::OutputFault;
+#if defined(ARDUINO)
+    // An axis with no step generator can accept nothing (belt and braces: an
+    // enabled axis that failed to attach already sets attachFault above).
+    if (axis >= steppers_.size() || !steppers_[axis]) return ActuatorResult::OutputFault;
+#endif
+    return ActuatorResult::Ok;
+}
+
+void StepperBank::hardStop() {
+    // Motion-side twin of ServoBank::hardStop: force every axis to a dead stop
+    // where it stands (no deceleration ramp, no wait for a move to finish), then
+    // drop the shared driver ENABLE. Safety-ordered — the stop precedes the power
+    // cut so a driver is never de-energised mid-ramp with the engine still pulsing.
+    stopAll();
+    enableDrivers(false);
+}
+
+uint32_t StepperBank::stopDurationMs() const {
+    // Worst case across the enabled axes: decelerating from maxSpeed at maxAccel
+    // takes v/a seconds. A 50 ms floor covers the engine's own reaction latency.
+    double worst = 0.0;
+    for (const auto& a : axes_) {
+        const AxisConfig& c = a.geom.config();
+        if (!c.enabled || c.maxAccelMmS2 <= 0.0) continue;
+        double t = c.maxSpeedMmS / c.maxAccelMmS2;
+        if (t > worst) worst = t;
+    }
+    if (worst <= 0.0) return 0;
+    return static_cast<uint32_t>(worst * 1000.0) + 50u;
+}
 
 }  // namespace gmb

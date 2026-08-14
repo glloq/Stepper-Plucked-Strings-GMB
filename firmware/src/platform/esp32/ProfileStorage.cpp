@@ -10,6 +10,51 @@
 namespace gmb {
 
 namespace {
+// Note-Off mute source, as the string name the web UI and profiles use. Absent is
+// allowed and maps to Auto (historical behaviour); an unknown string rejects the
+// profile like every other enum (audit P0-1 / P0-7).
+const char* muteSourceName(MuteSource m) {
+    switch (m) {
+        case MuteSource::Plectrum: return "plectrum";
+        case MuteSource::Damper: return "damper";
+        case MuteSource::Lift: return "lift";
+        case MuteSource::None: return "none";
+        default: return "auto";
+    }
+}
+MuteSource muteSourceFrom(JsonVariantConst v, bool* ok) {
+    if (v.isNull()) return MuteSource::Auto;  // absent -> historical default
+    if (v.is<const char*>()) {
+        std::string t = v.as<const char*>();
+        if (t == "auto") return MuteSource::Auto;
+        if (t == "plectrum") return MuteSource::Plectrum;
+        if (t == "damper") return MuteSource::Damper;
+        if (t == "lift") return MuteSource::Lift;
+        if (t == "none") return MuteSource::None;
+        *ok = false; return MuteSource::Auto;
+    }
+    if (v.is<int>()) { int i = v.as<int>(); if (i < 0 || i > 4) *ok = false;
+                       return static_cast<MuteSource>(i < 0 ? 0 : i > 4 ? 0 : i); }
+    return MuteSource::Auto;
+}
+
+// Strum-lift engagement direction. Absent -> LowerToPlay (historical behaviour).
+const char* liftEngageName(LiftEngage e) {
+    return e == LiftEngage::RaiseToPlay ? "raiseToPlay" : "lowerToPlay";
+}
+LiftEngage liftEngageFrom(JsonVariantConst v, bool* ok) {
+    if (v.isNull()) return LiftEngage::LowerToPlay;
+    if (v.is<const char*>()) {
+        std::string t = v.as<const char*>();
+        if (t == "lowerToPlay") return LiftEngage::LowerToPlay;
+        if (t == "raiseToPlay") return LiftEngage::RaiseToPlay;
+        *ok = false; return LiftEngage::LowerToPlay;
+    }
+    if (v.is<int>()) { int i = v.as<int>(); if (i < 0 || i > 1) *ok = false;
+                       return static_cast<LiftEngage>(i < 0 ? 0 : i > 1 ? 1 : i); }
+    return LiftEngage::LowerToPlay;
+}
+
 const char* transmissionName(Transmission t) {
     switch (t) {
         case Transmission::BeltGt2: return "beltGt2";
@@ -196,11 +241,13 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
     in["typeId"] = p.instrument.typeId;
     in["capo"] = p.instrument.capo;
     in["transpose"] = p.instrument.transpose;
+    in["polyphonyMax"] = p.instrument.polyphonyMax;
 
     JsonObject bo = doc["board"].to<JsonObject>();
     bo["profile"] = p.boardIdentifier;
     bo["reserveUsb"] = p.reserveUsb;
     bo["automaticPinAssignment"] = p.automaticPinAssignment;
+    bo["estopNormallyClosed"] = p.estopNormallyClosed;
 
     JsonArray pins = doc["pins"].to<JsonArray>();
     for (const auto& a : p.pins) {
@@ -210,12 +257,35 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
         o["kind"] = signalKindName(a.kind);
     }
 
+    // Physical power/safety declarations (documentation-only; see HardwareNotes).
+    JsonObject hw = doc["hardware"].to<JsonObject>();
+    hw["oePullup"] = p.hardware.oePullup;
+    hw["oeGate"] = p.hardware.oeGate;
+    hw["estopCutsPower"] = p.hardware.estopCutsPower;
+    hw["estopCutsDriverEnable"] = p.hardware.estopCutsDriverEnable;
+    hw["mainSwitch"] = p.hardware.mainSwitch;
+    hw["mainFuse"] = p.hardware.mainFuse;
+    hw["branchFuses"] = p.hardware.branchFuses;
+    hw["servoIdleMa"] = p.hardware.servoIdleMa;
+    hw["servoMoveMa"] = p.hardware.servoMoveMa;
+    hw["servoStallMa"] = p.hardware.servoStallMa;
+    hw["stepperHoldMa"] = p.hardware.stepperHoldMa;
+    hw["stepperMoveMa"] = p.hardware.stepperMoveMa;
+    hw["extPullupOhm0"] = p.hardware.extPullupOhm0;
+    hw["extPullupOhm1"] = p.hardware.extPullupOhm1;
+    JsonArray pu = hw["pcaPullups"].to<JsonArray>();
+    for (const auto& n : p.hardware.pcaPullups) {
+        JsonObject o = pu.add<JsonObject>();
+        o["bus"] = n.i2cBus;
+        o["board"] = n.board;
+        o["ohm"] = n.ohm;
+    }
+
     JsonObject net = doc["network"].to<JsonObject>();
     net["mode"] = p.network.mode == NetworkMode::Station ? "station" : "accessPoint";
     net["ssid"] = p.network.ssid;
     net["hostname"] = p.network.hostname;
     net["apSsid"] = p.network.apSsid;
-    net["staticIp"] = p.network.staticIp;
 
     JsonObject mi = doc["midi"].to<JsonObject>();
     mi["globalChannel"] = p.midi.globalChannel;
@@ -258,6 +328,21 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
     fr["maximum"] = p.selector.fret.maximum;
     fr["offset"] = p.selector.fret.offset;
     fr["invalidValuePolicy"] = fretPolicyName(p.selector.fret.invalidValuePolicy);
+
+    JsonObject pw = doc["power"].to<JsonObject>();
+    pw["maxConcurrentMoves"] = p.power.maxConcurrentMoves;
+    pw["maxConcurrentPerBoard"] = p.power.maxConcurrentPerBoard;
+    pw["staggerMs"] = p.power.staggerMs;
+
+    // Global plucking gesture + Note-Off mute behaviour, common to all strings.
+    JsonObject pl = doc["pluck"].to<JsonObject>();
+    pl["strokeMs"] = p.pluck.strokeMs;
+    pl["minStrikePct"] = p.pluck.minStrikePct;
+    pl["fretToPluckMs"] = p.pluck.fretToPluckMs;
+    pl["muteSource"] = muteSourceName(p.pluck.muteSource);
+    pl["muteHoldMs"] = p.pluck.muteHoldMs;
+    pl["liftMuteOnNoteOff"] = p.pluck.liftMuteOnNoteOff;
+    pl["liftEngage"] = liftEngageName(p.pluck.liftEngage);
 
     JsonArray strings = doc["strings"].to<JsonArray>();
     for (size_t i = 0; i < p.strings.size(); ++i) {
@@ -305,12 +390,14 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
         o["stringIndex"] = s.stringIndex;
         o["source"] = s.source == ServoSource::DirectGpio ? "gpio" : "pca";
         o["pcaBoard"] = s.pcaBoard;
+        o["i2cBus"] = s.i2cBus;
         o["channel"] = s.channel;
         o["gpio"] = s.gpio;
         o["pulseMinUs"] = s.pulseMinUs;
         o["pulseMaxUs"] = s.pulseMaxUs;
         o["restUs"] = s.restUs;
         o["activeUs"] = s.activeUs;
+        o["muteUs"] = s.muteUs;
         o["inverted"] = s.inverted;
         o["travelMs"] = s.travelMs;
         o["settleMs"] = s.settleMs;
@@ -321,6 +408,90 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
         o["strokeMs"] = s.strokeMs;
         o["minStrikeUs"] = s.minStrikeUs;
     }
+}
+
+namespace {
+// v1 -> v2: v2 removed the no-op network.staticIp flag (audit P1.9). Dropping the
+// stale key here keeps a re-exported profile clean; fromJson would ignore it anyway.
+void migrateV1ToV2(JsonDocument& doc) {
+    if (doc["network"].is<JsonObject>())
+        doc["network"].as<JsonObject>().remove("staticIp");
+}
+}  // namespace
+
+void ProfileStorage::migrate(JsonDocument& doc) {
+    uint16_t v = doc["profileVersion"] | 1;  // absent == the original v1 schema
+    if (v >= kCurrentProfileVersion) return;  // already current (or newer): leave as-is
+    if (v < 2) { migrateV1ToV2(doc); v = 2; }
+    // Future: if (v < 3) { migrateV2ToV3(doc); v = 3; } ...
+    doc["profileVersion"] = kCurrentProfileVersion;
+}
+
+namespace {
+// Envelope generation marker for the on-disk device/instrument split (P1.13). It is
+// ORTHOGONAL to profileVersion: profileVersion versions the field *schema* (shared with
+// the flat interchange format), while storageFormat marks how those fields are *laid
+// out on disk*. Keeping them separate lets the split evolve without disturbing the
+// web/interchange contract, which stays flat at its own profileVersion.
+constexpr char kSlotFormat[] = "gmb-split-v1";
+}  // namespace
+
+void ProfileStorage::toSlotJson(const Profile& p, JsonDocument& doc) {
+    // Build the flat interchange form once (the single source of field logic), then
+    // re-parent its sections into device/instrument. ArduinoJson deep-copies on
+    // cross-document assignment, so each section is a full independent copy.
+    JsonDocument flat;
+    toJson(p, flat);
+    doc["storageFormat"] = kSlotFormat;
+    doc["project"] = flat["project"];
+    doc["profileVersion"] = flat["profileVersion"];
+    doc["capabilitiesRevision"] = flat["capabilitiesRevision"];
+    JsonObject dev = doc["device"].to<JsonObject>();
+    dev["board"] = flat["board"];
+    dev["pins"] = flat["pins"];
+    dev["hardware"] = flat["hardware"];  // physical wiring notes live device-side
+    dev["network"] = flat["network"];
+    JsonObject ins = doc["instrument"].to<JsonObject>();
+    ins["info"] = flat["instrument"];  // InstrumentInfo — flat key is "instrument"
+    ins["midi"] = flat["midi"];
+    ins["stringFretSelection"] = flat["stringFretSelection"];
+    ins["power"] = flat["power"];
+    ins["pluck"] = flat["pluck"];
+    // The axes AND their homing configs are instrument mechanics (each string entry
+    // already carries its own `homing` object), so they travel with the instrument.
+    ins["strings"] = flat["strings"];
+    ins["servos"] = flat["servos"];
+}
+
+bool ProfileStorage::fromSlotJson(JsonVariantConst doc, Profile& out) {
+    // Legacy flat slot (pre-split): no `device` section. Read it through the interchange
+    // path (migrate handles v1->v2 etc.), so old on-disk profiles keep loading and are
+    // rewritten split on the next save.
+    if (!doc["device"].is<JsonObjectConst>()) {
+        JsonDocument tmp;
+        tmp.set(doc);
+        migrate(tmp);
+        return fromJson(tmp.as<JsonVariantConst>(), out);
+    }
+    // Split slot: re-flatten the two sections, then hand off to the ONE field parser.
+    JsonObjectConst dev = doc["device"];
+    JsonObjectConst ins = doc["instrument"];
+    JsonDocument flat;
+    flat["project"] = doc["project"];
+    flat["profileVersion"] = doc["profileVersion"];
+    flat["capabilitiesRevision"] = doc["capabilitiesRevision"];
+    flat["board"] = dev["board"];
+    flat["pins"] = dev["pins"];
+    flat["hardware"] = dev["hardware"];
+    flat["network"] = dev["network"];
+    flat["instrument"] = ins["info"];
+    flat["midi"] = ins["midi"];
+    flat["stringFretSelection"] = ins["stringFretSelection"];
+    flat["power"] = ins["power"];
+    flat["pluck"] = ins["pluck"];
+    flat["strings"] = ins["strings"];
+    flat["servos"] = ins["servos"];
+    return fromJson(flat.as<JsonVariantConst>(), out);
 }
 
 bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
@@ -339,11 +510,14 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
     out.instrument.typeId = in["typeId"] | 4;
     out.instrument.capo = in["capo"] | 0;
     out.instrument.transpose = in["transpose"] | 0;
+    out.instrument.polyphonyMax = in["polyphonyMax"] | 0;
 
     JsonObjectConst bo = doc["board"];
     out.boardIdentifier = bo["profile"] | "esp32-s3-devkitc-1";
     out.reserveUsb = bo["reserveUsb"] | true;
     out.automaticPinAssignment = bo["automaticPinAssignment"] | true;
+    // Absent on older profiles -> the legacy normally-OPEN button polarity.
+    out.estopNormallyClosed = bo["estopNormallyClosed"] | false;
 
     out.pins.clear();
     for (JsonObjectConst o : doc["pins"].as<JsonArrayConst>()) {
@@ -357,13 +531,41 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
         out.pins.push_back(a);
     }
 
+    // Physical power/safety declarations — absent on older profiles: everything
+    // defaults to "not declared" (false / none), which the web pages surface as
+    // still-to-build warnings, never as errors.
+    JsonObjectConst hw = doc["hardware"];
+    out.hardware = HardwareNotes{};
+    out.hardware.oePullup = hw["oePullup"] | false;
+    out.hardware.oeGate = hw["oeGate"] | false;
+    out.hardware.estopCutsPower = hw["estopCutsPower"] | false;
+    out.hardware.estopCutsDriverEnable = hw["estopCutsDriverEnable"] | false;
+    out.hardware.mainSwitch = hw["mainSwitch"] | false;
+    out.hardware.mainFuse = hw["mainFuse"] | false;
+    out.hardware.branchFuses = hw["branchFuses"] | false;
+    out.hardware.servoIdleMa = hw["servoIdleMa"] | 10;
+    out.hardware.servoMoveMa = hw["servoMoveMa"] | 250;
+    out.hardware.servoStallMa = hw["servoStallMa"] | 800;
+    out.hardware.stepperHoldMa = hw["stepperHoldMa"] | 400;
+    out.hardware.stepperMoveMa = hw["stepperMoveMa"] | 800;
+    out.hardware.extPullupOhm0 = hw["extPullupOhm0"] | 0;
+    out.hardware.extPullupOhm1 = hw["extPullupOhm1"] | 0;
+    for (JsonObjectConst o : hw["pcaPullups"].as<JsonArrayConst>()) {
+        PcaPullupNote n;
+        n.i2cBus = o["bus"] | 0;
+        n.board = o["board"] | 0;
+        n.ohm = o["ohm"] | 10000;
+        out.hardware.pcaPullups.push_back(n);
+    }
+
     JsonObjectConst net = doc["network"];
     std::string nm = net["mode"] | "accessPoint";
     out.network.mode = nm == "station" ? NetworkMode::Station : NetworkMode::AccessPoint;
     out.network.ssid = net["ssid"] | "";
     out.network.hostname = net["hostname"] | "gmb-instrument";
     out.network.apSsid = net["apSsid"] | "Stepper-Plucked-Strings-GMB";
-    out.network.staticIp = net["staticIp"] | false;
+    // `staticIp` (removed, audit P1.9): an old profile may still carry the key; it is
+    // simply ignored on load (the migration drops it from a re-exported profile).
 
     JsonObjectConst mi = doc["midi"];
     out.midi.globalChannel = mi["globalChannel"] | 0;
@@ -456,6 +658,21 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
         out.homing.push_back(h);
     }
 
+    JsonObjectConst pw = doc["power"];
+    out.power.maxConcurrentMoves = pw["maxConcurrentMoves"] | 3;
+    out.power.maxConcurrentPerBoard = pw["maxConcurrentPerBoard"] | 0;
+    out.power.staggerMs = pw["staggerMs"] | 8;
+
+    // Global plucking config. Absent -> all defaults -> historical behaviour.
+    JsonObjectConst pl = doc["pluck"];
+    out.pluck.strokeMs = pl["strokeMs"] | 0;
+    out.pluck.minStrikePct = pl["minStrikePct"] | 0;
+    out.pluck.fretToPluckMs = pl["fretToPluckMs"] | 0;
+    out.pluck.muteSource = muteSourceFrom(pl["muteSource"], &enumsOk);
+    out.pluck.muteHoldMs = pl["muteHoldMs"] | 60;
+    out.pluck.liftMuteOnNoteOff = pl["liftMuteOnNoteOff"] | false;
+    out.pluck.liftEngage = liftEngageFrom(pl["liftEngage"], &enumsOk);
+
     out.servos.clear();
     for (JsonObjectConst o : doc["servos"].as<JsonArrayConst>()) {
         ServoConfig s;
@@ -465,12 +682,14 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
         std::string src = o["source"] | "pca";
         s.source = src == "gpio" ? ServoSource::DirectGpio : ServoSource::Pca;
         s.pcaBoard = o["pcaBoard"] | 0;
+        s.i2cBus = o["i2cBus"] | 0;
         s.channel = o["channel"] | 0;
         s.gpio = o["gpio"] | -1;
         s.pulseMinUs = o["pulseMinUs"] | 500;
         s.pulseMaxUs = o["pulseMaxUs"] | 2500;
         s.restUs = o["restUs"] | 1000;
         s.activeUs = o["activeUs"] | 1800;
+        s.muteUs = o["muteUs"] | 0;
         s.inverted = o["inverted"] | false;
         s.travelMs = o["travelMs"] | 120;
         s.settleMs = o["settleMs"] | 30;
@@ -500,6 +719,7 @@ std::string ProfileStorage::exportJson(const Profile& p, bool /*includeSecrets*/
 bool ProfileStorage::importJson(const std::string& json, Profile& out) const {
     JsonDocument doc;
     if (deserializeJson(doc, json) != DeserializationError::Ok) return false;
+    migrate(doc);  // upgrade an imported (possibly older) profile (P1.12)
     return fromJson(doc.as<JsonVariantConst>(), out);
 }
 
@@ -541,7 +761,7 @@ bool ProfileStorage::begin() {
         JsonDocument doc;
         bool ok = deserializeJson(doc, f) == DeserializationError::Ok;
         Profile check;
-        ok = ok && fromJson(doc.as<JsonVariantConst>(), check);
+        ok = ok && fromSlotJson(doc.as<JsonVariantConst>(), check);  // split or legacy slot
         f.close();
         return ok;
     };
@@ -581,7 +801,11 @@ std::vector<std::string> ProfileStorage::list() const {
         if (f) {
             JsonDocument doc;
             if (deserializeJson(doc, f) == DeserializationError::Ok)
-                names.push_back(std::string(doc["instrument"]["name"] | "Profile"));
+                // Split slot: the name lives under instrument.info; a legacy flat
+                // slot keeps it directly under instrument.
+                names.push_back(std::string(
+                    doc["instrument"]["info"]["name"] |
+                    (doc["instrument"]["name"] | "Profile")));
             else
                 names.push_back("");
             f.close();
@@ -597,9 +821,11 @@ bool ProfileStorage::load(int slot, Profile& out) const {
     File f = LittleFS.open(slotPath(slot).c_str(), "r");
     if (!f) return false;
     JsonDocument doc;
-    bool ok = deserializeJson(doc, f) == DeserializationError::Ok && fromJson(doc.as<JsonVariantConst>(), out);
+    if (deserializeJson(doc, f) != DeserializationError::Ok) { f.close(); return false; }
     f.close();
-    return ok;
+    // Slot files use the split on-disk form; fromSlotJson reads split OR a legacy flat
+    // slot (which it migrates), so old on-disk profiles keep loading (P1.13 / P1.12).
+    return fromSlotJson(doc.as<JsonVariantConst>(), out);
 }
 
 bool ProfileStorage::save(int slot, const Profile& p) {
@@ -614,7 +840,7 @@ bool ProfileStorage::save(int slot, const Profile& p) {
     File f = LittleFS.open(tmp.c_str(), "w");
     if (!f) return false;
     JsonDocument doc;
-    toJson(p, doc);
+    toSlotJson(p, doc);  // split device/instrument on-disk form (P1.13)
     size_t written = serializeJson(doc, f);
     f.close();
     if (written == 0) {  // write failed: keep the old slot intact
@@ -629,7 +855,7 @@ bool ProfileStorage::save(int slot, const Profile& p) {
         JsonDocument vd;
         Profile check;
         bool ok = deserializeJson(vd, rf) == DeserializationError::Ok &&
-                  fromJson(vd.as<JsonVariantConst>(), check);
+                  fromSlotJson(vd.as<JsonVariantConst>(), check);
         rf.close();
         if (!ok) { LittleFS.remove(tmp.c_str()); return false; }
     }

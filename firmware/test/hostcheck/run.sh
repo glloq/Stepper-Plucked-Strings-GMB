@@ -21,7 +21,11 @@ AJ="${ARDUINOJSON_H:-$work/ArduinoJson.h}"
 if [ ! -f "$AJ" ]; then
   url="https://github.com/bblanchon/ArduinoJson/releases/download/v7.2.1/ArduinoJson-v7.2.1.h"
   echo "Downloading ArduinoJson -> $AJ"
-  curl -sSL -o "$AJ" "$url"
+  # -f: an HTTP error is a failure, never save an error page AS the header (that is
+  # what made the ArduinoJson types "undeclared" on a flaky runner). --retry: ride out
+  # a transient network blip. Stage via .tmp + mv so a partial download is never cached.
+  curl -fsSL --retry 3 --retry-delay 2 -o "$AJ.tmp" "$url"
+  mv "$AJ.tmp" "$AJ"
 fi
 ajdir="$(dirname "$AJ")"
 
