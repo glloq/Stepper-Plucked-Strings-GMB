@@ -48,9 +48,9 @@ keeps them apart. Two are built:
 
 | Transport | Class | State | Bound when |
 | --------- | ----- | ----- | ---------- |
-| Wi-Fi UDP | `MidiWifi` | working | always (UDP port 5006), subject to the source policy below |
-| DIN-5 / TRS | `MidiDinTransport` | working | a `MIDI_RX` GPIO is assigned |
-| Native USB | `MidiUsbTransport` | **skeleton** | never — TinyUSB is not wired yet |
+| Wi-Fi UDP | `MidiWifi` | working, validated | always (UDP port 5006), subject to the source policy below |
+| DIN-5 / TRS | `MidiDinTransport` | working, validated | a `MIDI_RX` GPIO is assigned |
+| Native USB | `MidiUsbTransport` | built, **not hardware-validated** | the `esp32-s3-usbmidi` image is flashed *and* a host has enumerated it |
 
 DIN MIDI needs no special stack: it is 31250-baud serial. `bindDinMidi()`
 (`main.cpp`) opens **UART2** — UART0 is the programming/diagnostic console, and
@@ -88,6 +88,32 @@ no sender identity on a DIN line to lock to.
 Hardware wiring for the optocoupled DIN/TRS input is in
 [`hardware/POWER_AND_SAFETY.md`](../hardware/POWER_AND_SAFETY.md) §4.1 — the
 isolation there is mandatory, not a refinement.
+
+### 1.2 Native USB-MIDI — opt-in, and why
+
+`Adafruit_USBD_MIDI` is a `Stream`: it de-packetises the 4-byte USB-MIDI packets
+into a plain MIDI byte stream, so the transport is the same three lines as the
+DIN one. The cost is not the code, it is the peripheral.
+
+The ESP32-S3 has **one** USB peripheral and two mutually exclusive Arduino modes:
+
+| | `ARDUINO_USB_MODE=1` (default env) | `ARDUINO_USB_MODE=0` (`esp32-s3-usbmidi`) |
+| --- | --- | --- |
+| USB stack | hardware USB-CDC / JTAG | TinyUSB |
+| USB-MIDI | impossible | available |
+| Serial console | always there, even if the firmware hangs | emulated CDC — absent while enumerating or wedged |
+| Reflash | plain `esptool` | manual BOOT-button entry when it goes wrong |
+
+Losing a console that survives a hang is a real cost during bring-up, so the
+default S3 image keeps the hardware CDC and `esp32-s3-usbmidi` is a separate env.
+Both are built in CI, so the TinyUSB path cannot rot unnoticed.
+
+**Not hardware-validated.** It compiles; nobody has enumerated it against a host,
+and the Adafruit TinyUSB tracker carries known S3-specific enumeration quirks.
+Treat the first flash as a bench experiment — confirm the device appears as a
+MIDI port *and* that the console still reaches you — before relying on it. Wi-Fi
+UDP and DIN are the validated inputs. The classic ESP32 has no native USB at all;
+there is nothing to enable there.
 
 ---
 

@@ -346,9 +346,10 @@ controller heard, or refuse network MIDI entirely). Both live on the device and
 are never part of an exported profile.
 
 Below them, **MIDI inputs** lists every transport with its real state, straight
-from `GET /api/status`: Wi-Fi UDP, USB-MIDI (declared *not implemented in this
-build* rather than implied), and DIN-5/TRS with the GPIO and UART it is bound to,
-or `no MIDI_RX pin assigned` when it is not. The source policy above applies to
+from `GET /api/status`: Wi-Fi UDP, USB-MIDI (which says *not built in* on the
+default image rather than implying it works — see
+[`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) §1.2), and DIN-5/TRS with the GPIO and
+UART it is bound to, or `no MIDI_RX pin assigned` when it is not. The source policy above applies to
 the Wi-Fi transport only — a physical cable is trusted by being plugged in, and
 there is no sender identity on a DIN line to lock to.
 

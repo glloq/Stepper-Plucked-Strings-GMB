@@ -108,6 +108,9 @@ jobs:
           - esp32-s3-devkitc-1
           - esp32-wroom-32
           - esp32-devkit-v1
+          # Opt-in USB-MIDI image. Built here so the TinyUSB path cannot rot
+          # unnoticed; it is NOT hardware-validated (see platformio.ini).
+          - esp32-s3-usbmidi
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

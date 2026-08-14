@@ -828,8 +828,13 @@ WebContext buildWebContext() {
         WebContext::MidiTransportState usb;
         usb.name = "usb";
         usb.label = "USB-MIDI";
-        usb.bound = false;   // TinyUSB not wired yet — say so instead of implying it works
-        usb.detail = "not implemented in this build";
+        usb.bound = g_usbMidi.bound();
+        usb.detail = usb.bound ? "native USB-MIDI (TinyUSB), host connected"
+#if defined(GMB_USB_MIDI)
+                               : "native USB-MIDI built in — no host connected";
+#else
+                               : "not built in (see the esp32-s3-usbmidi env)";
+#endif
         usb.events = g_transportEvents[1].load();
         out.push_back(usb);
 
@@ -1074,7 +1079,9 @@ void setup() {
         if (midiSrc >= 0 && midiSrc <= 2)
             g_midi.setSourcePolicy(static_cast<UdpSourcePolicy>(midiSrc));
     }
-    g_usbMidi.begin();  // P1.7: inert until wired to native USB-MIDI (no-op elsewhere)
+    // Native USB-MIDI: real in the esp32-s3-usbmidi build, inert everywhere else.
+    if (g_usbMidi.begin())
+        Serial.println("[midi] native USB-MIDI endpoint up");
     bindDinMidi();      // DIN-5/TRS MIDI in, when a MIDI_RX pin is assigned
 
     WebContext ctx = buildWebContext();

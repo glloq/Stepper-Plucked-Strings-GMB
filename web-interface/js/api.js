@@ -482,7 +482,8 @@
     (p.pins || []).forEach(function (a) { if (a.signal === 'MIDI_RX') rx = a.gpio; });
     return [
       { name: 'wifiUdp', label: 'Wi-Fi (UDP)', bound: true, detail: 'UDP port 5006', events: 0 },
-      { name: 'usb', label: 'USB-MIDI', bound: false, detail: 'not implemented in this build', events: 0 },
+      { name: 'usb', label: 'USB-MIDI', bound: false,
+        detail: 'not built in (see the esp32-s3-usbmidi env)', events: 0 },
       { name: 'din', label: 'DIN-5 / TRS', bound: rx >= 0,
         detail: rx >= 0 ? ('GPIO' + rx + ', UART2, 31250 baud') : 'no MIDI_RX pin assigned',
         events: 0 }

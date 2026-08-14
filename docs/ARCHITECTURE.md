@@ -128,9 +128,11 @@ firmware/src/platform/esp32/     the hardware glue — Arduino-gated
 ├── ServoBank.{h,cpp}            PCA9685 on two I²C buses + direct-GPIO (LEDC);
 │                                hardStop, controlled and governed parks
 ├── MidiWifi.{h,cpp}             UDP MIDI transport (+ the UDP source gate)
-├── MidiDinTransport.h           DIN-5/TRS over UART — complete, inert until a
-│                                RX pin is bound
-├── MidiUsbTransport.h           native USB-MIDI skeleton (awaits TinyUSB)
+├── MidiDinTransport.h           DIN-5/TRS over UART — bound to UART2 when a
+│                                MIDI_RX pin is assigned
+├── MidiUsbTransport.h           native USB-MIDI (TinyUSB) — built only by the
+│                                opt-in esp32-s3-usbmidi env, not yet
+│                                hardware-validated
 ├── PlaybackScheduler.h          per-string mechanical FSM (release → move →
 │                                press → settle → strike) + the per-axis
 │                                endstop scan that runs ahead of it
