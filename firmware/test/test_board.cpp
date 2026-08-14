@@ -99,7 +99,7 @@ TEST(gpio0_boot_button_reserved_on_all_boards) {
                                 SignalKind::Home, SignalKind::Limit, SignalKind::Diag,
                                 SignalKind::I2cSda, SignalKind::I2cScl,
                                 SignalKind::ServoOe, SignalKind::Generic,
-                                SignalKind::SafetyInput};
+                                SignalKind::SafetyInput, SignalKind::UartRx};
     for (const char* id : {"esp32-s3-devkitc-1", "esp32-s3-devkitc-1-v1.1",
                            "esp32-wroom-32", "esp32-devkit-v1"}) {
         const BoardProfile* b = builtinBoardProfile(id);
@@ -161,4 +161,32 @@ TEST(safety_input_refuses_strapping_and_pull_less_pins) {
     CHECK(w->supports(13, SignalKind::SafetyInput));   // an ordinary GPIO is fine
     for (const PinCapability* c : w->candidatesFor(SignalKind::SafetyInput))
         CHECK(!c->strapping && c->internalPullUp);
+}
+
+// DIN MIDI in (`MIDI_RX`). The UART matrix routes RX to any readable pin, so the
+// only real constraints are "readable" and "not a strapping pin" — a powered MIDI
+// sender holds the line at whatever it likes across a reset, which is exactly what
+// a strapping pin must not see. Deliberately WIDER than SafetyInput: an input-only
+// pin with no pull-up is a perfectly good UART RX, and refusing those would throw
+// away four of the classic ESP32's few remaining free inputs.
+TEST(uart_rx_accepts_input_only_pins_but_refuses_strapping) {
+    const BoardProfile* w = builtinBoardProfile("esp32-wroom-32");
+    CHECK(w != nullptr);
+    if (!w) return;
+    CHECK(!w->supports(0, SignalKind::UartRx));    // BOOT / strapping
+    CHECK(!w->supports(2, SignalKind::UartRx));    // strapping
+    CHECK(!w->supports(12, SignalKind::UartRx));   // MTDI strapping
+    CHECK(!w->supports(15, SignalKind::UartRx));   // MTDO strapping
+    CHECK(w->supports(34, SignalKind::UartRx));    // input-only: fine for RX
+    CHECK(w->supports(13, SignalKind::UartRx));
+    for (const PinCapability* c : w->candidatesFor(SignalKind::UartRx))
+        CHECK(c->input && !c->strapping);
+}
+
+// PinManager must map the `MIDI_RX` signal name onto the UART kind, or the pin
+// validator would fall through to Generic ("any output") and cheerfully accept an
+// output-only pin for an input the firmware then reads forever as idle.
+TEST(pin_manager_maps_midi_rx_to_uart_rx) {
+    CHECK(signalKindFromName("MIDI_RX") == SignalKind::UartRx);
+    CHECK(signalKindFromName("ESTOP") == SignalKind::SafetyInput);
 }

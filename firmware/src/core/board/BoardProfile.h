@@ -54,6 +54,10 @@ enum class SignalKind : uint8_t {
     SafetyInput,  // hardware E-stop input (`ESTOP`): input + interrupt + internal
                   // pull-up, never a strapping pin (an NC loop idles the pin LOW
                   // through boot, which would corrupt the boot strap)
+    UartRx,       // DIN-5/TRS MIDI input (`MIDI_RX`): a UART RX at 31250 baud. Any
+                  // readable pin the matrix can route a UART to; NOT a strapping
+                  // pin, because an idle MIDI line sits HIGH but a connected,
+                  // powered sender can hold it either way through a reset.
 };
 
 struct BoardProfile {

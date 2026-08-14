@@ -64,6 +64,11 @@ MidiDinTransport g_dinMidi;  // DIN-5/TRS UART — P1.7 functional, inert until 
 // Every transport feeds the SAME InstrumentController (P1.7): adding a transport
 // never touches the instrument logic, and MidiEvent.source keeps the inputs apart.
 MidiTransport* const g_transports[] = {&g_midi, &g_usbMidi, &g_dinMidi};
+// Messages decoded per transport since boot, in g_transports order. `/api/status`
+// reports these so "which MIDI input is actually feeding the instrument?" has a
+// measured answer rather than an assumed one.
+std::atomic<uint32_t> g_transportEvents[3]{};
+constexpr uint16_t kMidiUdpPort = 5006;  // AppleMIDI-free raw UDP MIDI (spec §8.1)
 WebApi g_web;
 
 // AppPhase + its wire labels now live in core/app/AppPhase.h (host-tested, P2.17).
@@ -265,6 +270,7 @@ std::string g_diagJson = "{}";
 void hardStopAll();  // defined below; needed by faultRuntimeAxis
 void faultRuntimeAxis(size_t i, const char* reason, uint32_t nowMs);
 void doPanic();      // defined below; needed by serviceLostPcaBoard
+void bindDinMidi();  // defined below; needed by servicePendingActivation
 
 // Route an ActuatorResult from a scheduler-facing command (audit P1.4): Ok passes
 // through, anything else faults the axis with the reason spelled out and returns
@@ -768,6 +774,7 @@ void servicePendingActivation(uint32_t nowMs) {
             g_profile = p;
             g_profile.capabilitiesRevision++;
             applyProfile();  // re-resolves pins incl. ESTOP, reinitialises hardware
+            bindDinMidi();   // the MIDI_RX pin may have moved with the new config
         }))
         return;
     // Carry the awaiting command across the re-home: doHoming marks it succeeded
@@ -1341,6 +1348,36 @@ std::string buildDiagnosticsJson() {
 // web "Start hotspot" request. Runs on the main loop (owns Net + WiFi). Switching
 // the radio is independent of the instrument state, so it works in any phase — the
 // point is precisely to stay reachable when the machine will not arm.
+// ---- DIN-5 / TRS MIDI input -----------------------------------------------
+//
+// DIN MIDI is just 31250-baud serial, and MidiDinTransport has always been able
+// to decode it — it was passed a null Stream, so the whole path was dead. What it
+// needed was a device-level pin, which now exists as the `MIDI_RX` signal.
+//
+// UART2 is used because UART0 is the programming/diagnostic console: binding MIDI
+// to it would fight the serial monitor and eat the boot log. RX only — this
+// firmware receives MIDI, it does not send it — so no TX pin is claimed.
+constexpr int8_t kDinMidiUart = 2;
+constexpr uint32_t kDinMidiBaud = 31250;
+bool g_dinMidiBound = false;
+
+void bindDinMidi() {
+    const int8_t rx = pinOf("MIDI_RX");
+    if (rx < 0) {
+        g_dinMidi.begin(nullptr);   // no pin assigned: the transport stays inert
+        g_dinMidiBound = false;
+        return;
+    }
+    static HardwareSerial dinSerial(kDinMidiUart);
+    // -1 for TX: claim only the RX pin, so nothing else is taken from the user.
+    dinSerial.begin(kDinMidiBaud, SERIAL_8N1, rx, -1);
+    g_dinMidi.begin(&dinSerial);
+    g_dinMidiBound = true;
+    Serial.printf("[midi] DIN input on GPIO%d (UART%d, %u baud)\n", rx,
+                  static_cast<int>(kDinMidiUart),
+                  static_cast<unsigned>(kDinMidiBaud));
+}
+
 // ---- device-level network settings (NVS) ---------------------------------
 //
 // The link config belongs to the DEVICE, not to the instrument (P1.13): moving a
@@ -1500,7 +1537,7 @@ void setup() {
     String apPass = prefs.getString("appass", "");
     prefs.end();
     g_net.begin(g_profile.network, staPass.c_str(), apPass.c_str());
-    g_midi.begin(5006);
+    g_midi.begin(kMidiUdpPort);
     // Restore the stored UDP MIDI source posture (device state, not part of an
     // instrument profile): 0 open (default) / 1 lockToFirst / 2 disabled.
     {
@@ -1512,8 +1549,7 @@ void setup() {
             g_midi.setSourcePolicy(static_cast<UdpSourcePolicy>(midiSrc));
     }
     g_usbMidi.begin();  // P1.7: inert until wired to native USB-MIDI (no-op elsewhere)
-    g_dinMidi.begin(nullptr);  // P1.7: byte->event logic ready; inert until a DIN RX
-                               // UART is bound here (a DeviceConfig pin, see P1.13)
+    bindDinMidi();      // DIN-5/TRS MIDI in, when a MIDI_RX pin is assigned
 
     WebContext ctx;
     ctx.profile = &g_profile;
@@ -1563,6 +1599,38 @@ void setup() {
         return udpSourcePolicyName(g_midi.sourcePolicy());
     };
     ctx.midiSourceLocked = []() -> bool { return g_midi.sourceLocked(); };
+    ctx.midiTransports = []() -> std::vector<WebContext::MidiTransportState> {
+        std::vector<WebContext::MidiTransportState> out;
+        WebContext::MidiTransportState udp;
+        udp.name = "wifiUdp";
+        udp.label = "Wi-Fi (UDP)";
+        // Bound means "can actually receive": the socket is only useful with a link.
+        udp.bound = g_net.connected();
+        udp.detail = udp.bound ? ("UDP port " + std::to_string(kMidiUdpPort))
+                               : "no network link";
+        udp.events = g_transportEvents[0].load();
+        out.push_back(udp);
+
+        WebContext::MidiTransportState usb;
+        usb.name = "usb";
+        usb.label = "USB-MIDI";
+        usb.bound = false;   // TinyUSB not wired yet — say so instead of implying it works
+        usb.detail = "not implemented in this build";
+        usb.events = g_transportEvents[1].load();
+        out.push_back(usb);
+
+        WebContext::MidiTransportState din;
+        din.name = "din";
+        din.label = "DIN-5 / TRS";
+        din.bound = g_dinMidiBound;
+        din.detail = g_dinMidiBound
+                         ? ("GPIO" + std::to_string(pinOf("MIDI_RX")) + ", UART" +
+                            std::to_string(kDinMidiUart) + ", 31250 baud")
+                         : "no MIDI_RX pin assigned";
+        din.events = g_transportEvents[2].load();
+        out.push_back(din);
+        return out;
+    };
     ctx.onSetMidiSource = [](int policy, bool unlock) -> bool {
         if (policy >= 0 && policy <= 2) {
             Preferences p;
@@ -1755,8 +1823,11 @@ void loop() {
     // Ingest MIDI from every transport into the SAME InstrumentController (P1.7).
     // Each event already carries its transport as MidiEvent.source.
     for (MidiTransport* t : g_transports) t->poll(nowUs);
-    for (MidiTransport* t : g_transports) {
-        g_diag.addMidiEvents(static_cast<uint32_t>(t->events().size()));
+    for (size_t ti = 0; ti < sizeof(g_transports) / sizeof(g_transports[0]); ++ti) {
+        MidiTransport* t = g_transports[ti];
+        const uint32_t n = static_cast<uint32_t>(t->events().size());
+        g_diag.addMidiEvents(n);
+        if (n) g_transportEvents[ti].fetch_add(n);
         for (auto& e : t->events()) {
             g_web.broadcastMidi(e);  // feed the Web MIDI monitor (all phases)
             if (g_phase == AppPhase::Ready) g_instrument.handleEvent(e, nowUs);

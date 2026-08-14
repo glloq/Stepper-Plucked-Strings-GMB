@@ -225,6 +225,21 @@ The pin-assignment grid with per-signal capability filtering and live validation
 Colours and rules come from the board profile — see
 [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md).
 
+Below the per-string signals sit the two **optional device inputs**, both left
+`— unassigned —` by default because the hardware behind them is optional:
+
+| Signal | Kind | For |
+| ------ | ---- | --- |
+| `ESTOP` | `SAFE IN` | the hardware emergency-stop contact ([`../hardware/POWER_AND_SAFETY.md`](../hardware/POWER_AND_SAFETY.md) §4) |
+| `MIDI_RX` | `UART RX` | the DIN-5 / TRS MIDI input ([`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) §1.1) |
+
+Neither used to appear here at all: the Harness tab told you to "assign ESTOP in
+the GPIO sub-tab" and the sub-tab did not offer it, and the DIN transport had no
+way to ever be given a pin. **Assign automatically** now folds its result into
+the existing map rather than replacing it, so a hand-placed E-stop or MIDI pin
+survives a re-assign — it is only dropped if the new map genuinely needs that
+GPIO.
+
 ### 4.5 Commissioning
 
 ![Commissioning](../img/screenshots/commissioning.png)
@@ -329,6 +344,13 @@ it, and `POST /api/panic` never requires it), and who may play it over the
 network (the **UDP source policy**: accept any sender, lock to the first
 controller heard, or refuse network MIDI entirely). Both live on the device and
 are never part of an exported profile.
+
+Below them, **MIDI inputs** lists every transport with its real state, straight
+from `GET /api/status`: Wi-Fi UDP, USB-MIDI (declared *not implemented in this
+build* rather than implied), and DIN-5/TRS with the GPIO and UART it is bound to,
+or `no MIDI_RX pin assigned` when it is not. The source policy above applies to
+the Wi-Fi transport only — a physical cable is trusted by being plugged in, and
+there is no sender identity on a DIN line to lock to.
 
 ### 5.4 Tools
 

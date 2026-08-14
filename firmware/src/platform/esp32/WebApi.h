@@ -66,6 +66,19 @@ struct WebContext {
     // Live UDP source posture (audit P1.11) so the Settings UI shows the real state.
     std::function<std::string()> midiSourcePolicy;
     std::function<bool()> midiSourceLocked;  // queued/succeeded/refused/unknown
+    // Live state of every MIDI transport. `/api/status` used to answer a hard-coded
+    // "wifiUdp", which was a lie the moment a second transport existed: with a DIN
+    // cable plugged in and the Wi-Fi link down, the page still claimed Wi-Fi UDP.
+    // The firmware knows which transports are bound and which one last delivered a
+    // byte, so it reports that instead of a constant.
+    struct MidiTransportState {
+        std::string name;          // "wifiUdp" | "usb" | "din"
+        std::string label;         // human-readable, for the UI
+        bool bound = false;        // has real hardware behind it (pin / socket / stack)
+        std::string detail;        // why it is or is not bound (port, GPIO, "no MIDI_RX pin")
+        uint32_t events = 0;       // messages decoded since boot
+    };
+    std::function<std::vector<MidiTransportState>()> midiTransports;
     // POST /api/midi/source. policy: -1 leave unchanged, 0 open, 1 lockToFirst,
     // 2 disabled; `unlock` forgets the currently locked sender. Returns false when
     // the setting could not be persisted (the caller then reports a real failure

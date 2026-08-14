@@ -145,7 +145,28 @@ void WebApi::fillStatus(JsonDocument& doc) {
     wifi["ssid"] = ctx_.profile ? ctx_.profile->network.ssid : "";
     wifi["ip"] = ctx_.net ? ctx_.net->ipAddress() : "";
     wifi["connected"] = ctx_.net ? ctx_.net->connected() : false;
-    doc["midiSource"] = "wifiUdp";
+    // Real transport state, not a constant: `midiSource` is whichever transport has
+    // actually decoded the most messages since boot (ties go to the first bound one),
+    // and `midiTransports` carries the full picture so the UI can show a DIN cable
+    // that is wired but silent separately from one that is not wired at all.
+    if (ctx_.midiTransports) {
+        auto states = ctx_.midiTransports();
+        JsonArray arr = doc["midiTransports"].to<JsonArray>();
+        const WebContext::MidiTransportState* best = nullptr;
+        for (const auto& t : states) {
+            JsonObject o = arr.add<JsonObject>();
+            o["name"] = t.name;
+            o["label"] = t.label;
+            o["bound"] = t.bound;
+            o["detail"] = t.detail;
+            o["events"] = t.events;
+            if (!t.bound) continue;
+            if (!best || t.events > best->events) best = &t;
+        }
+        doc["midiSource"] = best ? best->name : "none";
+    } else {
+        doc["midiSource"] = "wifiUdp";
+    }
     // UDP source posture (audit P1.11) so the Settings UI shows the live state.
     doc["midiSourcePolicy"] = ctx_.midiSourcePolicy ? ctx_.midiSourcePolicy() : "open";
     doc["midiSourceLocked"] = ctx_.midiSourceLocked ? ctx_.midiSourceLocked() : false;

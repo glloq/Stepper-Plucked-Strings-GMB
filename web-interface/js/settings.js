@@ -365,6 +365,23 @@
     box.appendChild(section('MIDI network source', h('div', midiKids),
       'Stored on the device. On the isolated hotspot “accept any” is fine; on a ' +
       'shared Wi-Fi prefer “lock to first sender”.'));
+
+    // Which inputs are actually live. The policy above governs the Wi-Fi transport
+    // only, so it is worth being explicit that a DIN cable is not covered by it.
+    var transports = (st && st.midiTransports) || [];
+    if (transports.length) {
+      box.appendChild(section('MIDI inputs', h('table.cap-table.diag-table', [h('tbody',
+        transports.map(function (t) {
+          return h('tr', [
+            h('td', t.label || t.name),
+            h('td', h('span.pill' + (t.bound ? '.ok' : ''), t.bound ? 'live' : 'inactive')),
+            h('td.muted', (t.detail || '') +
+              (t.events ? ' · ' + t.events.toLocaleString() + ' messages' : ''))
+          ]);
+        }))]),
+        'DIN needs a MIDI_RX GPIO (Wiring & GPIO → GPIO pins). The source policy above applies ' +
+        'to the Wi-Fi transport only — a physical cable is trusted by being plugged in.'));
+    }
   }
 
   // ---- Diagnostics (GET /api/diagnostics, audit P2.19) ----------------------

@@ -38,8 +38,56 @@ struct MidiEvent {
 };
 ```
 
-Possible future extensions without modifying the core: BLE MIDI, USB MIDI, MIDI DIN,
-serial link, CAN/RS485. GPIO19/GPIO20 remain reserved for native USB.
+Possible future extensions without modifying the core: BLE MIDI, serial link,
+CAN/RS485. GPIO19/GPIO20 remain reserved for native USB.
+
+### 1.1 Physical inputs
+
+Every transport feeds the **same** `InstrumentController`; `MidiEvent.source`
+keeps them apart. Two are built:
+
+| Transport | Class | State | Bound when |
+| --------- | ----- | ----- | ---------- |
+| Wi-Fi UDP | `MidiWifi` | working | always (UDP port 5006), subject to the source policy below |
+| DIN-5 / TRS | `MidiDinTransport` | working | a `MIDI_RX` GPIO is assigned |
+| Native USB | `MidiUsbTransport` | **skeleton** | never — TinyUSB is not wired yet |
+
+DIN MIDI needs no special stack: it is 31250-baud serial. `bindDinMidi()`
+(`main.cpp`) opens **UART2** — UART0 is the programming/diagnostic console, and
+binding MIDI there would eat the boot log — as **RX only**, so no TX pin is
+claimed from the user. It is re-bound after every profile activation, because the
+`MIDI_RX` pin can move with a new configuration.
+
+The pin comes from the `MIDI_RX` signal in the GPIO editor
+(**Wiring & GPIO → GPIO pins**, `SignalKind::UartRx`). Its rule is deliberately
+wider than the E-stop's: any readable, non-strapping pin will do, including the
+classic ESP32's input-only 34/35/36/39. A powered MIDI sender can hold the line
+either way through a reset, which is exactly what a strapping pin must not see.
+
+With no `MIDI_RX` pin the transport stays inert rather than half-configured, and
+`GET /api/status` says so:
+
+```json
+"midiSource": "wifiUdp",
+"midiTransports": [
+  { "name": "wifiUdp", "label": "Wi-Fi (UDP)", "bound": true,  "detail": "UDP port 5006",         "events": 412 },
+  { "name": "usb",     "label": "USB-MIDI",    "bound": false, "detail": "not implemented in this build", "events": 0 },
+  { "name": "din",     "label": "DIN-5 / TRS", "bound": true,  "detail": "GPIO16, UART2, 31250 baud",     "events": 37 }
+]
+```
+
+`midiSource` names the bound transport that has decoded the most messages since
+boot (`"none"` if none is bound), so "which input is actually driving this
+instrument?" has a measured answer. It used to be the constant `"wifiUdp"`, which
+was wrong the moment a second transport existed.
+
+The **source policy** (`POST /api/midi/source`, Settings → Security) governs the
+Wi-Fi transport only. A physical cable is trusted by being plugged in — there is
+no sender identity on a DIN line to lock to.
+
+Hardware wiring for the optocoupled DIN/TRS input is in
+[`hardware/POWER_AND_SAFETY.md`](../hardware/POWER_AND_SAFETY.md) §4.1 — the
+isolation there is mandatory, not a refinement.
 
 ---
 
@@ -553,15 +601,20 @@ Unknown SysEx messages are ignored without affecting musical operation.
 ### 3.11 Transport independence (§21)
 
 ```text
-Wi-Fi MIDI ─┐
-BLE MIDI ───┤
+Wi-Fi MIDI ─┐  (built)
+MIDI DIN ───┤  (built)
 USB MIDI ───┼──► MidiMessageRouter ─► GmbSysExService
-MIDI DIN ───┤
-serial ─────┘
+BLE MIDI ───┤  (future)
+serial ─────┘  (future)
 ```
 
 Future Bluetooth/wired versions reuse exactly the same blocks, encoder, decoder,
-snapshot and tests. The first version uses Wi-Fi.
+snapshot and tests.
+
+One asymmetry today: a SysEx **reply** is addressed to its sender's IP, so
+request/response still runs on the concrete UDP transport. Notes and CCs arrive
+on any transport; a DIN cable can play the instrument but cannot yet interrogate
+its capabilities. Each transport will get its own reply path as it lands.
 
 ### 3.12 Initial compatibility (§22)
 

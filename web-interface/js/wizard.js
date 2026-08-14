@@ -495,7 +495,7 @@
         GMB.api.autoPins({ board: p.board.profile, stringCount: p.instrument.stringCount,
                            reserveUsb: p.board.reserveUsb })
           .then(function (res) {
-            p.pins = res.pins;
+            p.pins = GMB.mergeAutoPins(p.pins, res.pins);
             GMB.markDirty();
             if (res.errors && res.errors.length) {
               GMB.toast(res.errors[0].reason || 'Some signals could not be placed.', 'warn');
@@ -515,8 +515,14 @@
     body.appendChild(h('div.toolbar', [
       GMB.button('Assign automatically', function () {
         var p = GMB.state.profile;
-        GMB.api.autoPins({ stringCount: p.instrument.stringCount, reserveUsb: p.board.reserveUsb })
-          .then(function (res) { p.pins = res.pins; GMB.markDirty(); drawStep(); GMB.toast('Pins assigned.', 'ok'); });
+        // `board` must go with the request — this call used to omit it, so the
+        // firmware assigned pins for its default board rather than the chosen one.
+        GMB.api.autoPins({ board: p.board.profile, stringCount: p.instrument.stringCount,
+                           reserveUsb: p.board.reserveUsb })
+          .then(function (res) {
+            p.pins = GMB.mergeAutoPins(p.pins, res.pins);
+            GMB.markDirty(); drawStep(); GMB.toast('Pins assigned.', 'ok');
+          });
       }, 'primary'),
       GMB.button('Open full pin editor', function () { GMB.navigate('hardware'); }, 'ghost')
     ]));
@@ -1298,6 +1304,19 @@
     } else {
       body.appendChild(h('div.card', 'The MIDI module failed to load.'));
     }
+    // Which physical inputs the instrument will listen on. Wi-Fi is always there;
+    // DIN only exists if a MIDI_RX pin was assigned, and the operator has no other
+    // way to find that out at the moment they are configuring MIDI.
+    var rx = pinSignalGpio('MIDI_RX');
+    body.appendChild(h('div.note-box', [
+      h('strong', 'Inputs: '),
+      h('span', 'Wi-Fi UDP (port 5006, always on)' +
+        (rx >= 0 ? ' · DIN-5/TRS on GPIO' + rx + ' (UART2, 31250 baud)'
+                 : ' · no DIN input — assign a MIDI_RX pin in the GPIO step to use a cable')),
+      rx < 0 ? h('div.toolbar', [
+        GMB.button('Assign a MIDI_RX pin', function () { goto(STEPS.indexOf('Pins')); }, 'ghost')
+      ]) : null
+    ]));
     body.appendChild(h('div.toolbar', [
       GMB.button('Open the live MIDI tools', function () { GMB.openSettings('tools'); }, 'ghost')
     ]));

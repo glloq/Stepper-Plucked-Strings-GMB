@@ -32,6 +32,12 @@ static bool pinSupports(const PinCapability& p, SignalKind kind) {
             // recommended NC loop holds the pin LOW whenever the machine is allowed
             // to run, including through a reset, which would corrupt the boot strap.
             return p.input && p.interrupt && p.internalPullUp && !p.strapping;
+        case SignalKind::UartRx:
+            // DIN MIDI in. The ESP32 UART matrix can route RX to any input pin, so
+            // the requirement is just "readable and not a strapping pin": a MIDI
+            // line driven by a powered sender can hold the level either way across
+            // a reset, which is exactly what a strapping pin must not see.
+            return p.input && !p.strapping;
         case SignalKind::I2cSda:
         case SignalKind::I2cScl:
             // I2C is open-drain: needs a pin usable both ways.
