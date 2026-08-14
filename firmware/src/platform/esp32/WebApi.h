@@ -38,9 +38,16 @@ struct WebContext {
     std::function<std::string()> appState;                 // "boot"/"homing"/"ready"
     std::function<int()> readyStrings;                     // axes homed & not faulted
     std::function<uint32_t(const Profile&)> onActivateProfile;  // validate + enqueue
-    std::function<uint32_t(uint8_t, uint8_t, uint8_t, uint16_t)> onTestNote;  // ch,note,vel,ms
+    // ch, note, vel, ms, then the two optional SELECTION CC values (-1 = none).
+    // They are emitted before the Note On through the same path a controller's
+    // CCs take, so the test really exercises the string/fret selector.
+    std::function<uint32_t(uint8_t, uint8_t, uint8_t, uint16_t, int, int)> onTestNote;
     std::function<uint32_t(int, bool)> onTestServo;  // enqueue a servo pulse (index, active)
     std::function<uint32_t(int, double)> onJog;      // enqueue an axis jog (axis, deltaMm)
+    // Absolute move (axis, positionMm from the homing zero). Fret calibration
+    // needs a real target: summing relative jogs accumulates every rounding error
+    // into the position the operator then records as ground truth.
+    std::function<uint32_t(int, double)> onMoveTo;
     std::function<std::string(uint32_t)> commandState;
     std::function<std::string()> diagnosticsJson;  // GET /api/diagnostics body (P2.19)
     // Switch to the access point on demand (POST /api/hotspot) — the web twin of
@@ -61,8 +68,24 @@ struct WebContext {
     // flash write from the web task cannot stall the safety loop.
     std::function<void()> lockStorage;
     std::function<void()> unlockStorage;
-    // Only the flagged passwords are written (empty fields are left unchanged).
-    std::function<void(bool, const std::string&, bool, const std::string&)> onSetWifi;
+    // POST /api/wifi. Everything is optional and only the flagged fields are
+    // written, so the UI can send a password without touching the link config and
+    // vice versa. Clearing is explicit: an empty password field means "leave the
+    // stored secret alone", which is why erasing one needs its own flag.
+    struct WifiRequest {
+        bool hasStationPassword = false;
+        std::string stationPassword;
+        bool hasApPassword = false;
+        std::string apPassword;
+        bool clearStationPassword = false;   // really erase the stored secret
+        bool clearApPassword = false;        // (an OPEN access point)
+        bool hasNetwork = false;             // mode/ssid/apSsid/hostname supplied
+        NetworkConfig network;
+        bool apply = false;                  // reconfigure the link NOW, not at boot
+    };
+    // Returns the note echoed to the caller, so the UI can state what really
+    // happened ("applied now" vs "stored; reboot to apply") instead of guessing.
+    std::function<std::string(const WifiRequest&)> onSetWifi;
     // Returns true if the supplied token authorises a write (or if no admin
     // token has been configured yet — first-run bootstrap).
     std::function<bool(const std::string&)> checkToken;

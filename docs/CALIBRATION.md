@@ -140,6 +140,17 @@ an **Abs (FDC)** column shows `fretOffsetMm + value`, and **Capture position**
 records the live motor position (absolute) minus the offset, so it stores a
 nut-relative value that stays correct if the offset is later changed.
 
+Two things this depends on, both of which are enforced:
+
+* **Go to this fret** issues `POST /api/test/moveto` with the absolute target and
+  the carriage really moves. It is an absolute move on purpose — reaching fret 9
+  by summing relative jogs folds every rounding error and every refused nudge
+  into the position you are about to record as ground truth.
+* **Capture position** refuses to record anything when no live position is
+  arriving from `/ws/status`. Falling back to the theoretical value there would
+  store theory while claiming it was measured, which is exactly what manual
+  calibration exists to avoid.
+
 ### 3.3 Manual calibration (§14.3)
 
 For each fret: (1) select the fret, (2) move the motor with buttons, (3) test the

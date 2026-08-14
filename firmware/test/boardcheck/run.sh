@@ -26,7 +26,7 @@ if [ "${1:-}" = "--check" ]; then
   out="$work/generated"
   rm -rf "$out"
   mkdir -p "$out"
-  "$work/dump_board_profiles" "$out" >/dev/null
+  "$work/dump_board_profiles" "$out" "$out/boarddata.js" >/dev/null
   fail=0
   for f in "$out"/*.json; do
     name="$(basename "$f")"
@@ -35,6 +35,11 @@ if [ "${1:-}" = "--check" ]; then
       fail=1
     fi
   done
+  # The web mock reads the same tables (it used to hand-build its own copy).
+  if ! diff -u "$repo/web-interface/js/boarddata.js" "$out/boarddata.js"; then
+    echo "web-interface/js/boarddata.js is out of date — run firmware/test/boardcheck/run.sh"
+    fail=1
+  fi
   # A JSON with no C++ counterpart is just as wrong: the wizard would offer a board
   # the firmware cannot validate.
   for f in "$repo"/board-profiles/*.json; do
@@ -48,4 +53,4 @@ if [ "${1:-}" = "--check" ]; then
   exit $fail
 fi
 
-"$work/dump_board_profiles" "$repo/board-profiles"
+"$work/dump_board_profiles" "$repo/board-profiles" "$repo/web-interface/js/boarddata.js"

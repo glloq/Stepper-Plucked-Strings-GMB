@@ -90,6 +90,12 @@ BoardProfile makeEsp32S3DevKitC1V11();  // v1.1 — RGB LED on GPIO38, GPIO48 fr
 BoardProfile makeEsp32Wroom32();
 BoardProfile makeEsp32DevKitV1();
 
+// Every built-in profile, in menu order. The single source of truth for "which
+// boards does this firmware support" — the web UI enumerates it rather than
+// carrying its own list, which is how the picker ended up offering one board
+// while the firmware supported four.
+const std::vector<const BoardProfile*>& builtinBoardProfiles();
+
 // Returns the built-in profile with a matching identifier, or nullptr.
 const BoardProfile* builtinBoardProfile(const std::string& identifier);
 

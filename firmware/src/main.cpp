@@ -103,6 +103,9 @@ constexpr uint32_t kBootHoldMs = 2000;
 HoldButton g_bootHold;  // long-press on BOOT -> force hotspot (host-tested, P2.17)
 std::atomic<bool> g_hotspotRequested{false};   // BOOT button / web -> force AP
 std::atomic<bool> g_wifiScanRequested{false};  // GET /api/wifi/scan?start=1
+// POST /api/wifi with apply:true. The web task must never touch the radio, so it
+// only raises this flag; loop() (which owns Net) does the reconfiguration.
+std::atomic<bool> g_netApplyRequested{false};
 std::string g_wifiScanJson =                   // guarded by g_stateMutex
     "{\"ok\":true,\"scanning\":false,\"networks\":[]}";
 uint32_t g_seenScanGeneration = 0;
@@ -164,17 +167,21 @@ std::vector<StringSched> g_sched;
 // here; loop() is the SOLE owner of the mechanical state and drains the queue
 // sequentially. Read-only handlers take g_stateMutex so a reallocation in loop()
 // (profile reload, capability rebuild) can never be seen half-done.
-enum class CmdType : uint8_t { Panic, Reset, ActivateProfile, TestNote, TestServo, Jog };
+enum class CmdType : uint8_t { Panic, Reset, ActivateProfile, TestNote, TestServo, Jog, MoveTo };
 struct AppCommand {
     CmdType type;
     uint32_t id = 0;             // for result tracking (GET /api/commands)
     Profile* profile = nullptr;  // owned by the command (ActivateProfile)
     uint8_t channel = 0, note = 0, velocity = 0;
     uint16_t durationMs = 0;
+    // TestNote: selection CC values to emit before the Note On, or -1 for none.
+    int16_t ccStringValue = -1;
+    int16_t ccFretValue = -1;
     int16_t servoIndex = -1;
     bool servoActive = false;
-    int16_t axisIndex = -1;      // Jog: which axis to nudge
+    int16_t axisIndex = -1;      // Jog/MoveTo: which axis
     float jogDeltaMm = 0.0f;     // Jog: signed distance (mm)
+    float targetMm = 0.0f;       // MoveTo: absolute position from the HOME zero
 };
 
 // Result registry so a 202-accepted command can be followed up by the web UI:
@@ -756,15 +763,38 @@ void servicePendingActivation(uint32_t nowMs) {
 
 // Web test note: only when Ready, and only if we can guarantee its Note Off.
 bool doTestNote(uint8_t channel, uint8_t note, uint8_t vel, uint16_t durationMs,
-                uint32_t nowMs) {
+                uint32_t nowMs, int16_t ccStringValue, int16_t ccFretValue) {
     if (g_phase != AppPhase::Ready) return false;
     // Reject out-of-range MIDI values: a 4-bit channel and 7-bit note/velocity.
     // (Defence at the source; the selector also masks the channel.)
     if (channel > 15 || note > 127 || vel > 127) return false;
+    if (ccStringValue > 127 || ccFretValue > 127) return false;
     if (durationMs > 10000) durationMs = 10000;  // cap a runaway hold
     // Never emit a Note On we cannot later release: refuse if the deferred
     // Note-Off queue is full (would otherwise leave the note stuck on).
     if (g_testOffs.size() >= 16) return false;
+
+    // Optional selection CCs, emitted through the SAME path a controller's would
+    // take (§16). Without them the test bypassed the selector entirely, so it
+    // exercised note allocation but proved nothing about the General-Midi-Boop
+    // string/fret mechanism it claimed to be testing. Values are what a
+    // controller sends on the wire; the selector applies numbering, offset,
+    // reverse order and the mapping table itself — so a wrong mapping shows up
+    // here instead of being papered over.
+    auto sendCc = [&](uint8_t ccNumber, uint8_t value) {
+        MidiEvent cc;
+        cc.type = static_cast<uint8_t>(MidiType::ControlChange);
+        cc.channel = channel;
+        cc.data1 = ccNumber;
+        cc.data2 = value;
+        cc.timestampUs = micros();
+        cc.source = static_cast<uint8_t>(MidiSource::WebUiTest);
+        g_instrument.handleEvent(cc, cc.timestampUs);
+    };
+    const SelectorConfig& sel = g_profile.selector;
+    if (ccStringValue >= 0) sendCc(sel.string.ccNumber, static_cast<uint8_t>(ccStringValue));
+    if (ccFretValue >= 0) sendCc(sel.fret.ccNumber, static_cast<uint8_t>(ccFretValue));
+
     MidiEvent on;
     on.type = static_cast<uint8_t>(MidiType::NoteOn);
     on.channel = channel; on.data1 = note; on.data2 = vel;
@@ -790,8 +820,11 @@ bool doTestServo(int index, bool active) {
 // motor direction, positioning for fret calibration). Only when Ready, actuators
 // armed, the axis homed & not faulted, and idle (no live note) so it can never
 // fight the playback scheduler. moveToMm clamps to the axis travel.
-bool doJog(int axis, double deltaMm, uint32_t nowMs) {
-    (void)nowMs;
+// Shared gate for every OPERATOR-driven axis move (jog, go-to-position). The
+// conditions are the same whichever way the target is expressed, and they must
+// stay the same: the difference between the two commands is arithmetic, not
+// safety.
+bool axisManuallyMovable(int axis, uint32_t nowMs) {
     if (g_phase != AppPhase::Ready) return false;
     if (!g_safety.actuatorsAllowed()) return false;
     if (axis < 0 || axis >= static_cast<int>(g_instrument.stringCount())) return false;
@@ -803,9 +836,26 @@ bool doJog(int axis, double deltaMm, uint32_t nowMs) {
     if (g_steppers.isRunning(axis)) return false;                // still moving
     // Wait until a just-released finger has fully lifted (§16: no drag).
     if (static_cast<int32_t>(nowMs - g_sched[axis].jogSafeAtMs) < 0) return false;
+    return true;
+}
+
+bool doJog(int axis, double deltaMm, uint32_t nowMs) {
+    if (!axisManuallyMovable(axis, nowMs)) return false;
     if (deltaMm > 25.0) deltaMm = 25.0;                          // bound one nudge
     if (deltaMm < -25.0) deltaMm = -25.0;
     g_steppers.moveToMm(axis, g_steppers.positionMm(axis) + deltaMm);
+    return true;
+}
+
+// Web "go to this position": move one axis to an ABSOLUTE target measured from
+// the homing zero. Fret calibration needs this — reaching fret 9 by summing jogs
+// accumulates every rounding error and every refused nudge into the position the
+// operator is about to record as ground truth. moveToMm clamps to the axis
+// travel, so an out-of-range target parks at the limit instead of being refused
+// silently.
+bool doMoveTo(int axis, double positionMm, uint32_t nowMs) {
+    if (!axisManuallyMovable(axis, nowMs)) return false;
+    g_steppers.moveToMm(axis, positionMm);
     return true;
 }
 
@@ -850,13 +900,17 @@ void drainCommands(uint32_t nowMs) {
                 ok = c->profile && doActivateProfile(*c->profile, nowMs, c->id);
                 break;
             case CmdType::TestNote:
-                ok = doTestNote(c->channel, c->note, c->velocity, c->durationMs, nowMs);
+                ok = doTestNote(c->channel, c->note, c->velocity, c->durationMs, nowMs,
+                                c->ccStringValue, c->ccFretValue);
                 break;
             case CmdType::TestServo:
                 ok = doTestServo(c->servoIndex, c->servoActive);
                 break;
             case CmdType::Jog:
                 ok = doJog(c->axisIndex, c->jogDeltaMm, nowMs);
+                break;
+            case CmdType::MoveTo:
+                ok = doMoveTo(c->axisIndex, c->targetMm, nowMs);
                 break;
         }
         // A profile activation is DEFERRED: doActivateProfile already marked it
@@ -1266,6 +1320,53 @@ std::string buildDiagnosticsJson() {
 // web "Start hotspot" request. Runs on the main loop (owns Net + WiFi). Switching
 // the radio is independent of the instrument state, so it works in any phase — the
 // point is precisely to stay reachable when the machine will not arm.
+// ---- device-level network settings (NVS) ---------------------------------
+//
+// The link config belongs to the DEVICE, not to the instrument (P1.13): moving a
+// profile between machines must not carry one machine's SSID onto another, and
+// changing instrument must not drop you off the network. It therefore lives in
+// NVS beside the passwords and OVERRIDES whatever an older profile still carries.
+// NVS keys are capped at 15 characters.
+void loadNetworkOverrides(NetworkConfig& cfg) {
+    Preferences p;
+    p.begin("gmb", true);
+    if (p.isKey("netmode")) {
+        cfg.mode = p.getString("netmode", "accessPoint") == "station"
+                       ? NetworkMode::Station : NetworkMode::AccessPoint;
+        cfg.ssid = p.getString("netssid", cfg.ssid.c_str()).c_str();
+        cfg.apSsid = p.getString("netapssid", cfg.apSsid.c_str()).c_str();
+        cfg.hostname = p.getString("nethost", cfg.hostname.c_str()).c_str();
+    }
+    p.end();
+}
+
+void storeNetworkOverrides(const NetworkConfig& cfg) {
+    Preferences p;
+    p.begin("gmb", false);
+    p.putString("netmode", cfg.mode == NetworkMode::Station ? "station" : "accessPoint");
+    p.putString("netssid", String(cfg.ssid.c_str()));
+    p.putString("netapssid", String(cfg.apSsid.c_str()));
+    p.putString("nethost", String(cfg.hostname.c_str()));
+    p.end();
+}
+
+// Reconfigure the radio after POST /api/wifi with apply:true. Runs on the main
+// loop, which owns Net; Net::begin() resets the failure counters and any forced-
+// hotspot latch, then re-runs the station attempt / AP with the usual automatic
+// fallback to the hotspot — so a wrong SSID costs a fallback, not a lockout.
+void serviceNetworkApply() {
+    if (!g_netApplyRequested.exchange(false)) return;
+    NetworkConfig cfg;
+    { StateGuard lock; cfg = g_profile.network; }
+    Preferences prefs;
+    prefs.begin("gmb", true);
+    String staPass = prefs.getString("wifipass", "");
+    String apPass = prefs.getString("appass", "");
+    prefs.end();
+    g_net.begin(cfg, staPass.c_str(), apPass.c_str());
+    Serial.println(F("web: Wi-Fi settings applied"));
+}
+
 void serviceHotspotRequests(uint32_t nowMs) {
     bool down = digitalRead(kBootButtonPin) == LOW;  // active-low BOOT button
     if (g_bootHold.update(down, nowMs)) g_hotspotRequested.store(true);  // long-press
@@ -1367,7 +1468,11 @@ void setup() {
     // byte so a v1-only client can still detect and skip it.
     g_sysex.setUseV2(true);
 
-    // Wi-Fi secrets live in NVS, never in the exportable profile (§20).
+    // Wi-Fi secrets live in NVS, never in the exportable profile (§20). The link
+    // config lives there too and wins over whatever the profile carries: it
+    // describes this machine, so swapping instruments must not move the device to
+    // another network (P1.13).
+    loadNetworkOverrides(g_profile.network);
     Preferences prefs;
     prefs.begin("gmb", true);
     String staPass = prefs.getString("wifipass", "");
@@ -1395,10 +1500,12 @@ void setup() {
     // /api/panic can truthfully report success.
     ctx.onPanic = []() { g_panicRequested.store(true); };
     ctx.onTestNote = [](uint8_t channel, uint8_t note, uint8_t vel,
-                        uint16_t durationMs) -> uint32_t {
+                        uint16_t durationMs, int ccString, int ccFret) -> uint32_t {
         AppCommand c{CmdType::TestNote};
         c.channel = channel; c.note = note; c.velocity = vel;
         c.durationMs = durationMs;
+        c.ccStringValue = static_cast<int16_t>(ccString);
+        c.ccFretValue = static_cast<int16_t>(ccFret);
         return enqueueCommand(c);
     };
     ctx.onTestServo = [](int index, bool active) -> uint32_t {
@@ -1411,6 +1518,12 @@ void setup() {
         AppCommand c{CmdType::Jog};
         c.axisIndex = static_cast<int16_t>(axis);
         c.jogDeltaMm = static_cast<float>(deltaMm);
+        return enqueueCommand(c);
+    };
+    ctx.onMoveTo = [](int axis, double positionMm) -> uint32_t {
+        AppCommand c{CmdType::MoveTo};
+        c.axisIndex = static_cast<int16_t>(axis);
+        c.targetMm = static_cast<float>(positionMm);
         return enqueueCommand(c);
     };
     ctx.commandState = [](uint32_t id) -> std::string { return commandStateStr(id); };
@@ -1433,13 +1546,29 @@ void setup() {
     // long LittleFS write from the web task can't block the safety loop (P0-1).
     ctx.lockStorage = []() { if (g_storageMutex) xSemaphoreTake(g_storageMutex, portMAX_DELAY); };
     ctx.unlockStorage = []() { if (g_storageMutex) xSemaphoreGive(g_storageMutex); };
-    ctx.onSetWifi = [](bool hasSta, const std::string& sta, bool hasAp,
-                       const std::string& ap) {
+    // Store the device's network settings and, when asked, apply them live. The
+    // handler already validated the request; everything here is persistence plus
+    // a flag, because the radio belongs to loop().
+    ctx.onSetWifi = [](const WebContext::WifiRequest& rq) -> std::string {
         Preferences p;
         p.begin("gmb", false);
-        if (hasSta) p.putString("wifipass", String(sta.c_str()));  // only overwrite
-        if (hasAp) p.putString("appass", String(ap.c_str()));      // provided fields
+        // Only overwrite a password that was actually provided; erasing one is
+        // explicit, so "leave blank to keep" and "really forget it" stay distinct.
+        if (rq.hasStationPassword) p.putString("wifipass", String(rq.stationPassword.c_str()));
+        else if (rq.clearStationPassword) p.remove("wifipass");
+        if (rq.hasApPassword) p.putString("appass", String(rq.apPassword.c_str()));
+        else if (rq.clearApPassword) p.remove("appass");
         p.end();
+        if (rq.hasNetwork) {
+            storeNetworkOverrides(rq.network);
+            // Mirror into the running profile so /api/status, the exported profile
+            // and the next boot all agree with what was just stored.
+            StateGuard lock;
+            g_profile.network = rq.network;
+        }
+        if (!rq.apply) return "stored; reboot to apply";
+        g_netApplyRequested.store(true);
+        return "applied now";
     };
     // Write-route authentication: an admin token stored in NVS. Until one is set
     // (first-run bootstrap) writes are allowed; once set, the X-GMB-Token header
@@ -1500,6 +1629,7 @@ void loop() {
 
     g_net.tick(nowMs);
     serviceHotspotRequests(nowMs);  // BOOT long-press / web "Start hotspot"
+    serviceNetworkApply();          // POST /api/wifi with apply:true
     serviceWifiRequests();          // network survey for the Settings picker
     g_steppers.updateSensors(nowMs);  // debounce HOME/LIMIT before any read
 

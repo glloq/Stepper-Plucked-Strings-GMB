@@ -74,7 +74,10 @@
     guitar: { notes: [40, 45, 50, 55, 59, 64], maxFret: 20 }, // E A D G B E
     bass: { notes: [28, 33, 38, 43], maxFret: 20 },           // E A D G
     mandolin: { notes: [55, 62, 69, 76], maxFret: 18 },
-    banjo: { notes: [62, 67, 71, 62], maxFret: 22 }
+    // Five-string open-G, matching instrument-profiles/banjo-5string.json:
+    // D G B D, then the re-entrant high fifth string (G4). The preset used to
+    // carry four notes, which quietly built a four-string banjo.
+    banjo: { notes: [50, 55, 59, 62, 67], maxFret: 22 }
   };
   var GM_PROGRAM = { ukulele: 24, guitar: 24, bass: 33, mandolin: 25, banjo: 105 };
   var TYPE_ID = { ukulele: 0x04, guitar: 0x04, bass: 0x05, mandolin: 0x04, banjo: 0x06 };
@@ -200,48 +203,130 @@
   }
 
   // ---- Step 2: Board --------------------------------------------------------
+  // The board list comes from GET /api/boards (offline: the generated tables), so
+  // it can only ever offer boards the firmware supports. It used to be a literal
+  // one-entry list while the firmware carried four profiles and PlatformIO built
+  // three targets.
+  var boardList = null;
+
   function stepBoard(body) {
     var p = GMB.state.profile;
     body.appendChild(h('h3', 'Choose the controller board'));
+    if (!boardList) {
+      body.appendChild(h('div.card', 'Loading the supported boards…'));
+      GMB.api.listBoards().then(function (bs) { boardList = bs; drawStep(); })
+        .catch(function () { boardList = []; drawStep(); });
+      return;
+    }
+    var options = boardList.length
+      ? boardList.map(function (b) { return { value: b.identifier, label: b.displayName }; })
+      : [{ value: p.board.profile, label: p.board.profile }];
+
+    // The board name is long and it is the step's primary control, so give it two
+    // grid columns rather than let the select truncate it mid-word.
+    var boardField = GMB.field('Board model', GMB.input(p.board, 'profile', {
+      type: 'select', options: options, onChange: onBoardChange
+    }), 'Changing this re-checks every pin against the new board.');
+    boardField.classList.add('wide');
     body.appendChild(h('div.form-grid', [
-      GMB.field('Board model', GMB.input(p.board, 'profile', {
-        type: 'select', options: [{ value: 'esp32-s3-devkitc-1', label: 'ESP32-S3-DevKitC-1' }]
-      })),
+      boardField,
       GMB.field('Reserve GPIO19/20 for future USB', GMB.input(p.board, 'reserveUsb', { type: 'checkbox' })),
       GMB.field('Automatic pin assignment', GMB.input(p.board, 'automaticPinAssignment', { type: 'checkbox' }))
     ]));
-    body.appendChild(h('div.note-box', [
-      h('strong', 'Board notes:'),
-      h('ul', [
-        h('li', 'GPIO0/3/45/46 are strapping pins.'),
-        h('li', 'GPIO19/20 are the native USB-JTAG pins (kept free by default).'),
-        h('li', 'GPIO26–32 drive the on-module SPI flash; 35–37 may serve PSRAM on octal variants.'),
-        h('li', 'GPIO43/44 are the programming/diagnostic UART; GPIO48 is the on-board RGB LED.')
-      ])
+    body.appendChild(boardNotes(p.board.profile));
+    body.appendChild(h('div#board-pin-check'));
+
+    // Wi-Fi is a property of the DEVICE, not of the instrument being built, and it
+    // is edited (and applied) in Settings. It used to be duplicated here — two
+    // editors for one setting, one of which could not apply anything — along with
+    // a "Static IP" checkbox for a field that was removed from the schema in v2
+    // and drove no WiFi.config() call even before that.
+    body.appendChild(h('div.card', [
+      h('div.card-head', [h('h3', 'Network'), h('span.muted', 'a device setting, not an instrument one')]),
+      h('p.muted', 'Wi-Fi mode, SSID, hostname and passwords live in Settings → Network, ' +
+        'where they can also be applied without a reboot. They stay with the machine ' +
+        'when you load another instrument.'),
+      h('div.toolbar', [GMB.button('Open network settings', function () {
+        GMB.openSettings('network');
+      }, 'ghost')])
     ]));
 
-    // ---- Network / Wi-Fi -----------------------------------------------------
-    var net = p.network;
-    var station = net.mode === 'station';
-    var netFields = [
-      GMB.field('Wi-Fi mode', GMB.input(net, 'mode', {
-        type: 'select', options: [
-          { value: 'accessPoint', label: 'Access point (hosts its own network)' },
-          { value: 'station', label: 'Station (joins your Wi-Fi)' }],
-        onChange: function () { drawStep(); }
-      })),
-      GMB.field('Hostname (mDNS)', GMB.input(net, 'hostname'))
-    ];
-    if (station) {
-      netFields.push(GMB.field('Network SSID', GMB.input(net, 'ssid'), 'The Wi-Fi network to join.'));
-      netFields.push(GMB.field('Static IP', GMB.input(net, 'staticIp', { type: 'checkbox' })));
-    } else {
-      netFields.push(GMB.field('Access-point name', GMB.input(net, 'apSsid'), 'SSID the instrument broadcasts.'));
+    checkBoardPins();
+  }
+
+  // Notes derived from the board's own capability table rather than a hard-coded
+  // S3 list — the previous text was simply wrong on a classic ESP32.
+  function boardNotes(identifier) {
+    var b = null, all = GMB.BOARD_PROFILES || [];
+    for (var i = 0; i < all.length; i++) if (all[i].identifier === identifier) b = all[i];
+    if (!b) return h('div');
+    function list(pred) {
+      return b.pins.filter(pred).map(function (p) { return p.gpio; });
     }
-    body.appendChild(h('div.card', [
-      h('h3', 'Network'),
-      h('p.muted', 'The Wi-Fi password is set separately (never stored in the exported profile).'),
-      h('div.form-grid', netFields)
+    var strap = list(function (p) { return p.strapping; });
+    var usb = list(function (p) { return p.usb; });
+    var onboard = list(function (p) { return p.onboardPeripheral; });
+    var reserved = list(function (p) { return p.reserved && !p.strapping && !p.usb && !p.onboardPeripheral; });
+    var inputOnly = list(function (p) { return p.input && !p.output; });
+    var items = [];
+    function add(label, gpios) {
+      if (gpios.length) items.push(h('li', label + ': GPIO' + gpios.join(', ')));
+    }
+    add('Strapping pins (level sampled at reset)', strap);
+    add('Native USB / JTAG', usb);
+    add('On-board peripherals (UART, LED)', onboard);
+    add('Not available (flash, absent, or unusable)', reserved);
+    add('Input only — cannot drive STEP/DIR/ENABLE', inputOnly);
+    return h('div.note-box', [h('strong', b.displayName + ':'), h('ul', items)]);
+  }
+
+  // Changing the board invalidates the pin map: a GPIO that is recommended on the
+  // S3 may not exist on a WROOM-32. Re-validate at once and say so, instead of
+  // letting the operator reach the Validation step and wonder.
+  function onBoardChange() {
+    if (GMB.views.pins && GMB.views.pins.reset) GMB.views.pins.reset();  // drop the cached board
+    GMB.markDirty();
+    drawStep();
+  }
+
+  function checkBoardPins() {
+    var box = document.getElementById('board-pin-check');
+    if (!box) return;
+    box.innerHTML = '';
+    GMB.api.validatePins(GMB.state.profile).then(function (res) {
+      renderBoardPinCheck(box, (res && res.issues) || []);
+    }).catch(function (e) {
+      var body = e && e.body;
+      renderBoardPinCheck(box, (body && body.issues) || []);
+    });
+  }
+
+  function renderBoardPinCheck(box, issues) {
+    box.innerHTML = '';
+    if (!issues.length) {
+      box.appendChild(h('div.pill.ok', 'Every assigned pin exists and is usable on this board.'));
+      return;
+    }
+    box.appendChild(h('div.pill.error', issues.length + ' pin(s) do not fit this board.'));
+    box.appendChild(h('ul.problem-list', issues.slice(0, 8).map(function (is) {
+      return h('li', (is.field ? is.field + ' — ' : '') + is.message);
+    })));
+    box.appendChild(h('div.toolbar', [
+      GMB.button('Re-assign pins for this board', function () {
+        var p = GMB.state.profile;
+        GMB.api.autoPins({ board: p.board.profile, stringCount: p.instrument.stringCount,
+                           reserveUsb: p.board.reserveUsb })
+          .then(function (res) {
+            p.pins = res.pins;
+            GMB.markDirty();
+            if (res.errors && res.errors.length) {
+              GMB.toast(res.errors[0].reason || 'Some signals could not be placed.', 'warn');
+            } else {
+              GMB.toast('Pins re-assigned for ' + p.board.profile + '.', 'ok');
+            }
+            drawStep();
+          });
+      }, 'primary')
     ]));
   }
 
@@ -806,23 +891,40 @@
       ]),
       h('td', GMB.fretAbsoluteMm(s, f).toFixed(2)),
       h('td', h('div.fret-actions', [
-        GMB.button('Go to this fret', function () { jogToFret(s, i, f, theo); }, 'ghost'),
+        GMB.button('Go to this fret', function () { jogToFret(s, i, f); }, 'ghost'),
         GMB.button('Capture position', function () { saveFret(s, i, f); }, 'primary')
       ]))
     ]);
   }
 
-  // Jog/test: move to the fret's ABSOLUTE position from the FDC (offset + value).
-  function jogToFret(s, i, f, theo) {
+  // Move the axis to the fret's ABSOLUTE position from the FDC (offset + value).
+  // This used to only write motorPos[i] and toast "moved" — nothing on the
+  // machine moved, and the operator then pressed "Capture position" to record a
+  // number the carriage had never reached. It now issues the real move and only
+  // reports success once the device accepted it.
+  function jogToFret(s, i, f) {
     var abs = GMB.fretAbsoluteMm(s, f);
-    motorPos[i] = abs;
-    GMB.toast('String ' + (i + 1) + ': moved to fret ' + f + ' (' + abs.toFixed(2) + ' mm from FDC).', 'ok');
-    drawStep();
+    GMB.api.moveTo({ axis: i, positionMm: abs }).then(function (res) {
+      if (res && res.ok === false) {
+        GMB.toast('Move refused: ' + (res.error || 'the axis is not ready') + '.', 'warn');
+        return;
+      }
+      GMB.toast('String ' + (i + 1) + ': moving to fret ' + f + ' (' + abs.toFixed(2) +
+                ' mm from FDC). Wait for it to settle before capturing.', 'ok');
+    }).catch(function (e) { testErr('Move failed', e); });
   }
   // Record the live motor position (absolute from FDC) as this fret's calibrated
   // value, stored nut-relative (subtract the per-string fret offset).
   function saveFret(s, i, f) {
-    var abs = motorPos[i] !== undefined ? motorPos[i] : GMB.fretAbsoluteMm(s, f);
+    // No live reading means no measurement. Falling back to the theoretical
+    // position here would store theory while claiming it was captured from the
+    // machine — the one thing this whole step exists to avoid.
+    if (motorPos[i] === undefined) {
+      GMB.toast('No live position for string ' + (i + 1) + ' — the device is not ' +
+                'reporting. Nothing captured.', 'warn');
+      return;
+    }
+    var abs = motorPos[i];
     s.calibratedFretMm[f] = +(abs - (s.fretOffsetMm || 0)).toFixed(2);
     GMB.markDirty();
     GMB.toast('Fret ' + f + ' captured at ' + abs.toFixed(2) + ' mm from FDC.', 'ok');
@@ -844,11 +946,44 @@
           }).catch(function (e) { testErr('Note test failed', e); });
       }, 'ghost'));
     });
-    testWrap.appendChild(GMB.button('Test chord', function () { GMB.toast('Chord test sent.', 'ok'); }, 'ghost'));
+    testWrap.appendChild(GMB.button('Test chord (all open strings)', function () {
+      testChord(p);
+    }, 'ghost'));
     testWrap.appendChild(GMB.button('STOP', GMB.doPanic, 'danger'));
     body.appendChild(testWrap);
     body.appendChild(h('p.muted', 'Full note/string/fret testing with a step trace lives on the MIDI page.'));
     body.appendChild(GMB.button('Open MIDI test tool', function () { GMB.openSettings('advanced'); }, 'primary'));
+  }
+
+  // Strum every enabled string open. This used to be a bare toast claiming a
+  // chord had been sent while nothing was emitted at all. Notes go out spread by
+  // a few ms — the same shape the chord grouping window expects — and the result
+  // is reported from what the device actually accepted.
+  function testChord(p) {
+    var picks = [];
+    (p.strings || []).forEach(function (s, i) {
+      if (s.enabled !== false) picks.push({ index: i, note: s.openNote });
+    });
+    if (!picks.length) { GMB.toast('No enabled string to strum.', 'warn'); return; }
+    var refused = 0, done = 0;
+    picks.forEach(function (pk, n) {
+      setTimeout(function () {
+        GMB.api.testNote({ channel: p.midi.globalChannel | 0, note: pk.note,
+                           velocity: 96, durationMs: 600 })
+          .then(function (res) { if (res && res.ok === false) refused++; })
+          .catch(function () { refused++; })
+          .then(function () {
+            if (++done < picks.length) return;
+            if (refused === picks.length)
+              GMB.toast('Chord refused — the instrument is not ready.', 'warn');
+            else if (refused)
+              GMB.toast('Chord sent, ' + refused + ' of ' + picks.length +
+                        ' strings refused.', 'warn');
+            else
+              GMB.toast('Chord sent on ' + picks.length + ' strings.', 'ok');
+          });
+      }, n * 12);
+    });
   }
 
   // ---- Step 9: Validation ---------------------------------------------------

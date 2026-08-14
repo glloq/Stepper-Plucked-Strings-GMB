@@ -176,10 +176,26 @@ touching the profile.
 
 Device Wi-Fi: station or access point, SSID (with a live survey — `GET
 /api/wifi/scan`), hostname, AP name, and passwords, which are **write-only** and
-never leave the device. A **Start hotspot** button switches to the access point
-with its captive portal on demand — the web twin of holding the BOOT button for
-two seconds, for when the station link is unreachable. See
-[`NETWORK_HOTSPOT.md`](NETWORK_HOTSPOT.md).
+never leave the device.
+
+This is **the only place the network is configured**. The link config belongs to
+the machine, not to the tune: it is stored in NVS beside the passwords and
+overrides whatever an imported profile carries, so moving a profile between
+machines never moves one machine's SSID onto another, and loading another
+instrument never drops the device off the network. The Setup wizard used to carry
+a second copy of these fields (plus a `staticIp` checkbox for a flag that drove no
+`WiFi.config()` call and was removed from the schema in v2); it now links here.
+
+**Save & publish** stores the settings *and applies them* — `POST /api/wifi` with
+`apply: true` makes `loop()` reconfigure the radio, with the usual automatic
+fallback to the hotspot if the station attempt fails, so a wrong SSID costs a
+fallback rather than a lockout. A blank password field means "keep the stored
+one"; erasing a secret is a separate, explicit **Forget** / **Remove** checkbox.
+The toast reports what the device actually did, not what was requested.
+
+A **Start hotspot** button switches to the access point with its captive portal on
+demand — the web twin of holding the BOOT button for two seconds, for when the
+station link is unreachable. See [`NETWORK_HOTSPOT.md`](NETWORK_HOTSPOT.md).
 
 ### 5.2 Diagnostics
 
@@ -209,6 +225,14 @@ so reading it never touches the I²C bus or a live counter.
 Device security (admin token, network MIDI source policy), then the GMB identity
 and capabilities with its SysEx tester, then the live MIDI monitor and the
 integrated note tester.
+
+The **integrated test tool** sends the two selection CC *values* a controller
+would put on the wire, and the firmware decodes them with the live selector
+config — numbering, offset, reverse order, mapping table and all — before the
+Note On. So the tool really exercises the General-Midi-Boop chain: if the mapping
+is wrong, the wrong carriage moves, which is the thing worth finding out. The
+header shows which axis and fret the current values resolve to; unticking **Send
+selection CCs** falls back to a bare Note On, allocated automatically.
 
 | | |
 | --- | --- |
@@ -266,20 +290,22 @@ Power & safety tab once shipped broken.
 | `PUT` | `/api/profile` | replace the profile (draft → validation → activation) |
 | `GET` | `/api/profiles` | list of saved profile slots |
 | `POST` | `/api/profiles` | save a profile to a slot (optionally as the startup slot) |
-| `GET` | `/api/board/{id}` | board profile + GPIO capabilities (colours, filtering) |
+| `GET` | `/api/boards` | the boards this firmware supports (the Setup board picker) |
+| `GET` | `/api/board/{id}` | board profile + full GPIO capabilities (colours, filtering) |
 | `POST` | `/api/pins/auto` | automatic assignment (`PinRequest`) → assignments |
 | `POST` | `/api/pins/validate` | pin validation → list of `PinError` |
 | `POST` | `/api/panic` | software panic — **never authenticated** |
 | `POST` | `/api/reset` | clear a latched panic / E-stop, then re-home |
-| `POST` | `/api/test/note` | play a test note (channel, note, velocity, duration) |
+| `POST` | `/api/test/note` | play a test note (channel, note, velocity, duration; optional `ccString`/`ccFret` selection values) |
 | `POST` | `/api/test/servo` | drive one servo to rest/active (armed only) |
 | `POST` | `/api/test/jog` | nudge one axis by a signed mm delta (armed only) |
+| `POST` | `/api/test/moveto` | send one axis to an absolute mm from the homing zero (armed only) |
 | `POST` | `/api/test/endstop` | read a HOME/LIMIT sensor for one axis |
 | `GET` | `/api/commands?id=N` | outcome of a 202-accepted command |
 | `POST` | `/api/auth/check` | does this token authorise writes? |
 | `POST` | `/api/hotspot` | switch to the access point + captive portal now |
 | `GET` | `/api/wifi/scan[?start=1]` | asynchronous network survey |
-| `POST` | `/api/wifi` | store device network settings (passwords write-only) |
+| `POST` | `/api/wifi` | device network settings: mode/ssid/apSsid/hostname, passwords (write-only), `clearStationPassword`/`clearApPassword`, `apply` |
 | `POST` | `/api/sysex/request` | run a GMB SysEx request → decoded response |
 | `GET` | `/api/capabilities` | current capabilities snapshot (read-only) |
 

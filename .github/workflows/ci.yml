@@ -71,6 +71,27 @@ jobs:
       - name: Behavioural tests of the pure UI logic
         run: node web-interface/test/run-tests.js
 
+  web-browser:
+    name: Web interface renders in a real browser
+    runs-on: ubuntu-latest
+    # node --check proves a file parses and run-tests.js proves the pure kernels
+    # compute the right numbers. Neither can catch a view that calls a function
+    # which does not exist: the render throws, the shell paints a "View error"
+    # card, and every other check still passes. That is exactly how the Power &
+    # safety tab once shipped broken, so this job is not optional.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Playwright + Chromium
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm i --no-save playwright
+          npx playwright install --with-deps chromium
+      - name: Mount every view, step and tab
+        run: node web-interface/test/smoke.js
+
   firmware:
     name: Firmware build (${{ matrix.env }})
     runs-on: ubuntu-latest
