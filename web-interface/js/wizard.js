@@ -899,9 +899,14 @@
         else servoGpioSeen[sv.gpio] = lbl;
       } else {
         if (sv.channel < 0 || sv.channel > 15) out.push(lbl + ' has an invalid PCA channel (0–15).');
-        if (sv.pcaBoard < 0 || sv.pcaBoard > 3) out.push(lbl + ' has an invalid PCA board (0–3).');
-        var key = sv.pcaBoard + ':' + sv.channel;
-        if (pcaSeen[key]) out.push(lbl + ' shares PCA board ' + sv.pcaBoard + ' channel ' + sv.channel + ' with ' + pcaSeen[key] + '.');
+        if (sv.pcaBoard < 0 || sv.pcaBoard > 7) out.push(lbl + ' has an invalid PCA board (0–7 = 0x40–0x47).');
+        var bus = sv.i2cBus === 1 ? 1 : 0;
+        if (sv.i2cBus !== undefined && sv.i2cBus !== 0 && sv.i2cBus !== 1)
+          out.push(lbl + ' has an invalid I²C bus (0 or 1).');
+        // A board is identified by (bus, address): the same address on the OTHER
+        // bus is a different chip, so the bus is part of the clash key.
+        var key = bus + ':' + sv.pcaBoard + ':' + sv.channel;
+        if (pcaSeen[key]) out.push(lbl + ' shares I²C bus ' + bus + ' board ' + sv.pcaBoard + ' channel ' + sv.channel + ' with ' + pcaSeen[key] + '.');
         else pcaSeen[key] = lbl;
       }
     });
@@ -910,6 +915,19 @@
 
   GMB.views.wizard = {
     render: render,
+    // Jump to a step by index (0-based) or by its label. Used by the setup flow
+    // itself and by web-interface/tools/screenshots.js, which needs to walk every
+    // step to capture it — without a hook it would have to click through the
+    // stepper and guess when each render settled.
+    goto: function (which) {
+      var i = typeof which === 'number' ? which : STEPS.indexOf(which);
+      if (i < 0 || i >= STEPS.length) return false;
+      goto(i);
+      return true;
+    },
+    steps: function () { return STEPS.slice(); },
+    // Which string the per-string steps (Mechanics, Homing, Servos, Notes) show.
+    selectString: function (i) { activeStr = i | 0; drawStep(); },
     reset: function () {
       step = 0;
       activeStr = 0;

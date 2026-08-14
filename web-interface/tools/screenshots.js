@@ -3,24 +3,30 @@
  *
  * The UI falls back to its in-memory mock backend when no device answers (see
  * js/api.js), so opening index.html from file:// gives a complete, deterministic
- * demo instrument — a 4-string GCEA ukulele, with a geared finger on string 1 —
- * and every screenshot in the documentation is taken from it.
+ * demo instrument — a 4-string GCEA ukulele with four carriages — and every
+ * screenshot in the documentation is taken from it. No device, no build step.
  *
  * Usage (Playwright is NOT a project dependency — install it wherever you like):
  *
  *   npm i playwright && npx playwright install chromium
  *   node web-interface/tools/screenshots.js
  *
- * Set CHROMIUM_PATH to use an already-installed Chromium instead.
+ * Set CHROMIUM_PATH to use an already-installed Chromium instead, and
+ * PLAYWRIGHT_MODULE to point at a Playwright installed outside this repo:
+ *
+ *   PLAYWRIGHT_MODULE=/tmp/pw/node_modules/playwright \
+ *   CHROMIUM_PATH=/opt/pw-browsers/chromium/chrome-linux/chrome \
+ *   node web-interface/tools/screenshots.js
  *
  * Each page is shot full-height with the viewport fitted to the rendered content,
  * so the images carry no band of empty background. Keep the file names stable:
- * they are referenced from README.md, README_EN.md and docs/WEB_INTERFACE.md.
+ * they are referenced from README.md and docs/WEB_INTERFACE.md.
  */
 'use strict';
 
-const { chromium } = require('playwright');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const path = require('path');
+const fs = require('fs');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const OUT = path.join(ROOT, 'img', 'screenshots');
@@ -31,6 +37,7 @@ const SCALE = 1.5;                     // crisp text without 4 MB PNGs
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 (async () => {
+  fs.mkdirSync(OUT, { recursive: true });
   const browser = await chromium.launch(
     process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
   const page = await browser.newPage({
@@ -43,7 +50,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   await page.goto(URL);
   await page.waitForSelector('.nav-item');
-  await sleep(600);
+  await sleep(700);
 
   // `fit` grows the viewport to the view's real height before a full-page shot.
   // The modal shots pass fit:false: the overlay is viewport-sized by design.
@@ -64,34 +71,41 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     console.log('  ' + name + '.png');
   }
 
-  const view = async (id) => { await page.evaluate((v) => GMB.navigate(v), id); await sleep(500); };
-  const step = async (id) => { await page.evaluate((s) => GMB.gotoSetupStep(s), id); await sleep(600); };
-  const sub = async (label) => { await page.click('.subtab:text-is("' + label + '")'); await sleep(600); };
+  const view = async (id) => { await page.evaluate((v) => GMB.navigate(v), id); await sleep(600); };
+  // The setup wizard is a numbered stepper; goto() accepts an index or a label.
+  // It only exists once the Setup view is mounted, so navigate first — stepping a
+  // view that is not on screen silently shoots whatever page IS.
+  const step = async (label) => {
+    await page.evaluate((s) => {
+      if (GMB.state.current !== 'wizard') GMB.navigate('wizard');
+      return GMB.views.wizard.goto(s);
+    }, label);
+    await sleep(800);
+  };
+  const sub = async (label) => { await page.click('.subtab:text-is("' + label + '")'); await sleep(700); };
 
   console.log('Instrument');
   await view('fretboard');
-  await shot('fretboard');
+  await sleep(900);                    // let a status frame land so carriages draw
+  await shot('instrument');
 
   console.log('Setup');
-  await step('builder');
-  await shot('wizard');
-
-  await step('frets');
-  // Open the first equipped fret so the servo editor is part of the picture.
-  const chip = page.locator('.fret-chip.equipped, .fret-chip.geared').first();
-  if (await chip.count()) { await chip.click(); await sleep(500); }
-  await shot('calibration');
-
-  await step('plucking');
-  await shot('calibration-plucking');
-  await step('midi');
-  await shot('midi');
-  await step('power');
-  await shot('power');
-  await step('test');
-  await shot('calibration-test');
-  await step('validation');
-  await shot('validation');
+  await view('wizard');
+  await sleep(900);                    // the wizard fetches the board profile first
+  for (const [label, name] of [
+    ['Identification', 'setup-identification'],
+    ['Board', 'setup-board'],
+    ['Pins', 'setup-pins'],
+    ['Mechanics', 'setup-mechanics'],
+    ['Homing', 'setup-homing'],
+    ['Servos', 'setup-servos'],
+    ['Notes', 'setup-notes'],
+    ['Test', 'setup-test'],
+    ['Validation', 'setup-validation'],
+  ]) {
+    await step(label);
+    await shot(name);
+  }
 
   console.log('Wiring & GPIO');
   await view('hardware');
@@ -109,16 +123,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   console.log('Settings modal');
   await view('fretboard');                       // calm backdrop behind the overlay
   await page.evaluate(() => GMB.openSettings('network'));
-  await sleep(800);
-  await shot('network', { fit: false });
+  await sleep(900);
+  await shot('settings-network', { fit: false });
+  await page.click('.settings-tab:text-is("Diagnostics")');
+  await sleep(1400);                             // first /api/diagnostics poll
+  await shot('settings-diagnostics', { fit: false });
   await page.click('.settings-tab:text-is("Advanced")');
-  await sleep(1200);
+  await sleep(1400);
   await shot('settings-advanced', { fit: false });
 
   // The Advanced tab scrolls; bring each card into view for its own capture.
   async function scrollTo(heading) {
     await page.evaluate((t) => {
       const body = document.getElementById('settings-body');
+      if (!body) return;
       const target = Array.from(body.querySelectorAll('h2,h3'))
         .find((el) => el.textContent.includes(t));
       if (target) body.scrollTop = target.offsetTop - body.offsetTop - 12;

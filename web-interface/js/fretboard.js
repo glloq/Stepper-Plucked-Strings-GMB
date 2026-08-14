@@ -158,7 +158,11 @@
   function buildDiagram() {
     var ss = strings();
     var height = TOP + ss.length * LANE_H + BOT;
-    var root = svg('svg.fb-svg', {
+    // NB: the class goes in the attribute map, never in the tag name —
+    // createElementNS() takes the tag LITERALLY, so 'svg.fb-svg' would create an
+    // element actually named "svg.fb-svg" that no browser draws.
+    var root = svg('svg', {
+      class: 'fb-svg',
       viewBox: '0 0 ' + (RIGHT_X + 120) + ' ' + height,
       width: '100%', preserveAspectRatio: 'xMinYMin meet',
       role: 'group', 'aria-label': 'Instrument fretboard with live carriage positions'

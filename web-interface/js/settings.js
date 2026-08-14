@@ -403,7 +403,7 @@
       statRow('PCA9685', pca.used ? (pca.healthy ? 'all responding' : 'FAULT') : 'not used',
         pca.failedBoard ? 'silent board: ' + pca.failedBoard : '')
     ];
-    return h('table.cap-table', [h('tbody', rows)]);
+    return h('table.cap-table.diag-table', [h('tbody', rows)]);
   }
   function diagnosticsTab(host) {
     host.appendChild(h('div.note-box',

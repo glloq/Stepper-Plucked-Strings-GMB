@@ -88,7 +88,7 @@
   function servoLabel(sv, auxIndex) {
     var s = sv.stringIndex >= 0 ? 'String ' + (sv.stringIndex + 1) : '';
     switch (sv.function) {
-      case 'finger': return s + ' · ' + (sv.fretB >= 1 ? 'frets ' + sv.fret + ' + ' + sv.fretB + ' (geared)' : 'fret ' + sv.fret);
+      case 'finger': return s + ' · finger';
       case 'pluck': return s + ' · plucker';
       case 'strum': return s + ' · strum';
       case 'strumLift': return s + ' · strum lift';
@@ -322,11 +322,11 @@
   function sclKey(bus) { return bus === 1 ? 'scl2' : 'scl'; }
   function oeKey(m, bus) { return (m.splitOe && bus === 1) ? 'oe2' : 'oe'; }
 
-  // The compact role shown on a channel pad (fret for a finger, else a short word
-  // — Lift/Damp make the strum-lift and damper unmistakable).
+  // The compact role shown on a channel pad. A finger carries no fret number on
+  // this build — the carriage chooses the fret, so one finger serves them all.
   function roleWord(sv) {
     switch (sv.function) {
-      case 'finger': return 'f' + (sv.fretB >= 1 ? sv.fret + '/' + sv.fretB : sv.fret);
+      case 'finger': return 'Finger';
       case 'pluck': return 'Pluck';
       case 'strum': return 'Strum';
       case 'strumLift': return 'Lift';
@@ -487,7 +487,6 @@
     if (!sv) cls += ' free';
     else {
       cls += ' used ' + (FN[sv.function] ? FN[sv.function].cls : 'fn-aux');
-      if (sv.function === 'finger' && sv.fretB >= 1) cls += ' geared';
       if (sv.enabled === false) cls += ' off';
       if (list.length > 1) cls += ' dup';
     }
@@ -547,10 +546,9 @@
     return h('div.card', [
       h('h2', 'Legend'),
       h('div.wire-legend', [
-        sw('fn-finger', 'Finger (fret servo)'), sw('fn-pluck', 'Plucker'), sw('fn-strum', 'Strum'),
+        sw('fn-finger', 'Finger'), sw('fn-pluck', 'Plucker'), sw('fn-strum', 'Strum'),
         sw('fn-lift', 'Strum lift'), sw('fn-damper', 'Damper'), sw('fn-aux', 'Auxiliary'),
-        h('span.wire-lg', [h('span.wire-lg-sw.free'), h('span', 'Free channel')]),
-        h('span.wire-lg', [h('span.wire-lg-sw.geared'), h('span', 'Geared (two frets)')])
+        h('span.wire-lg', [h('span.wire-lg-sw.free'), h('span', 'Free channel')])
       ]),
       h('div.wire-legend', [
         rail('vplus', 'V+ 5–6 V servo rail'), rail('gnd', 'GND (common)'), rail('v3', '3V3 logic'),

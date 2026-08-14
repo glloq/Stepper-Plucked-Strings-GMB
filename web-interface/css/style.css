@@ -536,7 +536,6 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 }
 .fret-chip.none { color: var(--muted); background: transparent; }
 .fret-chip.equipped { background: var(--surface); }
-.fret-chip.geared { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
 .fret-chip.current { outline: 2px solid var(--accent); outline-offset: 1px; }
 .fret-chip.mini { min-width: 14px; width: 14px; height: 14px; padding: 0; pointer-events: none; }
 .fret-legend { display: flex; gap: 14px; margin-top: 8px; flex-wrap: wrap; }
@@ -713,7 +712,6 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 .wire-pad.fn-lift { fill: var(--wire-lift); }
 .wire-pad.fn-damper { fill: var(--wire-damper); }
 .wire-pad.fn-aux { fill: var(--wire-aux); }
-.wire-pad.geared { stroke: rgba(255, 255, 255, .8); stroke-width: 1.4; stroke-dasharray: 3 2; }
 .wire-pad.dup { stroke: var(--error); stroke-width: 2.4; }
 .wire-pad.off { opacity: .45; }
 .wire-chpin { fill: var(--muted); font-size: 10px; font-weight: 700; font-family: var(--mono); }
@@ -738,7 +736,6 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 .wire-lg-sw.fn-strum { background: var(--wire-strum); } .wire-lg-sw.fn-lift { background: var(--wire-lift); }
 .wire-lg-sw.fn-damper { background: var(--wire-damper); } .wire-lg-sw.fn-aux { background: var(--wire-aux); }
 .wire-lg-sw.free { background: var(--wire-pad-free); border-color: var(--wire-pad-free-stroke); }
-.wire-lg-sw.geared { background: var(--wire-pad-free); border: 1px dashed var(--text); }
 .wire-lg-rail { width: 20px; height: 4px; border-radius: 2px; display: inline-block; }
 .wire-lg-rail.vplus { background: var(--wire-vplus); } .wire-lg-rail.gnd { background: var(--wire-gnd); }
 .wire-lg-rail.v3 { background: var(--wire-v3); } .wire-lg-rail.sda { background: var(--wire-sda); }
@@ -830,3 +827,12 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 /* A table row whose subject is out of service (a faulted axis in the Axes table). */
 .cap-table tr.row-error td { color: var(--error); }
 .cap-table tr.row-error { background: var(--error-bg); }
+
+/* Diagnostics table (Settings → Diagnostics). Fixed layout with explicit column
+   widths: the hint column is prose and must WRAP inside the modal rather than be
+   clipped at its edge, which is what an auto layout does once the value column
+   carries a long bold string. */
+.diag-table { table-layout: fixed; }
+.diag-table td:nth-child(1) { width: 30%; }
+.diag-table td:nth-child(2) { width: 26%; }
+.diag-table td:nth-child(3) { width: 44%; white-space: normal; line-height: 1.4; }
