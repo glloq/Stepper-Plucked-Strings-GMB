@@ -4,7 +4,7 @@
 > Related documents: [`WEB_INTERFACE.md`](WEB_INTERFACE.md) · [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md) · [`CALIBRATION.md`](CALIBRATION.md) · [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) · [`SAFETY.md`](SAFETY.md).
 
 This guide walks a beginner from first power-on to the first note, using only
-the **simplified mode** of the Web interface. No code modification is needed.
+the Web interface's **Setup** page. No code modification is needed.
 
 ---
 
@@ -31,9 +31,17 @@ Default SSID: Stepper-Plucked-Strings-GMB
 2. Open the local address shown (or the captive portal).
 3. The configuration wizard opens.
 
-You can later switch to **client mode** (the ESP32 joins your network): SSID,
-password, network name, optional static IP, mDNS name. If the connection fails
-several times, the system automatically reverts to access-point mode.
+You can later switch to **client mode** (the ESP32 joins your network): SSID
+(with a live survey of nearby networks), password, hostname / mDNS name. If the
+connection fails several times, the device automatically reverts to access-point
+mode — and holding the **BOOT button for ~2 s** forces the hotspot at any time,
+so a wrong station configuration can never lock you out
+([`NETWORK_HOTSPOT.md`](NETWORK_HOTSPOT.md)).
+
+> A `staticIp` option used to appear here. It was persisted and shown but drove
+> no `WiFi.config()` call whatsoever — a phantom setting — so it was removed
+> rather than left to mislead. Real static-IP support will arrive together with
+> the code that applies it.
 
 ---
 
@@ -63,7 +71,8 @@ caution (see [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md)).
 Click **"Assign pins automatically"**. The system chooses a conflict-free
 configuration based on the number of strings, the enabled interfaces, the board,
 the reservation of the future USB (GPIO19/20), the diagnostics port (UART), the
-I²C bus and the sensors. In simplified mode, you only see the **green** pins. If a
+I²C bus and the sensors. Green pins are the recommended ones; yellow pins are
+usable but carry a stated caveat, and red pins are never selectable. If a
 signal cannot be placed, the wizard explains it and suggests an alternative.
 
 Example assignment obtained (DevKitC-1 profile, see

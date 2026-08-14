@@ -69,10 +69,13 @@ end.
 Every servo picks its own source, so an instrument can be built **with or without
 a PCA9685**, or with a mix of both:
 
-* **PCA9685** — up to **four boards** (`pcaBoard` 0–3, I²C 0x40–0x43 = 64
-  channels). Use this once you exceed the ESP32's free PWM pins.
-* **Direct GPIO** — the servo hangs off a free ESP32-S3 pin (LEDC 50 Hz PWM),
-  handy when there is no PCA or only a couple of servos.
+* **PCA9685** — up to **eight boards per I²C bus** (`pcaBoard` 0–7, addresses
+  0x40–0x47) on **either** of the ESP32-S3's two hardware I²C controllers
+  (`i2cBus` 0 = SDA/SCL, 1 = SDA2/SCL2), so 16 boards / 256 channels in total.
+  Splitting boards over the two buses also halves the traffic, so the servos
+  refresh faster. Use a PCA once you exceed the ESP32's free PWM pins.
+* **Direct GPIO** — the servo hangs off a free ESP32 pin (LEDC 50 Hz PWM), capped
+  at 8 (one LEDC channel each); handy with no PCA or only a couple of servos.
 
 The web interface exposes this choice per servo and prevents channel/pin
 conflicts (see [`../docs/CALIBRATION.md`](../docs/CALIBRATION.md) §4).

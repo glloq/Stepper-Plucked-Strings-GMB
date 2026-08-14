@@ -110,7 +110,7 @@ interface triggers a new homing before playback resumes.
 
 After a panic or an E-stop, the safety state is **locked**: neither loading a
 profile nor a new homing can re-enable the motors. Recovery is explicit via
-`POST /api/reset` (the "Reset & re-home" button on the dashboard), accepted only
+`POST /api/reset` (the "Reset & re-home" button on the Instrument page), accepted only
 if:
 
 * the E-stop is physically released;
@@ -128,8 +128,8 @@ If one or more axes fail their homing, the system still enters playback **but**:
 * the **polyphony announced** via SysEx is reduced to the number of functional
   axes and the **capabilities revision** is incremented (General-Midi-Boop stops
   sending the unplayable notes);
-* the exposed state becomes `readyDegraded` and the fault appears on the
-  dashboard.
+* the exposed state becomes `readyDegraded`, the affected lane is flagged on the
+  Instrument page, and the fault is logged.
 
 ### Wi-Fi secrets and access
 
@@ -247,7 +247,8 @@ const std::vector<FaultRecord>& faults() const;
 void clearFaults();
 ```
 
-Faults are displayed on the Web dashboard (§19).
+Faults are displayed live on the Instrument page, and the cumulative total is
+reported by `GET /api/diagnostics` (§19, [`WEB_INTERFACE.md`](WEB_INTERFACE.md) §5.2).
 
 ---
 

@@ -64,6 +64,31 @@ understand?"* and adapt automatically.
 
 ---
 
+## What it looks like
+
+Everything is configured and played from a web page served by the ESP32 — three
+pages and a settings modal, no app to install.
+
+![The Instrument page](img/screenshots/instrument.png)
+
+*The **Instrument** page: one lane per string with each carriage drawn where it
+actually is. Click a fret to play it — that sends a real MIDI note through the
+whole chain, so it tests what a controller would get.*
+
+| | |
+| --- | --- |
+| [![Setup wizard](img/screenshots/setup-mechanics.png)](docs/WEB_INTERFACE.md#3-setup--nine-steps) | [![Wiring harness](img/screenshots/wiring.png)](docs/WEB_INTERFACE.md#41-harness) |
+| **Setup** — nine steps from identity to validation | **Wiring & GPIO** — the harness of *your* configuration |
+| [![Power and safety](img/screenshots/wiring-power.png)](docs/WEB_INTERFACE.md#42-power--safety) | [![Diagnostics](img/screenshots/settings-diagnostics.png)](docs/WEB_INTERFACE.md#52-diagnostics) |
+| **Power & safety** — the reference circuit, sized for your currents | **Diagnostics** — loop jitter, dropped MIDI, motion counters |
+
+The full tour, with every page, is in
+[`docs/WEB_INTERFACE.md`](docs/WEB_INTERFACE.md). All the screenshots are
+generated from the real interface running its mock backend — no device needed:
+`node web-interface/tools/screenshots.js`.
+
+---
+
 ## Features
 
 - 🎸 **1–6 strings**, each with its own motor, finger, plucker and optional damper.

@@ -36,14 +36,26 @@ Consequences:
   Wi-Fi), `WebApi` (REST + WebSocket), `MidiWifi` (transport), `ProfileStorage`
   (LittleFS + NVS for secrets). These layers consume the core without modifying
   it.
-* **Native tests** (`firmware/test/`) — 86 unit tests compiled and run
-  with `g++ -std=c++17` via `firmware/test/Makefile`, covering the 8 modules of
-  the core (`test_board`, `test_selector`, `test_allocator`, `test_motion`,
-  `test_string_fsm`, `test_profile`, `test_sysex`, + `test_main`).
+* **Native tests** (`firmware/test/`) — the whole core compiled and run with
+  `g++ -std=c++17` via `firmware/test/Makefile`, under `-Werror` and again under
+  AddressSanitizer + UBSan in CI. The CI badge is the source of truth for the
+  count; there is deliberately no hard-coded number here to go stale.
 
 ```bash
 cd firmware/test && make        # compile the core + the tests, then run them
 ```
+
+Some code cannot be reached by a native unit test because it is Arduino-gated.
+Rather than leave it merely *compiled*, four harnesses exercise it with real
+implementations against instrumented stubs:
+
+| Harness | What it proves |
+| ------- | -------------- |
+| `test/hostcheck/` | `main.cpp` and every ESP32 adapter still compile (types, signatures, ArduinoJson) |
+| `test/servobankcheck/` | dual-I²C-bus routing, the controlled and governed parks, `ActuatorResult`, the board→string map |
+| `test/stepperbankcheck/` | `hardStop()` force-stops and drops ENABLE while `controlledStopAll()` decelerates and keeps it; refused moves; soft-limit clamping; an axis with no step generator |
+| `test/profilecheck/` | every shipped profile through the real parser, the v1→v2 migration, the split-slot round trip |
+| `test/boardcheck/` | the JSON board profiles still match `BoardProfile.cpp` |
 
 This separation guarantees that a new MIDI transport or a new board does not
 affect the string controller, the allocator, the motion management, or the
@@ -58,67 +70,92 @@ places that tree side by side with the modules **actually implemented** in
 `firmware/src/core/`.
 
 ```text
-firmware/                        Specification §23             Implemented (core/)
-├── application/
-│   ├── Application              orchestration                 (adapter, upcoming)
-│   ├── Scheduler                non-blocking scheduling        (adapter, upcoming)
-│   └── EventBus                 event bus                      (adapter, upcoming)
+firmware/src/core/               pure C++17 — no Arduino, unit-tested on a host
+├── Types.{h,cpp}                capacity bounds, fret geometry, gamme law
+├── app/
+│   ├── AppPhase.h               lifecycle phase → the wire labels the UI reads
+│   └── Readiness.h              the ready / degraded rule (a string is ready only
+│                                if enabled AND un-faulted)
 ├── board/
-│   ├── BoardProfile             board profiles                core/board/BoardProfile.{h,cpp}
-│   ├── PinManager               pin assignment                core/board/PinManager.{h,cpp}
-│   └── PinValidator             conflict validation           PinManager::validate() (merged)
-├── communication/
-│   ├── WifiManager              Wi-Fi AP/station              (adapter, upcoming)
-│   ├── MidiTransport            MIDI transport                (adapter, upcoming)
-│   ├── WebSocketMidi            MIDI over WebSocket           (adapter, upcoming)
-│   └── FutureTransports         BLE/USB/DIN…                  MidiSource enum (core/midi)
-├── midi/
-│   ├── MidiParser               parsing bytes → MidiEvent     core/midi/MidiEvent.h
-│   ├── MidiRouter               routing                       (adapter, upcoming)
-│   └── MidiEventQueue           event queue                   (adapter, upcoming)
-│   └── (string/fret selection)  CC20/CC21 tablature           core/midi/StringFretSelector.{h,cpp}
-├── instrument/
-│   ├── InstrumentController     instrument orchestration      (adapter, upcoming)
-│   ├── StringController         per-string state machine      core/instrument/StringController.{h,cpp}
-│   └── NoteAllocator            note allocation               core/instrument/NoteAllocator.{h,cpp}
-├── motion/
-│   ├── StepperAxis              geometry/conversion mm↔steps  core/motion/StepperAxis.{h,cpp}
-│   ├── MotionPlanner            trapezoidal profile (accel)   core/motion/MotionPlanner.{h,cpp}
-│   └── HomingController         non-blocking homing           core/motion/HomingController.{h,cpp}
-├── actuators/
-│   ├── ServoManager             PCA9685                       ServoConfig (core/configuration)
-│   ├── FingerActuator           finger servo                  ServoConfig function="finger"
-│   ├── PluckActuator            pluck servo                   ServoConfig function="pluck"
-│   └── DamperActuator           damper                        ServoConfig function="damper"
+│   ├── BoardProfile.{h,cpp}     four board profiles + per-signal pin capability
+│   └── PinManager.{h,cpp}       assignment AND validation (§23's PinValidator is
+│                                merged in: both need the same BoardProfile)
 ├── configuration/
-│   ├── Profile                  profile (source of truth)     core/configuration/Profile.{h,cpp}
-│   ├── ProfileValidator         validation                    core/configuration/ProfileValidator.{h,cpp}
-│   └── ProfileStorage           NVS persistence               (adapter, upcoming)
-├── safety/
-│   ├── SafetyManager            safe states / panic / E-stop  core/safety/SafetyManager.{h,cpp}
-│   └── FaultManager             fault log                     SafetyManager::faults() (merged)
+│   ├── Profile.{h,cpp}          the single source of truth (schema v2)
+│   ├── ProfileValidator.{h,cpp} semantic validation — nothing arms without it
+│   ├── ProfileActivation.h      the two-phase profile swap (RAII + timing)
+│   ├── DeviceInstrument.h       DeviceConfig / InstrumentProfile split (P1.13)
+│   └── ServoStroke.h            velocity → strike-depth maths
 ├── diagnostics/
-│   ├── Logger                   logging                       (adapter, upcoming)
-│   └── DiagnosticService        diagnostics                   (adapter, upcoming)
-├── gmb/                         (GMB SysEx protocol, §below)
-│   ├── Capabilities             capabilities snapshot         core/gmb/Capabilities.{h,cpp}
-│   └── GmbSysEx                 SysEx encoder/decoder         core/gmb/GmbSysEx.{h,cpp}
-└── web/
-    ├── WebServer                HTTP server                   (adapter, upcoming)
-    ├── RestApi                  REST API                      (adapter, cf. WEB_INTERFACE.md)
-    └── WebSocketStatus          real-time status              (adapter, upcoming)
+│   └── Diagnostics.h            runtime telemetry accumulator (P2.19)
+├── gmb/
+│   ├── Capabilities.{h,cpp}     capabilities snapshot
+│   ├── GmbSysEx.{h,cpp}         SysEx encoder/decoder
+│   └── GmbSysExService.{h,cpp}  request handling + rate limiting
+├── instrument/
+│   ├── InstrumentController.{h,cpp}  orchestration, chord grouping
+│   ├── StringController.{h,cpp}      per-string state machine
+│   ├── NoteAllocator.{h,cpp}         note → string allocation
+│   ├── ActuatorResult.h              Ok / InvalidIndex / Disabled / … (P1.4)
+│   ├── ActuatorManager.h             deadline vs staggerable movements (P1.6)
+│   └── ServoActivationGovernor.h     the in-rush start governor
+├── midi/
+│   ├── MidiEvent.h              transport-neutral event + MidiSource tag
+│   ├── MidiParser.{h,cpp}       bytes → MidiEvent (running status, SysEx)
+│   ├── MidiTransport.h          the interface every transport implements (P1.7)
+│   ├── StringFretSelector.{h,cpp}  CC20/CC21 tablature selection
+│   └── Velocity.h               velocity curves
+├── motion/
+│   ├── StepperAxis.{h,cpp}      geometry, mm ↔ steps, soft limits
+│   ├── MotionPlanner.{h,cpp}    trapezoidal reference model
+│   └── HomingController.{h,cpp} non-blocking homing per axis
+├── net/
+│   └── UdpSourceGate.h          UDP session posture (P1.11)
+├── safety/
+│   └── SafetyManager.{h,cpp}    ConfigSafe / PowerOnSafe / Homing / Armed /
+│                                Panic / EmergencyStop + the fault log (§23's
+│                                FaultManager is merged in)
+└── util/
+    ├── Debounce.h               input debouncing
+    ├── HoldButton.h             BOOT long-press → hotspot
+    └── CommandResultRing.h      outcome of the last N web→loop commands
+
+firmware/src/platform/esp32/     the hardware glue — Arduino-gated
+├── StepperBank.{h,cpp}          STEP/DIR via the FastAccelStepper hardware engine
+│                                (RMT/MCPWM + timer), so pulses are generated
+│                                OUTSIDE loop() and are immune to Wi-Fi/web/I²C
+│                                latency; hardStop / controlledStopAll
+├── ServoBank.{h,cpp}            PCA9685 on two I²C buses + direct-GPIO (LEDC);
+│                                hardStop, controlled and governed parks
+├── MidiWifi.{h,cpp}             UDP MIDI transport (+ the UDP source gate)
+├── MidiDinTransport.h           DIN-5/TRS over UART — complete, inert until a
+│                                RX pin is bound
+├── MidiUsbTransport.h           native USB-MIDI skeleton (awaits TinyUSB)
+├── Net.{h,cpp}                  Wi-Fi station/AP, forced hotspot, captive
+│                                portal, async network survey
+├── WebApi.{h,cpp}               REST + WebSocket
+└── ProfileStorage.{h,cpp}       LittleFS slots (split device/instrument layout,
+                                 atomic temp+bak writes) + NVS for secrets
 ```
 
-Correspondence notes:
+`main.cpp` is what remains: it owns the mechanical state, drains the web→loop
+command queue, runs the safety checks first on every tick, and drives the
+per-string playback sequence. Every mutating web request only *enqueues*; the
+async web task never touches an actuator.
 
-* `PinValidator` (§23) is merged into `PinManager::validate()` — validation
-  and assignment share the same `BoardProfile`.
-* `FaultManager` (§23) is merged into `SafetyManager` (`recordFault()` /
-  `faults()`).
-* The `gmb/` module does not appear explicitly in the §23 tree: it realizes
-  the [`SYSEX_CAPABILITIES.md`](SPEC_INDEX.md) specification.
-* Entries marked "adapter, upcoming" are platform layers or modules from later
-  phases that will consume the core.
+Correspondence notes vs the §23 target tree:
+
+* `PinValidator` is merged into `PinManager::validate()`, and `FaultManager`
+  into `SafetyManager` — in both cases the two halves need the same state.
+* `gmb/` does not appear in the §23 tree: it realises the
+  [`SYSEX_CAPABILITIES.md`](SPEC_INDEX.md) specification.
+* The `application/` layer (`Application` / `Scheduler` / `EventBus`) is still
+  the one genuinely outstanding item: the host-testable kernels have been pulled
+  out of `main.cpp` (`AppPhase`, `Readiness`, `CommandResultRing`, `HoldButton`,
+  `ProfileActivation`, `Diagnostics`, `ActuatorManager`), but the per-string
+  playback FSM and the arming sequence still live there. See
+  [`../AUDIT_REPORT.md`](../AUDIT_REPORT.md) §5 for why that extraction was
+  deliberately not forced.
 
 ---
 
@@ -223,13 +260,23 @@ in [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md#3-protocole-sysex-gmb).
 | ----- | ---- | ---- |
 | `instrument` | `InstrumentInfo` | name, type, GM program, number of strings, capo, transposition |
 | `boardIdentifier` / `reserveUsb` / `pins` | — | board, USB reservation, GPIO assignment |
-| `network` | `NetworkConfig` | AP/station mode, SSID, hostname, static IP |
-| `midi` | `MidiConfig` | channel, Omni, transposition, chord window, velocity curve, pedal |
+| `estopNormallyClosed` | `bool` | E-stop contact wiring — a NC loop fails safe |
+| `network` | `NetworkConfig` | AP/station mode, SSID, hostname, AP name |
+| `midi` | `MidiConfig` | channel, Omni, transposition, chord window, velocity curve, pedal, the execution delay and the finger/strum leads |
 | `selector` | `SelectorConfig` | string/fret selection (CC20/CC21, mode, timeout, FIFO…) |
+| `power` | `PowerConfig` | in-rush governor caps (global, per PCA board, stagger) |
+| `pluck` | `PluckConfig` | the plucking gesture and the Note-Off mute behaviour, common to every string |
+| `hardware` | `HardwareNotes` | what safety hardware is physically fitted, and the currents the web estimator sizes from — documentation only, drives no runtime behaviour |
 | `strings` | `vector<AxisConfig>` | geometry/motor per string |
 | `homing` | `vector<HomingConfig>` | homing per axis |
-| `servos` | `vector<ServoConfig>` | servos (finger/pluck/damper/aux) |
+| `servos` | `vector<ServoConfig>` | servos (finger/pluck/strum/strumLift/damper/aux) |
+| `profileVersion` | `uint16_t` | schema version (currently 2) — `ProfileStorage::migrate()` upgrades older files explicitly |
 | `capabilitiesRevision` | `uint32_t` | revision counter (Block 8 notification) |
+
+The `hardware` block is deliberately inert: it describes the contactor, the
+pull-ups and the fuses, which matter *precisely when the firmware cannot act*.
+Storing it with the profile means the builder's declarations follow the
+instrument across devices and exports.
 
 `Profile::instrumentView()` derives from it an `InstrumentView` shared by the
 string/fret selector and the capabilities generator.
@@ -247,9 +294,17 @@ string/fret selector and the capabilities generator.
 | **5 — Dedicated hardware** | schematic, PCB, protections, connectors, hardware shutdown, electrical validation, wiring documentation | `hardware/` |
 | **6 — Future communications** | BLE MIDI, USB MIDI, MIDI DIN, wired links | new transports reusing `MidiEvent` |
 
-The current state of the repository covers the **algorithmic core** of phases 1
-to 3 (`core/*` modules + 86 native tests). The platform adapters and the Web
-interface constitute the remaining layers.
+Phases 1–4 are implemented in software: the core, the ESP32 adapters, the web
+interface, and the safety/telemetry work of the audit
+([`../AUDIT_REPORT.md`](../AUDIT_REPORT.md)). Phase 5 exists as the reference
+circuit, schematics and commissioning procedure in
+[`../hardware/`](../hardware/README.md), not yet as a PCB. Phase 6 has its
+abstraction in place (`MidiTransport`, with UDP functional and DIN complete but
+inert until a RX pin is bound) — see §7.
+
+**None of it has run against a physical instrument.** Everything above is
+verified in software; start bench bring-up with
+[`../hardware/COMMISSIONING.md`](../hardware/COMMISSIONING.md).
 
 ---
 
@@ -257,11 +312,19 @@ interface constitute the remaining layers.
 
 Adding a transport (BLE, USB, DIN, serial, CAN/RS485) must modify neither the
 string controller, nor the allocator, nor the motion management, nor the
-mechanical profiles (§8.3). All transports:
+mechanical profiles (§8.3). This is now enforced by an interface rather than by
+convention: `core/midi/MidiTransport.h` captures the per-tick ingestion contract
+(`poll` / `events` / `clear` / `source` / `name`), and `main.cpp` feeds the
+**same** `InstrumentController` from a list of transports.
 
-1. decode the bytes into `MidiEvent`;
-2. forward complete MIDI bytes to the router;
-3. reuse exactly the same blocks, encoder, decoder, snapshot, and tests
-   for the GMB SysEx (SysEx spec §21).
+| Transport | State |
+| --------- | ----- |
+| `MidiWifi` (UDP, port 5006) | functional — implements `MidiTransport`, keeps its IP-addressed SysEx back-channel |
+| `MidiDinTransport` (DIN-5/TRS over UART) | byte→event logic complete and compile-checked; wired **inert** (`begin(nullptr)`) until a config exposes a RX pin. Reception over a real opto-coupler is unvalidated |
+| `MidiUsbTransport` (native USB on the S3) | documented skeleton, awaits TinyUSB |
+| BLE | not started |
 
-GPIO19/GPIO20 remain reserved by default for the ESP32-S3 native USB.
+Each transport stamps `MidiEvent.source`, so diagnostics and routing can tell the
+inputs apart. Bring-up and any reply channel stay on the concrete class: UDP needs
+a port and addressed replies, USB/DIN/BLE do not. GPIO19/GPIO20 remain reserved by
+default for the ESP32-S3 native USB.
