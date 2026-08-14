@@ -306,8 +306,12 @@
   // Both return -1 for a value the firmware would reject.
   GMB.decodeStringCc = function (sfs, p, rawValue) {
     var cfg = sfs.string, count = p.instrument.stringCount;
-    if (rawValue < cfg.minimum || rawValue > cfg.maximum) return -1;
+    // Offset FIRST, then the range check — "logical = CC + offset, then
+    // validated". Checking the raw value would shift the accepted band by the
+    // offset, so a configured offset accepts the wrong values and rejects the
+    // right ones.
     var index = rawValue + (cfg.offset || 0);
+    if (index < cfg.minimum || index > cfg.maximum) return -1;
     if (cfg.numbering !== 'zeroBased') index -= 1;   // oneBased is the default
     if (index < 0 || index >= count) return -1;
     if (cfg.reverseOrder) index = (count - 1) - index;
@@ -321,9 +325,10 @@
   };
   GMB.decodeFretCc = function (sfs, rawValue) {
     var cfg = sfs.fret;
-    if (rawValue < cfg.minimum || rawValue > cfg.maximum) return -1;
-    var fret = rawValue + (cfg.offset || 0);
-    return fret < 0 ? -1 : fret;
+    var fret = rawValue + (cfg.offset || 0);   // offset first, same rule as above
+    if (fret < 0) return -1;
+    if (fret < cfg.minimum || fret > cfg.maximum) return -1;
+    return fret;
   };
   // The inverse, for pre-filling the tester from a string the user picked. Brute
   // force over the 128 CC values rather than an algebraic inverse: reverseOrder

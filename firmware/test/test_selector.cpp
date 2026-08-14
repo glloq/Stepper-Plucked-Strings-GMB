@@ -225,3 +225,103 @@ TEST(gmb_preset_adapts_ranges) {
     CHECK_EQ((int)sel.config().fret.maximum, 12);
     CHECK(sel.config().mode == SelectionMode::Hybrid);
 }
+
+// ---------------------------------------------------------------------------
+// Regressions in the CC selection path. Each of these makes the instrument play
+// the WRONG note (or a note it should have refused) rather than fail loudly, so
+// they are the kind that survive a bench session unnoticed.
+// ---------------------------------------------------------------------------
+
+// The offset is applied BEFORE the range check (STRING_FRET_SELECTION.md:
+// "logical = CC + offset, then validated"). Validating the raw value instead
+// shifts the whole accepted band by the offset, so a configured offset silently
+// accepts the wrong CC values and rejects the right ones.
+TEST(offset_is_applied_before_the_range_check) {
+    StringFretSelector sel;
+    SelectorConfig cfg;
+    cfg.mode = SelectionMode::Explicit;
+    cfg.string.minimum = 1;
+    cfg.string.maximum = 4;
+    cfg.string.offset = 1;   // a controller that numbers its strings from 0
+    cfg.fret.maximum = 12;
+    cfg.fret.invalidValuePolicy = InvalidValuePolicy::Reject;  // observe refusals
+    sel.configure(cfg);
+    sel.setInstrument(makeView4());
+
+    // Raw 0 + offset 1 = logical 1 -> string 1 (axis 0). Raw 0 is below the raw
+    // minimum, so the buggy order rejected exactly the value the offset exists for.
+    sel.onControlChange(cc(0, 20, 0, 1000));
+    sel.onControlChange(cc(0, 21, 3, 1100));
+    NoteResolution r = sel.onNoteOn(noteOn(0, 70, 100, 1200), 1300);
+    CHECK(r.play);
+    CHECK_EQ((int)r.stringIndex, 0);
+    CHECK_EQ((int)r.fret, 3);
+
+    // And the top of the band moves with it: raw 4 + 1 = 5 is now out of range.
+    sel.onControlChange(cc(0, 20, 4, 2000));
+    sel.onControlChange(cc(0, 21, 3, 2100));
+    NoteResolution r2 = sel.onNoteOn(noteOn(0, 70, 100, 2200), 2300);
+    CHECK(!r2.play);
+    CHECK(r2.source == ResolveSource::Rejected);
+}
+
+// An out-of-range CC value must FILL its slot (as invalid), not vanish. If it
+// vanishes, the half-selection left behind is completed by the next unrelated CC
+// and the note is played on a string nobody asked for.
+TEST(an_invalid_cc_value_cannot_be_completed_by_a_later_one) {
+    StringFretSelector sel;
+    SelectorConfig cfg;
+    cfg.mode = SelectionMode::Explicit;
+    cfg.string.minimum = 1;
+    cfg.string.maximum = 4;
+    cfg.fret.maximum = 12;
+    cfg.fret.invalidValuePolicy = InvalidValuePolicy::Reject;  // observe refusals
+    sel.configure(cfg);
+    sel.setInstrument(makeView4());
+
+    sel.onControlChange(cc(0, 21, 5, 1000));   // fret 5, waiting for its string
+    sel.onControlChange(cc(0, 20, 9, 1100));   // string 9: out of range
+    // The fret is now bound to the INVALID string, so this later valid string CC
+    // opens a NEW selection instead of adopting the orphaned fret.
+    sel.onControlChange(cc(0, 20, 2, 1200));
+
+    // First note: the invalid pair is the oldest complete selection, and it is
+    // refused rather than played on some arbitrary string.
+    NoteResolution r = sel.onNoteOn(noteOn(0, 65, 100, 1300), 1400);
+    CHECK(!r.play);
+    CHECK(r.source == ResolveSource::Rejected);
+
+    // The later valid string CC is still waiting for a fret of its own — it did
+    // NOT silently inherit fret 5 from the abandoned selection.
+    sel.onControlChange(cc(0, 21, 9, 1500));
+    NoteResolution r2 = sel.onNoteOn(noteOn(0, 69, 100, 1600), 1700);
+    CHECK(r2.play);
+    CHECK_EQ((int)r2.stringIndex, 1);  // string 2 -> axis 1
+    CHECK_EQ((int)r2.fret, 9);         // the fret it was actually given
+}
+
+// An expired selection must not shadow a newer, still-valid one queued behind it:
+// taking the first complete entry regardless rejects a perfectly good note
+// because an older one timed out.
+TEST(an_expired_selection_does_not_shadow_a_valid_one) {
+    StringFretSelector sel;
+    SelectorConfig cfg;
+    cfg.mode = SelectionMode::Explicit;
+    cfg.string.maximum = 4;
+    cfg.fret.maximum = 12;
+    cfg.selectionTimeoutMs = 100;   // 100 ms
+    sel.configure(cfg);
+    sel.setInstrument(makeView4());
+
+    // Old selection at t=0 (expires at 100 ms), fresh one at t=90 ms.
+    sel.onControlChange(cc(0, 20, 1, 0));
+    sel.onControlChange(cc(0, 21, 2, 0));
+    sel.onControlChange(cc(0, 20, 3, 90000));
+    sel.onControlChange(cc(0, 21, 7, 90000));
+
+    // At t=150 ms the first has expired, the second has not.
+    NoteResolution r = sel.onNoteOn(noteOn(0, 71, 100, 150000), 150000);
+    CHECK(r.play);
+    CHECK_EQ((int)r.stringIndex, 2);  // string 3 -> axis 2
+    CHECK_EQ((int)r.fret, 7);
+}

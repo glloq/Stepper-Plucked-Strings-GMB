@@ -78,3 +78,19 @@ TEST(parser_sysex_buffer) {
     CHECK_EQ((int)p.sysex()[0].back(), 0xF7);
     CHECK_EQ((int)p.sysex()[0].size(), 7);
 }
+
+// A STRAY 0xF7 (End-of-Exclusive with no SysEx open) is not a voice status. If it
+// latches into running status, every following data byte is decoded as a message
+// and the instrument plays garbage from a stream that carried no notes at all.
+TEST(parser_stray_end_of_exclusive_does_not_latch) {
+    MidiParser p;
+    uint8_t junk[] = {0xF7, 0x40, 0x50, 0x60};  // orphaned EOX, then data bytes
+    p.feed(junk, sizeof(junk), 0);
+    CHECK_EQ((int)p.events().size(), 0);  // nothing may be emitted
+
+    // And a real message right after still parses: the stream is not poisoned.
+    uint8_t real[] = {0x90, 60, 100};
+    p.feed(real, sizeof(real), 0);
+    CHECK_EQ((int)p.events().size(), 1);
+    CHECK_EQ((int)p.events()[0].data1, 60);
+}

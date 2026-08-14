@@ -25,8 +25,13 @@ void StringFretSelector::applyGmbPreset() {
 }
 
 int StringFretSelector::mapStringValue(uint8_t rawValue) const {
+    // Apply the offset FIRST, then validate the LOGICAL value against the allowed
+    // range (STRING_FRET_SELECTION.md: "logical = CC + offset, then validated").
+    // Validating the raw value instead shifts the accepted band away from
+    // [min,max] as soon as the offset is non-zero, so a configuration with an
+    // offset silently accepts the wrong CC values and rejects the right ones.
     int logical = static_cast<int>(rawValue) + cfg_.string.offset;
-    if (rawValue < cfg_.string.minimum || rawValue > cfg_.string.maximum) return -1;
+    if (logical < cfg_.string.minimum || logical > cfg_.string.maximum) return -1;
 
     int index = logical;
     if (cfg_.string.numbering == StringNumbering::OneBased) index -= 1;
@@ -43,9 +48,11 @@ int StringFretSelector::mapStringValue(uint8_t rawValue) const {
 }
 
 int StringFretSelector::mapFretValue(uint8_t rawValue) const {
-    if (rawValue < cfg_.fret.minimum || rawValue > cfg_.fret.maximum) return -1;
+    // Offset first, then validate the logical fret against [min,max] — same rule
+    // as the string value above.
     int logical = static_cast<int>(rawValue) + cfg_.fret.offset;
     if (logical < 0) return -1;
+    if (logical < cfg_.fret.minimum || logical > cfg_.fret.maximum) return -1;
     return logical;
 }
 
@@ -59,7 +66,28 @@ bool StringFretSelector::onControlChange(const MidiEvent& e) {
     if (e.data1 == cfg_.string.ccNumber) {
         int axis = mapStringValue(e.data2);
         if (axis < 0) {
-            return true;  // consumed, but invalid — handled at Note On time
+            // Invalid string value: fill the string slot as INVALID rather than
+            // dropping it silently. Bind a fret already waiting for its string
+            // here, so it is not left orphaned for a LATER, unrelated string CC to
+            // mis-pair with; the note is then resolved by the invalid-value policy
+            // at Note On.
+            for (auto& s : pending_) {
+                if (s.midiChannel == key && s.hasFret && !s.hasString) {
+                    s.hasString = true;
+                    s.invalid = true;
+                    s.expiresAtUs = e.timestampUs + timeoutUs;
+                    return true;
+                }
+            }
+            if (pending_.size() >= cfg_.queueDepth) pending_.erase(pending_.begin());
+            PendingStringSelection s;
+            s.midiChannel = key;
+            s.hasString = true;
+            s.invalid = true;
+            s.receivedAtUs = e.timestampUs;
+            s.expiresAtUs = e.timestampUs + timeoutUs;
+            pending_.push_back(s);
+            return true;
         }
         // If a fret arrived first, complete that oldest fret-only entry instead
         // of opening a new one (symmetric with the fret branch below).
@@ -87,6 +115,24 @@ bool StringFretSelector::onControlChange(const MidiEvent& e) {
     if (e.data1 == cfg_.fret.ccNumber) {
         int fret = mapFretValue(e.data2);
         if (fret < 0) {
+            // Invalid fret value: mirror the string branch — fill the fret slot as
+            // INVALID, binding a string already waiting for its fret.
+            for (auto& s : pending_) {
+                if (s.midiChannel == key && s.hasString && !s.hasFret) {
+                    s.hasFret = true;
+                    s.invalid = true;
+                    s.expiresAtUs = e.timestampUs + timeoutUs;
+                    return true;
+                }
+            }
+            if (pending_.size() >= cfg_.queueDepth) pending_.erase(pending_.begin());
+            PendingStringSelection s;
+            s.midiChannel = key;
+            s.hasFret = true;
+            s.invalid = true;
+            s.receivedAtUs = e.timestampUs;
+            s.expiresAtUs = e.timestampUs + timeoutUs;
+            pending_.push_back(s);
             return true;
         }
         // Attach to the oldest string-selection on this channel still missing a
@@ -153,12 +199,18 @@ NoteResolution StringFretSelector::onNoteOn(const MidiEvent& e, uint32_t nowUs) 
 
     const uint8_t key = channelKey(e.channel);
 
-    // Find the oldest complete selection for this channel (spec section 9) —
-    // WITHOUT expiring first, so an expired-but-present selection is handled by
-    // expiredSelectionPolicy rather than silently treated as "missing".
-    int idx = -1;
+    // Find the oldest complete selection for this channel (spec section 9).
+    // Prefer the oldest NON-expired one, and remember an expired one only as a
+    // fallback: taking the first complete entry regardless lets a stale selection
+    // shadow a newer, still-valid one that arrived behind it, so a correct note
+    // gets rejected because an older one timed out. Expiry is still surfaced
+    // through expiredSelectionPolicy, never silently treated as "missing".
+    int idx = -1, expiredIdx = -1;
     for (size_t i = 0; i < pending_.size(); ++i) {
-        if (pending_[i].midiChannel == key && pending_[i].complete()) {
+        if (pending_[i].midiChannel != key || !pending_[i].complete()) continue;
+        if (static_cast<int32_t>(nowUs - pending_[i].expiresAtUs) >= 0) {
+            if (expiredIdx < 0) expiredIdx = static_cast<int>(i);
+        } else {
             idx = static_cast<int>(i);
             break;
         }
@@ -195,23 +247,22 @@ NoteResolution StringFretSelector::onNoteOn(const MidiEvent& e, uint32_t nowUs) 
     };
 
     if (idx < 0) {
-        // No explicit selection at all: apply the missing-selection policy
-        // (hybrid mode always falls back to automatic allocation).
+        // No usable (non-expired) selection. If an expired one is present, apply
+        // the expired policy; otherwise the missing-selection policy. Hybrid mode
+        // always falls back to automatic allocation.
+        if (expiredIdx >= 0) {
+            pending_.erase(pending_.begin() + expiredIdx);
+            expire(nowUs);
+            if (cfg_.mode == SelectionMode::Hybrid &&
+                cfg_.expiredSelectionPolicy != InvalidValuePolicy::Reject) {
+                return automaticResolution();
+            }
+            return applyPolicy(cfg_.expiredSelectionPolicy, "string/fret selection expired");
+        }
         expire(nowUs);
         if (cfg_.mode == SelectionMode::Hybrid) return automaticResolution();
         return applyPolicy(cfg_.missingSelectionPolicy,
                            "incomplete string/fret selection");
-    }
-
-    // A complete selection exists — but has it expired?
-    if (static_cast<int32_t>(nowUs - pending_[idx].expiresAtUs) >= 0) {
-        pending_.erase(pending_.begin() + idx);
-        expire(nowUs);
-        if (cfg_.mode == SelectionMode::Hybrid &&
-            cfg_.expiredSelectionPolicy != InvalidValuePolicy::Reject) {
-            return automaticResolution();
-        }
-        return applyPolicy(cfg_.expiredSelectionPolicy, "string/fret selection expired");
     }
 
     PendingStringSelection sel = pending_[idx];
@@ -220,8 +271,11 @@ NoteResolution StringFretSelector::onNoteOn(const MidiEvent& e, uint32_t nowUs) 
     uint8_t stringIndex = sel.stringValue;
     uint8_t fret = sel.fretValue;
 
-    // Range validation against the instrument.
-    bool valid = stringIndex < instrument_.stringCount &&
+    // Range validation against the instrument. A selection carrying an
+    // out-of-range CC value is routed through the invalid-value policy instead of
+    // being played.
+    bool valid = !sel.invalid &&
+                 stringIndex < instrument_.stringCount &&
                  fret <= instrument_.maxFret(stringIndex);
 
     // Note/string/fret coherence (spec section 11).

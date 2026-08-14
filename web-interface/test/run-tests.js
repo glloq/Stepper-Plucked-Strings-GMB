@@ -247,12 +247,18 @@ test('string CC honours zero-based numbering', function () {
   check(GMB.decodeStringCc(c.sfs, c.p, 3) === 3, 'CC value 3 is axis 3');
 });
 
-test('string CC honours the offset', function () {
-  // offset shifts the value BEFORE the one-based bias, exactly as the firmware does.
-  var c = selCfg(function (sfs) { sfs.string.offset = 10; sfs.string.minimum = 0; sfs.string.maximum = 3; });
-  check(GMB.decodeStringCc(c.sfs, c.p, 0) === -1, 'value+offset lands past the last axis');
-  var d = selCfg(function (sfs) { sfs.string.offset = -1; sfs.string.minimum = 2; sfs.string.maximum = 5; });
+test('string CC applies the offset BEFORE the range check', function () {
+  // "logical = CC + offset, then validated". min/max bound the LOGICAL value, so
+  // the offset moves which RAW values are accepted — that is the whole point of
+  // configuring one. Checking the raw value instead shifts the accepted band and
+  // makes a configured offset accept the wrong values and reject the right ones.
+  var c = selCfg(function (sfs) { sfs.string.offset = 1; sfs.string.minimum = 1; sfs.string.maximum = 4; });
+  check(GMB.decodeStringCc(c.sfs, c.p, 0) === 0, 'raw 0 + offset 1 = logical 1 -> axis 0');
+  check(GMB.decodeStringCc(c.sfs, c.p, 3) === 3, 'raw 3 + offset 1 = logical 4 -> axis 3');
+  check(GMB.decodeStringCc(c.sfs, c.p, 4) === -1, 'raw 4 + offset 1 = logical 5 is out of range');
+  var d = selCfg(function (sfs) { sfs.string.offset = -1; sfs.string.minimum = 1; sfs.string.maximum = 4; });
   check(GMB.decodeStringCc(d.sfs, d.p, 2) === 0, 'a negative offset shifts back onto axis 0');
+  check(GMB.decodeStringCc(d.sfs, d.p, 1) === -1, 'raw 1 - 1 = logical 0 is below the range');
 });
 
 test('string CC honours reverse order', function () {
@@ -278,6 +284,10 @@ test('fret CC range-checks before applying its offset', function () {
   var d = selCfg(function (sfs) { sfs.fret.offset = -2; sfs.fret.minimum = 0; });
   check(GMB.decodeFretCc(d.sfs, 1) === -1, 'a negative result is rejected, not clamped');
   check(GMB.decodeFretCc(d.sfs, 5) === 3, 'the offset shifts the fret');
+  // The bound applies to the LOGICAL fret, so the offset moves the accepted band.
+  var e = selCfg(function (sfs) { sfs.fret.offset = 3; sfs.fret.minimum = 0; sfs.fret.maximum = 12; });
+  check(GMB.decodeFretCc(e.sfs, 9) === 12, 'raw 9 + 3 = fret 12, the last allowed');
+  check(GMB.decodeFretCc(e.sfs, 10) === -1, 'raw 10 + 3 = 13 is past the maximum');
 });
 
 test('CC encoding is the exact inverse of decoding', function () {

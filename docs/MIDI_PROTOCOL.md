@@ -265,6 +265,34 @@ The Web MIDI monitor (§15) and the test tool (§16) are described in
 
 ---
 
+### 2.x Order of operations in the CC mapping
+
+A selection CC value is turned into a physical axis / fret in this order, and the
+order is part of the contract:
+
+1. **`logical = CC value + offset`**;
+2. validate `logical` against `[minimum, maximum]` — the bounds apply to the
+   LOGICAL value, so configuring an offset moves which raw CC values are accepted
+   (that is what an offset is for);
+3. drop the one-based bias (`numbering`);
+4. apply `reverseOrder`;
+5. apply the custom `mapping` table.
+
+Validating the raw value before applying the offset shifts the accepted band by
+the offset: the configuration then rejects exactly the values it was set up to
+accept. `GMB.decodeStringCc` / `decodeFretCc` in the web interface mirror this
+order, and both sides are unit-tested against it.
+
+An **out-of-range value still fills its slot**, marked invalid. Dropping it would
+leave the other half of the selection orphaned, and the next unrelated CC would
+complete it — playing a note on a string nobody selected. The invalid pair is
+resolved by `invalidValuePolicy` at Note On instead.
+
+When several complete selections are queued for one channel, the oldest
+**non-expired** one wins. An expired entry is only used as a fallback (through
+`expiredSelectionPolicy`), so a stale selection never shadows a newer valid one
+sitting behind it.
+
 ## 3. GMB SysEx protocol
 
 Code: `core/gmb/GmbSysEx.{h,cpp}` (encoder/decoder) and `core/gmb/Capabilities.{h,cpp}`
