@@ -37,7 +37,14 @@ struct WebContext {
     std::function<uint32_t()> onReset;                     // recover from panic/E-stop
     std::function<std::string()> appState;                 // "boot"/"homing"/"ready"
     std::function<int()> readyStrings;                     // axes homed & not faulted
-    std::function<uint32_t(const Profile&)> onActivateProfile;  // validate + enqueue
+    // Validate + enqueue an activation. `keepDeviceConfig` distinguishes the two
+    // operations that reach here, which are NOT the same thing:
+    //   false — PUT /api/profile: publish the draft the user just edited FOR THIS
+    //           machine. Everything in it is intended, pins and network included.
+    //   true  — POST /api/profiles/load: load a stored INSTRUMENT onto this
+    //           machine. The device half (board, pins, network, E-stop polarity,
+    //           fitted hardware) belongs to the machine and must survive.
+    std::function<uint32_t(const Profile&, bool)> onActivateProfile;
     // ch, note, vel, ms, then the two optional SELECTION CC values (-1 = none).
     // They are emitted before the Note On through the same path a controller's
     // CCs take, so the test really exercises the string/fret selector.

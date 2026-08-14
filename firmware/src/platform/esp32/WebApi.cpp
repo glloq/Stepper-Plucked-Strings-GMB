@@ -598,7 +598,10 @@ void WebApi::registerRoutes() {
             }
             // Validated above; the actual activation runs in loop() (motor stop,
             // reconfigure, re-home). Report ACCEPTED, not "done".
-            uint32_t cmdId = ctx_.onActivateProfile ? ctx_.onActivateProfile(p) : 0;
+            // This is the draft the user edited FOR THIS MACHINE — pins, board and
+            // network included — so it is taken whole.
+            uint32_t cmdId = ctx_.onActivateProfile
+                                 ? ctx_.onActivateProfile(p, /*keepDeviceConfig=*/false) : 0;
             bool queued = cmdId != 0;
             doc["ok"] = queued;
             doc["accepted"] = queued;
@@ -667,12 +670,19 @@ void WebApi::registerRoutes() {
                 sendJson(req, doc, 404);
                 return;
             }
-            uint32_t cmdId = ctx_.onActivateProfile ? ctx_.onActivateProfile(p) : 0;
+            // Loading a stored slot swaps the INSTRUMENT; this machine keeps its
+            // own device config (board, pins, network, E-stop wiring, fitted
+            // hardware). Taking the slot's device half would, among other things,
+            // report a network the radio is not on and adopt another machine's
+            // E-stop polarity.
+            uint32_t cmdId = ctx_.onActivateProfile
+                                 ? ctx_.onActivateProfile(p, /*keepDeviceConfig=*/true) : 0;
             bool queued = cmdId != 0;
             doc["ok"] = queued;
             doc["accepted"] = queued;
             doc["commandId"] = cmdId;
-            doc["note"] = queued ? "activation queued" : "invalid profile or queue full";
+            doc["note"] = queued ? "instrument activation queued (device config kept)"
+                                 : "invalid profile or queue full";
             sendJson(req, doc, queued ? 202 : 422);
         });
     loadProfile->setMethod(HTTP_POST);

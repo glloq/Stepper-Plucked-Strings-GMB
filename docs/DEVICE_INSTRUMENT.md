@@ -74,10 +74,25 @@ legacy flat slot and a legacy v1 flat slot still load.
 
 ## What is deferred (not yet done — honest status)
 
-- **Behavioural portability.** Loading *only* the instrument half onto a device while
-  preserving that device's own network/board config (true cross-device instrument
-  swap) is not wired yet. The runtime already avoids re-initialising the network on an
-  instrument activation, but there is no "import instrument only" operation.
+- ~~**Behavioural portability.**~~ **Done.** The distinction is not *which fields*
+  but *which operation*:
+
+  | Operation | What it means | What is taken |
+  | --------- | ------------- | ------------- |
+  | `PUT /api/profile` | publish the draft you just edited **for this machine** | the whole profile — pins, board and network included, because you meant them |
+  | `POST /api/profiles/load` | load a stored **instrument** onto this machine | the instrument half only; the device half of the RUNNING config survives |
+
+  `onActivateProfile(profile, keepDeviceConfig)` carries the distinction, and the
+  merge uses `mergeProfile(deviceConfigOf(running), instrumentProfileOf(loaded))`.
+  The MERGED profile is what gets validated, so the instrument has to fit *this*
+  device's pins — which is the combination that will actually run.
+
+  This was not cosmetic. Adopting a slot's device half replaced the running
+  machine's network settings (the radio was not re-initialised, so `/api/status`
+  then reported a network the device was not on), its pin map, the declared power
+  hardware, and — worst — `estopNormallyClosed`, the E-stop polarity. Importing a
+  safety wiring declaration from a file saved on another machine is exactly the
+  kind of thing that must not happen quietly.
 - **Web/interchange split.** The web UI consumes the flat profile shape at ~100 call
   sites. Restructuring the interchange format would ripple through the browser UI,
   which cannot be functionally validated in the software-only phase — so it is left for

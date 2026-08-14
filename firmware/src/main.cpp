@@ -23,6 +23,7 @@
 #include "core/app/AppPhase.h"
 #include "core/app/Readiness.h"
 #include "core/configuration/Profile.h"
+#include "core/configuration/DeviceInstrument.h"
 #include "core/configuration/ProfileActivation.h"
 #include "core/configuration/ProfileValidator.h"
 #include "core/diagnostics/Diagnostics.h"
@@ -1639,12 +1640,26 @@ void setup() {
             if (g_anchored[i] && !g_homing[i].failed()) ++n;
         return n;
     };
-    ctx.onActivateProfile = [](const Profile& p) -> uint32_t {
+    ctx.onActivateProfile = [](const Profile& p, bool keepDeviceConfig) -> uint32_t {
+        Profile target = p;
+        if (keepDeviceConfig) {
+            // Loading a stored INSTRUMENT: keep this machine's device half. The
+            // whole profile used to be adopted, so a slot saved on (or before) a
+            // different setup silently replaced the network settings, the pin map,
+            // the E-stop polarity and the declared power hardware of the machine
+            // actually running. The radio was not re-initialised, so /api/status
+            // then reported a network the device was not on — and the E-stop
+            // polarity change is worse than cosmetic.
+            StateGuard lock;
+            target = mergeProfile(deviceConfigOf(g_profile), instrumentProfileOf(p), p);
+        }
         // Validate synchronously (pure, safe off the main loop) so an invalid
         // profile is rejected immediately; enqueue the actual apply for loop().
-        if (!ProfileValidator::isActivatable(p)) return 0u;
+        // Validate the MERGED profile: the instrument half must fit THIS device's
+        // pins, which is exactly the combination that will run.
+        if (!ProfileValidator::isActivatable(target)) return 0u;
         AppCommand c{CmdType::ActivateProfile};
-        c.profile = new Profile(p);  // ownership transfers to the queued command
+        c.profile = new Profile(target);  // ownership transfers to the queued command
         return enqueueCommand(c);
     };
     ctx.onReset = []() -> uint32_t { return enqueueCommand(AppCommand{CmdType::Reset}); };
