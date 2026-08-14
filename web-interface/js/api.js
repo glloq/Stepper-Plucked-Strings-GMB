@@ -188,13 +188,19 @@
       function: fn,
       stringIndex: stringIndex === undefined ? -1 : stringIndex,
       source: opts.source || 'pca',   // "pca" | "gpio"
-      pcaBoard: opts.pcaBoard || 0,   // 0..3 (0x40..0x43)
+      pcaBoard: opts.pcaBoard || 0,   // 0..7 (0x40..0x47) within its bus
+      // Which hardware I2C controller the board hangs off: 0 = Wire (SDA/SCL),
+      // 1 = Wire1 (SDA2/SCL2). A board is identified by (i2cBus, pcaBoard).
+      i2cBus: opts.i2cBus === 1 ? 1 : 0,
       channel: opts.channel === undefined ? 0 : opts.channel, // 0..15 (source == pca)
       gpio: opts.gpio === undefined ? -1 : opts.gpio,         // ESP32 GPIO (source == gpio)
       pulseMinUs: opts.pulseMinUs || 500,
       pulseMaxUs: opts.pulseMaxUs || 2500,
       restUs: opts.restUs || 1000,
       activeUs: opts.activeUs || 1800,
+      // Plectrum-as-mute rest position (0 = none: the string rings, or a damper
+      // servo mutes it). Only meaningful on a pluck/strum servo.
+      muteUs: opts.muteUs || 0,
       inverted: !!opts.inverted,
       travelMs: opts.travelMs || 120,
       settleMs: opts.settleMs || 30,
@@ -224,13 +230,14 @@
 
   function sampleProfile() {
     return {
-      project: 'Stepper-Plucked-Strings-GMB', profileVersion: 1, capabilitiesRevision: 7,
+      project: 'Stepper-Plucked-Strings-GMB', profileVersion: 2, capabilitiesRevision: 7,
       instrument: {
         name: 'Ukulele GCEA', description: '4-string soprano ukulele',
         stringCount: 4, type: 'ukulele', gmProgram: 24, typeId: 4,
-        capo: 0, transpose: 0
+        capo: 0, transpose: 0, polyphonyMax: 0
       },
-      board: { profile: 'esp32-s3-devkitc-1', reserveUsb: true, automaticPinAssignment: true },
+      board: { profile: 'esp32-s3-devkitc-1', reserveUsb: true, automaticPinAssignment: true,
+        estopNormallyClosed: false },
       pins: [
         { signal: 'STEP1', kind: 'step', gpio: 4 }, { signal: 'STEP2', kind: 'step', gpio: 5 },
         { signal: 'STEP3', kind: 'step', gpio: 6 }, { signal: 'STEP4', kind: 'step', gpio: 7 },
@@ -241,9 +248,16 @@
         { signal: 'SDA', kind: 'sda', gpio: 40 }, { signal: 'SCL', kind: 'scl', gpio: 41 },
         { signal: 'ENABLE', kind: 'enable', gpio: 42 }, { signal: 'SERVO_OE', kind: 'servoOe', gpio: 47 }
       ],
+      hardware: {
+        oePullup: false, oeGate: false, estopCutsPower: false,
+        estopCutsDriverEnable: false, mainSwitch: false, mainFuse: false,
+        branchFuses: false, servoIdleMa: 10, servoMoveMa: 250, servoStallMa: 800,
+        stepperHoldMa: 400, stepperMoveMa: 800,
+        extPullupOhm0: 0, extPullupOhm1: 0, pcaPullups: []
+      },
       network: {
         mode: 'accessPoint', ssid: '', hostname: 'gmb-instrument',
-        apSsid: 'Stepper-Plucked-Strings-GMB', staticIp: false
+        apSsid: 'Stepper-Plucked-Strings-GMB'
       },
       midi: {
         globalChannel: 0, omni: false, transpose: 0, chordWindowMs: 3,
@@ -262,6 +276,11 @@
           missingSelectionPolicy: 'automaticAllocation',
           expiredSelectionPolicy: 'automaticAllocation'
         }
+      },
+      power: { maxConcurrentMoves: 3, maxConcurrentPerBoard: 0, staggerMs: 8 },
+      pluck: {
+        strokeMs: 0, minStrikePct: 0, fretToPluckMs: 0, muteSource: 'auto',
+        muteHoldMs: 60, liftMuteOnNoteOff: false, liftEngage: 'lowerToPlay'
       },
       // Ukulele GCEA: physical order low->high used by GMB = G4(67) C4(60) E4(64) A4(69)
       strings: [ukuleleString(67), ukuleleString(60), ukuleleString(64), ukuleleString(69)],
@@ -289,14 +308,22 @@
 
   // Derive read-only capabilities from a profile (SysEx spec 5 / 6 / 17).
   GMB.computeCapabilities = function (p) {
-    var strings = p.strings || [];
+    // Only ENABLED strings are announced, and the pitch shift is capo + BOTH
+    // transposes — exactly what the allocator and the firmware's Capabilities
+    // apply (frettedNote = open + fret + capo + transpose). Announcing a disabled
+    // string, or forgetting a transpose, tells a controller to send notes the
+    // machine cannot actually play.
+    var strings = (p.strings || []).filter(function (s) { return s.enabled !== false; });
+    var shift = (p.instrument.capo || 0) + (p.instrument.transpose || 0) +
+                ((p.midi && p.midi.transpose) || 0);
     var notesSet = {};
     var min = 127, max = 0;
     strings.forEach(function (s) {
-      var lo = s.openNote + (p.instrument.capo || 0);
+      var lo = s.openNote + shift;
       var hi = lo + (s.maxFret || 0);
       for (var n = lo; n <= hi; n++) { notesSet[n] = true; if (n < min) min = n; if (n > max) max = n; }
     });
+    if (!strings.length) { min = 0; max = 0; }
     var allContinuous = true;
     for (var n2 = min; n2 <= max; n2++) if (!notesSet[n2]) { allContinuous = false; break; }
     var sfs = p.stringFretSelection;
@@ -305,7 +332,12 @@
       strings: p.instrument.stringCount,
       frets: Math.max.apply(null, strings.map(function (s) { return s.maxFret; }).concat([0])),
       noteMin: min, noteMax: max, noteMode: allContinuous ? 0 : 1,
-      polyphony: strings.length,
+      // Aliases used by the Instrument page / tests; same values, clearer names.
+      lowestNote: min, highestNote: max,
+      // Announced polyphony: 0 = automatic (= the playable strings); a custom cap
+      // is never announced above the physical string count.
+      polyphony: p.instrument.polyphonyMax
+        ? Math.min(p.instrument.polyphonyMax, strings.length) : strings.length,
       ccString: sfs.string.ccNumber, ccFret: sfs.fret.ccNumber,
       ccActive: sfs.enabled ? 1 : 0,
       tuning: tuning, tuningNames: tuning.map(GMB.noteName),
@@ -337,7 +369,11 @@
       state: 'READY',
       wifi: { mode: p.network.mode, ssid: p.network.mode === 'station' ? p.network.ssid : p.network.apSsid,
         ip: p.network.mode === 'station' ? '192.168.1.42' : '192.168.4.1', rssi: -54, connected: true },
-      midiSource: 'WebSocket MIDI (Wi-Fi)',
+      midiSource: 'wifiUdp',
+      // UDP source posture (P1.11) so the Settings panel shows the live state.
+      midiSourcePolicy: MOCK.midiSourcePolicy,
+      midiSourceLocked: MOCK.midiSourceLocked,
+      safety: 'armed',
       activeProfile: p.instrument.name,
       stringsReady: p.instrument.stringCount, stringsTotal: p.instrument.stringCount,
       notesPlaying: 0,
@@ -381,9 +417,38 @@
       demoProfile('Bass EADG', 'bass'),
       null, null, null, null, null
     ],
-    startupSlot: 0
+    startupSlot: 0,
+    scanStartedAt: 0,             // mock Wi-Fi survey start (see api.wifiScan)
+    midiSourcePolicy: 'open',     // UDP source posture (P1.11)
+    midiSourceLocked: false
   };
   GMB.mockBoard = function () { return MOCK.board; };
+
+  // A plausible GET /api/diagnostics body for mock mode, so the Diagnostics panel
+  // can be laid out and read without a device attached. Shape matches
+  // buildDiagnosticsJson() in firmware/src/main.cpp exactly.
+  var mockBootMs = nowMs();
+  function mockDiagnostics() {
+    var up = nowMs() - mockBootMs;
+    return {
+      uptimeMs: up, resetReason: 'powerOn', freeHeap: 214000, minFreeHeap: 198000,
+      state: 'ready',
+      midi: { events: Math.round(up / 900), droppedEvents: 0, droppedPackets: 0,
+              rejectedPackets: 0 },
+      scheduler: { maxLatencyUs: 2400, jitterUs: 380, meanUs: 1050 },
+      cmdQueueHighWater: 2,
+      faults: 0,
+      servoMoves: Math.round(up / 1500),
+      governorThrottles: 4,
+      motion: { axisMoves: Math.round(up / 2600), homingFailures: 0, limitTrips: 0,
+                moveTimeouts: 0 },
+      moveMix: { deadline: Math.round(up / 3000), staggerableGranted: Math.round(up / 2600),
+                 staggerableDeferred: 4 },
+      wifiReconnects: 0,
+      pca: { used: true, healthy: true }
+    };
+  }
+  GMB.mockDiagnostics = mockDiagnostics;
 
   // Build the { profiles:[...], startupSlot } list from the slot array.
   function mockProfilesList() {
@@ -643,6 +708,65 @@
       if (typeof localStorage !== 'undefined') localStorage.setItem('gmbAdminToken', this._adminToken);
     },
     // Configure the device's admin token (POST /api/auth) and remember it.
+    // POST /api/auth/check with a CANDIDATE token: 200 = it is the device's admin
+    // token (remember it locally so this browser's writes work), 401 = wrong.
+    // Never CHANGES the stored token — a fresh browser that knows the token had no
+    // way to authenticate itself before this.
+    unlockAdminToken: function (t) {
+      var self = this;
+      return this._call('/api/auth/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-GMB-Token': t || '' },
+        body: '{}'
+      }, function () { return { ok: true }; }).then(function (r) {
+        self.setAdminToken(t);
+        return r;
+      });
+    },
+    // GET /api/wifi/scan[?start=1] -> { ok, scanning, networks:[{ssid,rssi,secure,
+    // channel}] } deduped by SSID, sorted by RSSI. Poll while `scanning` is true.
+    wifiScan: function (start) {
+      return this._call('/api/wifi/scan' + (start ? '?start=1' : ''), null, function () {
+        if (start) { MOCK.scanStartedAt = nowMs(); }
+        var elapsed = MOCK.scanStartedAt ? nowMs() - MOCK.scanStartedAt : 1e9;
+        if (elapsed < 1500) return { ok: true, scanning: true, networks: [] };
+        return { ok: true, scanning: false, networks: [
+          { ssid: 'Workshop-24', rssi: -48, secure: true, channel: 6 },
+          { ssid: 'FreeCafe', rssi: -61, secure: false, channel: 11 },
+          { ssid: 'Neighbor', rssi: -77, secure: true, channel: 1 }
+        ] };
+      });
+    },
+    // POST /api/hotspot -> switch to the access point + captive portal now. The
+    // web twin of the BOOT-button long-press, for when the station link is gone.
+    startHotspot: function () {
+      return this._call('/api/hotspot', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+      }, function () {
+        return { ok: true, note: 'Hotspot starting (mock) — rejoin the device Wi-Fi.' };
+      });
+    },
+    // GET /api/diagnostics -> the runtime telemetry snapshot (uptime, reset reason,
+    // heap, MIDI/UDP counters, scheduler latency & jitter, move mix, motion counters,
+    // per-board PCA health). Built loop-side, so this never blocks on I2C.
+    getDiagnostics: function () {
+      return this._call('/api/diagnostics', null, function () { return mockDiagnostics(); });
+    },
+    // POST /api/midi/source -> { ok }. UDP MIDI source posture: policy
+    // "open"|"lockToFirst"|"disabled" and/or unlock:true to forget the locked sender.
+    setMidiSource: function (payload) {
+      var body = {};
+      if (payload.policy) body.policy = payload.policy;
+      if (payload.unlock) body.unlock = true;
+      return this._call('/api/midi/source', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }, function () {
+        if (body.policy) MOCK.midiSourcePolicy = body.policy;
+        if (body.unlock) MOCK.midiSourceLocked = false;
+        return { ok: true };
+      });
+    },
     setAdminTokenRemote: function (t) {
       var self = this;
       return this._call('/api/auth', {

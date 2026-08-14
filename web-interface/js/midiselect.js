@@ -15,8 +15,7 @@
 
   var monitor = null;
 
-  function render(host) {
-    if (monitor) { monitor.close(); monitor = null; }
+  function renderSettings(host) {
     var p = GMB.state.profile;
     var sfs = p.stringFretSelection;
 
@@ -89,7 +88,7 @@
       ]),
       h('div.toolbar', [
         GMB.button('Apply General-Midi-Boop preset', applyGmbPreset, 'primary'),
-        GMB.button('Send a test', function () { GMB.navigate('midi'); scrollToTest(); }, 'ghost')
+        GMB.button('Send a test', function () { GMB.openSettings('advanced'); }, 'ghost')
       ]),
       h('p.muted', mode_desc(sfs.mode))
     ]);
@@ -99,6 +98,14 @@
     if (GMB.isAdvanced()) {
       host.appendChild(advancedPanel(sfs, p));
     }
+  }
+
+  // The LIVE tools (monitor + note tester). Separate from the settings above so
+  // opening a settings panel does not silently open a MIDI socket, and so the
+  // Settings modal's Advanced tab can host the tools on their own.
+  function renderTools(host) {
+    if (monitor) { monitor.close(); monitor = null; }
+    var p = GMB.state.profile;
 
     // ---- MIDI monitor (section 15) ------------------------------------------
     var monHost = h('div.card', [h('div.card-head', [h('h2', 'MIDI monitor'),
@@ -109,6 +116,8 @@
     // ---- Integrated test tool (section 16) ----------------------------------
     host.appendChild(testTool(p));
   }
+
+  function render(host) { renderSettings(host); renderTools(host); }
 
   function mode_desc(mode) {
     return {
@@ -297,5 +306,15 @@
     if (el) el.scrollIntoView({ behavior: 'smooth' });
   }
 
-  GMB.views.midi = { render: render };
+  GMB.views.midi = {
+    render: render,
+    teardown: function () { if (monitor) { monitor.close(); monitor = null; } }
+  };
+  // Split entry points for the Settings modal: settings-only (the config wizard's
+  // MIDI step) and the live tools (the Advanced tab).
+  GMB.midiSettings = {
+    settings: renderSettings,
+    tools: renderTools,
+    teardown: function () { if (monitor) { monitor.close(); monitor = null; } }
+  };
 })(window);

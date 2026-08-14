@@ -166,7 +166,7 @@
       if (res && res.ok === false) { GMB.toast('Slot ' + pr.slot + ' is empty.', 'warn'); return; }
       GMB.reloadProfile().then(function () {
         GMB.toast('Loaded "' + pr.name + '".', 'ok');
-        GMB.navigate('dashboard');
+        GMB.navigate('fretboard');
       });
     }).catch(function (e) { reportErr('Load failed', e); });
   }
@@ -229,7 +229,7 @@
             GMB.state.profile = obj;
             GMB.markDirty();
             GMB.toast('Profile imported. Review and save to publish.', 'ok');
-            GMB.navigate('dashboard');
+            GMB.navigate('fretboard');
           }
         } catch (e) { alert('Not valid JSON: ' + e.message); }
       };

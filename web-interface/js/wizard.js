@@ -255,7 +255,7 @@
         GMB.api.autoPins({ stringCount: p.instrument.stringCount, reserveUsb: p.board.reserveUsb })
           .then(function (res) { p.pins = res.pins; GMB.markDirty(); drawStep(); GMB.toast('Pins assigned.', 'ok'); });
       }, 'primary'),
-      GMB.button('Open full pin editor', function () { GMB.navigate('pins'); }, 'ghost')
+      GMB.button('Open full pin editor', function () { GMB.navigate('hardware'); }, 'ghost')
     ]));
     var tbl = h('table.mini-table', [
       h('thead', h('tr', [h('th', 'Signal'), h('th', 'Kind'), h('th', 'GPIO')])),
@@ -847,7 +847,7 @@
     testWrap.appendChild(GMB.button('STOP', GMB.doPanic, 'danger'));
     body.appendChild(testWrap);
     body.appendChild(h('p.muted', 'Full note/string/fret testing with a step trace lives on the MIDI page.'));
-    body.appendChild(GMB.button('Open MIDI test tool', function () { GMB.navigate('midi'); }, 'primary'));
+    body.appendChild(GMB.button('Open MIDI test tool', function () { GMB.openSettings('advanced'); }, 'primary'));
   }
 
   // ---- Step 9: Validation ---------------------------------------------------

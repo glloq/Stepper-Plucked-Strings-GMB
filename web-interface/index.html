@@ -21,15 +21,24 @@
     <noscript>This configuration interface requires JavaScript.</noscript>
   </div>
 
-  <!-- Core (order matters): API client, then app shell, then view modules. -->
+  <!-- Core (order matters): API client, then app shell, then view modules.
+       Three main pages (fretboard / calibration / hardware); everything else is
+       hosted by the Settings modal. settings.js loads last (it references the
+       config wizard, MIDI settings, profiles and sysex modules). -->
   <script src="js/api.js"></script>
   <script src="js/app.js"></script>
-  <script src="js/dashboard.js"></script>
+  <script src="js/fretboard.js"></script>
   <script src="js/pins.js"></script>
+  <script src="js/wiring.js"></script>
+  <script src="js/wiringpower.js"></script>
+  <script src="js/wiringi2c.js"></script>
+  <script src="js/commissioning.js"></script>
+  <script src="js/hardware.js"></script>
   <script src="js/wizard.js"></script>
   <script src="js/midimonitor.js"></script>
   <script src="js/midiselect.js"></script>
   <script src="js/sysex.js"></script>
   <script src="js/profiles.js"></script>
+  <script src="js/settings.js"></script>
 </body>
 </html>
