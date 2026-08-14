@@ -4,8 +4,14 @@
 > Related documents: [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md) · [`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) · [`FIRST_CONFIGURATION.md`](FIRST_CONFIGURATION.md) · [`../hardware/POWER_AND_SAFETY.md`](../hardware/POWER_AND_SAFETY.md).
 
 The web interface lets a beginner configure and play the instrument without
-touching the source, from a computer, tablet or phone. It is served from the
-ESP32's LittleFS, is vanilla JS with no build step, and needs no cloud.
+touching the source, from a computer, tablet or phone. It is vanilla JS with no
+build step and needs no cloud.
+
+It is **compiled into the firmware** (`WebAssets.cpp`, generated from
+`web-interface/` and committed), so flashing the firmware is enough — there is no
+separate filesystem upload to forget. An uploaded LittleFS `/www` still overrides
+it per file, which is how you change the interface on a device without
+recompiling.
 
 > **Every screenshot below is generated from the real interface**, running its
 > built-in mock backend (a 4-string GCEA ukulele). Regenerate them with
@@ -315,6 +321,11 @@ are never part of an exported profile.
 The GMB identity and capabilities with its SysEx tester, the live MIDI monitor,
 and the integrated note tester. These are diagnostics, not configuration.
 
+The SysEx tester leads with what a **v2** controller actually does: request the
+handshake, then read the JSON descriptor (**Show descriptor JSON** fetches
+`GET /gmb/descriptor.json`). The v1 fixed-block buttons are still there for older
+hosts.
+
 The **integrated test tool** sends the two selection CC *values* a controller
 would put on the wire, and the firmware decodes them with the live selector
 config — numbering, offset, reverse order, mapping table and all — before the
@@ -395,6 +406,7 @@ Power & safety tab once shipped broken.
 | `POST` | `/api/hotspot` | switch to the access point + captive portal now |
 | `GET` | `/api/wifi/scan[?start=1]` | asynchronous network survey |
 | `POST` | `/api/wifi` | device network settings: mode/ssid/apSsid/hostname, passwords (write-only), `clearStationPassword`/`clearApPassword`, `apply` |
+| `GET` | `/gmb/descriptor.json` | the GMB v2 instrument descriptor (what a controller reads) |
 | `POST` | `/api/sysex/request` | run a GMB SysEx request → decoded response |
 | `GET` | `/api/capabilities` | current capabilities snapshot (read-only) |
 

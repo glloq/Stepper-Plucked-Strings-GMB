@@ -85,6 +85,11 @@ struct InstrumentView {
 
 // One pending CC-driven selection (spec section 7).
 struct PendingStringSelection {
+    // An out-of-range string/fret CC value was received for this selection. The
+    // slot is still marked FILLED (so a later, unrelated valid CC cannot complete
+    // and mis-pair it), but the Note On resolves it through the invalid-value
+    // policy instead of playing it.
+    bool invalid = false;
     uint8_t midiChannel = 0;
     bool hasString = false;
     bool hasFret = false;

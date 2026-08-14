@@ -1,6 +1,7 @@
 #include "WebApi.h"
 
 #include "ProfileStorage.h"
+#include "WebAssets.h"
 #include "../../core/configuration/ProfileValidator.h"
 
 #if defined(ARDUINO)
@@ -106,6 +107,33 @@ const char* midiTypeName(uint8_t type) {
     }
 }
 
+// Shown at "/" when the firmware carries no embedded UI AND LittleFS has none
+// (an empty asset table plus a filesystem that was never uploaded or failed to
+// mount). Without it the captive portal redirected EVERY not-found URL —
+// including "/" itself — to the portal root, i.e. "/" redirected to "/" forever:
+// the browser's ERR_TOO_MANY_REDIRECTS.
+const char kMissingUiPage[] PROGMEM =
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+    "<title>Stepper-Plucked-Strings-GMB</title>"
+    "<style>body{font-family:sans-serif;max-width:38em;margin:2em auto;"
+    "padding:0 1em;line-height:1.5}code{background:#eee;padding:0 .3em;"
+    "border-radius:3px}</style></head><body>"
+    "<h1>Stepper-Plucked-Strings-GMB</h1>"
+    "<p><strong>The firmware is running</strong>, but no web interface was found: "
+    "this build carries no embedded UI and LittleFS <code>/www</code> is empty or "
+    "did not mount.</p>"
+    "<p>Either rebuild with the embedded UI:</p><ol>"
+    "<li><code>python3 firmware/tools/embed_web_assets.py</code>, then flash the "
+    "firmware again.</li></ol>"
+    "<p>or upload the filesystem:</p><ol>"
+    "<li>In <code>firmware/</code>, run <code>./sync_web_data.sh</code> "
+    "(copies <code>web-interface/</code> to <code>firmware/data/www</code>).</li>"
+    "<li>PlatformIO <code>pio run -t uploadfs</code>, or the Arduino IDE LittleFS "
+    "upload plugin &mdash; see <code>docs/ARDUINO_IDE.md</code>.</li></ol>"
+    "<p>The REST API is live: <a href=\"/api/status\">/api/status</a> &middot; "
+    "<a href=\"/api/diagnostics\">/api/diagnostics</a></p></body></html>";
+
 }  // namespace
 
 // Single status DTO shared by GET /api/status and the /ws/status broadcast so
@@ -198,9 +226,72 @@ void WebApi::begin(const WebContext& ctx, uint16_t port) {
     server_->addHandler(&statusWs_);
     server_->addHandler(&midiWs_);
 
-    // Static UI from LittleFS (uploaded from web-interface/ via data/www).
+    // ---- Captive portal ---------------------------------------------------
+    // The DNS server in Net answers every name with the AP address, but that is
+    // only half of a captive portal: the OS "is there internet?" probes must be
+    // answered with a REDIRECT rather than the 204/success they expect, or the
+    // phone concludes the network is fine and never pops its sign-in sheet. Without
+    // these the hotspot resolved everything to the device and still did not open
+    // the config page. Registered before the static handler so they take
+    // precedence, and gated on AP mode: in station mode this is a normal host and
+    // must not hijack those paths to an unreachable AP address.
+    auto redirectToPortal = [this](AsyncWebServerRequest* req) {
+        if (ctx_.net && ctx_.net->accessPointActive())
+            req->redirect(captivePortalUrl().c_str());
+        else
+            req->send(404, "text/plain", "Not found");
+    };
+    for (const char* probe : {"/generate_204", "/gen_204", "/hotspot-detect.html",
+                              "/library/test/success.html", "/connecttest.txt",
+                              "/ncsi.txt", "/redirect", "/canonical.html"}) {
+        server_->on(probe, HTTP_GET, redirectToPortal);
+    }
+
+    // Static UI from LittleFS: an OPTIONAL per-file override of the embedded UI
+    // below, so the interface can be updated on a device without recompiling.
+    // Registered first, so an uploaded /www file always wins over its embedded copy.
     server_->serveStatic("/", LittleFS, "/www/").setDefaultFile("index.html");
+    if (!LittleFS.exists("/www/index.html"))
+        Serial.println(F("[web] LittleFS /www absent — serving the embedded web UI"));
+
+    // Anything else: the embedded UI first, then in AP mode send it to the portal
+    // (this catches the OS probes not named above); otherwise a plain 404.
+    server_->onNotFound([this](AsyncWebServerRequest* req) {
+        // Web UI embedded in the firmware image (WebAssets.cpp, generated from
+        // web-interface/): a plain firmware upload serves the whole interface with
+        // no separate LittleFS-upload step. Only consulted on a LittleFS miss.
+        std::string path(req->url().c_str());
+        if (path == "/") path = "/index.html";
+        if (const WebAsset* a = findWebAsset(path.c_str())) {
+            AsyncWebServerResponse* res =
+                req->beginResponse(200, a->mime, a->data, a->size);
+            if (a->gzip) res->addHeader("Content-Encoding", "gzip");
+            req->send(res);
+            return;
+        }
+        // Last-resort page when the firmware was built with an empty asset table
+        // AND no LittleFS UI is present. Never redirect "/" to itself — that loop
+        // is the browser's "too many redirects" error.
+        if (req->url() == "/" || req->url() == "/index.html") {
+            req->send(200, "text/html", kMissingUiPage);
+            return;
+        }
+        if (ctx_.net && ctx_.net->accessPointActive()) {
+            req->redirect(captivePortalUrl().c_str());
+        } else {
+            req->send(404, "text/plain", "Not found");
+        }
+    });
     server_->begin();
+}
+
+std::string WebApi::captivePortalUrl() const {
+    // The ESP32 softAP always answers on 192.168.4.1 (no softAPConfig is set), so
+    // use the constant instead of reading Net's ip_ std::string from the async web
+    // task — that field is written by the main loop and a cross-task read could
+    // tear during an AP/station switch. (If softAPConfig is ever added, update
+    // this and the note in docs/NETWORK_HOTSPOT.md.)
+    return "http://192.168.4.1/";
 }
 
 bool WebApi::authOk(AsyncWebServerRequest* req) {
@@ -401,6 +492,16 @@ void WebApi::registerRoutes() {
             for (uint8_t t : s.stringConfig.tuning) tuning.add(t);
         }
         sendJson(req, doc);
+    });
+
+    // ---- GET /gmb/descriptor.json (GMB v2 level-1 descriptor over HTTP) ----
+    // Advertised by the SysEx handshake `flags` bit 0 so a GMB controller can fetch
+    // the whole descriptor in one request instead of the segmented block 0x10
+    // transfer. Served from the same immutable snapshot as the SysEx path.
+    server_->on("/gmb/descriptor.json", HTTP_GET, [this](AsyncWebServerRequest* req) {
+        std::string json;
+        { WebStateLock lk(ctx_); if (ctx_.sysex) json = ctx_.sysex->descriptorJson(); }
+        req->send(200, "application/json", String(json.c_str()));
     });
 
     // ---- GET /api/profile ----

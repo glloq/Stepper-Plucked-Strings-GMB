@@ -15,11 +15,69 @@ void header(std::vector<uint8_t>& m, SysExBlock block, SysExDirection dir) {
 }
 
 // Encode a 32-bit revision as 5 big-endian 7-bit bytes (35-bit capacity).
+// Used by the deprecated v1 block-8 notification.
 void pushRevision(std::vector<uint8_t>& m, uint32_t rev) {
     for (int i = 4; i >= 0; --i) m.push_back(b7(rev >> (7 * i)));
 }
 
+// Encode a 32-bit value as 5 LITTLE-endian 7-bit bytes (bytes 0..3 carry 7 bits
+// each, byte 4 the high nibble) — the encoding the GMB v2 controller decodes for
+// instance_id and revision (docs/SYSEX_IDENTITY.md §2 / §4).
+void pushLe32(std::vector<uint8_t>& m, uint32_t v) {
+    m.push_back(b7(v));
+    m.push_back(b7(v >> 7));
+    m.push_back(b7(v >> 14));
+    m.push_back(b7(v >> 21));
+    m.push_back(static_cast<uint8_t>((v >> 28) & 0x0F));
+}
+
 }  // namespace
+
+std::vector<uint8_t> GmbSysEx::encodeHandshakeV2(const CapabilitySnapshot& s,
+                                                 uint32_t descriptorSize,
+                                                 uint8_t flags) {
+    std::vector<uint8_t> m;
+    header(m, SysExBlock::Identity, SysExDirection::Response);  // F0 7D 00 01 01
+    m.push_back(kProtoVer);                                     // proto_ver = 0x02
+    // instance_id[5]: the stable per-device id (MAC-derived), already 7-bit bytes.
+    for (int i = 0; i < 5; ++i) m.push_back(b7(s.identity.deviceId[i]));
+    for (int i = 0; i < 3; ++i) m.push_back(b7(s.identity.firmware[i]));  // firmware[3]
+    // descriptor_size[3]: 21-bit little-endian (0 => level 0, no descriptor).
+    m.push_back(b7(descriptorSize));
+    m.push_back(b7(descriptorSize >> 7));
+    m.push_back(b7(descriptorSize >> 14));
+    pushLe32(m, s.revision);  // revision[5], little-endian
+    m.push_back(b7(flags));   // flags: bit0 HTTP, bit1 push
+    m.push_back(kEnd);
+    return m;                 // exactly 24 bytes
+}
+
+std::vector<uint8_t> GmbSysEx::encodeDescriptorChunk(const std::string& json,
+                                                     uint16_t index) {
+    std::vector<uint8_t> m;
+    header(m, SysExBlock::DescriptorTransfer, SysExDirection::Response);  // F0 7D 00 10 01
+    size_t total = (json.size() + kDescriptorChunkPayload - 1) / kDescriptorChunkPayload;
+    if (total == 0) total = 1;  // always advertise at least one (possibly empty) chunk
+    m.push_back(b7(static_cast<int>(total)));         // total_chunks[2], little-endian
+    m.push_back(b7(static_cast<int>(total >> 7)));
+    m.push_back(b7(index));                            // chunk_index[2], little-endian
+    m.push_back(b7(index >> 7));
+    const size_t start = static_cast<size_t>(index) * kDescriptorChunkPayload;
+    for (size_t i = start; i < json.size() && i < start + kDescriptorChunkPayload; ++i)
+        m.push_back(b7(static_cast<uint8_t>(json[i])));  // ASCII payload (7-bit safe)
+    m.push_back(kEnd);
+    return m;
+}
+
+std::vector<uint8_t> GmbSysEx::encodeChangeNotification(const CapabilitySnapshot& s,
+                                                        uint8_t flags) {
+    std::vector<uint8_t> m;
+    header(m, SysExBlock::ChangeNotification, SysExDirection::Notification);  // F0 7D 00 11 02
+    pushLe32(m, s.revision);  // revision[5], little-endian
+    m.push_back(b7(flags));   // change flags (bit0 identity, bit1 instruments, ...)
+    m.push_back(kEnd);
+    return m;                 // exactly 12 bytes
+}
 
 std::vector<uint8_t> GmbSysEx::encodeIdentity(const CapabilitySnapshot& s) {
     std::vector<uint8_t> m;
@@ -70,8 +128,11 @@ std::vector<uint8_t> GmbSysEx::encodeCapabilities(const CapabilitySnapshot& s) {
     for (uint8_t n : c.discreteNotes) m.push_back(b7(n));
     m.push_back(b7(static_cast<int>(c.supportedCc.size())));
     for (uint8_t cc : c.supportedCc) m.push_back(b7(cc));
-    m.push_back(b7(static_cast<int>(c.name.size())));
-    for (char ch : c.name) m.push_back(b7(static_cast<uint8_t>(ch)));
+    // Cap the name so a >127-char name can't corrupt the 7-bit length byte or push
+    // the message past kMaxMessage (audit SX-6). Matches the 32-byte identity clamp.
+    size_t nameLen = c.name.size() > 32 ? 32 : c.name.size();
+    m.push_back(b7(static_cast<int>(nameLen)));
+    for (size_t i = 0; i < nameLen; ++i) m.push_back(b7(static_cast<uint8_t>(c.name[i])));
     m.push_back(kEnd);
     return m;
 }
@@ -173,6 +234,12 @@ SysExRequest GmbSysEx::parseRequest(const uint8_t* data, size_t len) {
         if (len < 7) return r;  // channel byte required
         r.hasChannel = true;
         r.channel = data[5];
+    }
+    // Block 0x10 descriptor-transfer request: F0 7D 00 10 00 <chunk_index[2]> F7.
+    if (r.block == static_cast<uint8_t>(SysExBlock::DescriptorTransfer)) {
+        if (len < 8) return r;  // two chunk-index bytes required
+        r.hasChunkIndex = true;
+        r.chunkIndex = static_cast<uint16_t>((data[5] & 0x7F) | ((data[6] & 0x7F) << 7));
     }
     r.valid = true;
     return r;

@@ -18,6 +18,7 @@ CapabilitySnapshot buildSnapshot(const Profile& p, int polyphonyOverride) {
 
     // ---- Identity ----
     snap.identity.deviceName = p.instrument.name;
+    snap.identity.model = p.project;   // GMB v2 descriptor `device.model`
     snap.identity.features = 0x38;  // descriptor + capabilities + string config
     snap.identity.firmware[0] = 1;
     snap.identity.firmware[1] = 0;
@@ -27,6 +28,7 @@ CapabilitySnapshot buildSnapshot(const Profile& p, int polyphonyOverride) {
     snap.descriptor.channel = channel;
     snap.descriptor.gmProgram = p.instrument.gmProgram;
     snap.descriptor.typeId = p.instrument.typeId;
+    snap.descriptor.type = p.instrument.type;   // GMB v2 descriptor `type` hint
 
     // ---- Playable range (spec section 5) ----
     std::set<int> playable;
@@ -114,11 +116,23 @@ CapabilitySnapshot buildSnapshot(const Profile& p, int polyphonyOverride) {
     sc.ccString = p.selector.string.ccNumber;
     sc.ccFret = p.selector.fret.ccNumber;
 
-    // Tuning announced low -> high (spec section 8).
+    // Tuning is announced in PHYSICAL STRING ORDER, index-aligned with
+    // fretsPerString below: tuning[i] and fretsPerString[i] must describe the same
+    // string. Sorting one and not the other silently pairs a string's open note
+    // with another string's reach as soon as the tuning is not already ascending —
+    // which is the case for a re-entrant ukulele (G4 C4 E4 A4) or a 5-string
+    // banjo, and the GMB v2 descriptor builds one voice per string from exactly
+    // this pair.
+    //
+    // The announced open pitch folds in the global transpose, so that the
+    // announced tuning + capo reproduce the announced playable range (which
+    // already includes both). Capo stays a separate announced field.
     std::vector<uint8_t> tuning;
-    for (const auto& s : p.strings)
-        if (s.enabled) tuning.push_back(s.openNote);
-    std::sort(tuning.begin(), tuning.end());
+    for (const auto& s : p.strings) {
+        if (!s.enabled) continue;
+        const int openEff = s.openNote + transpose;
+        tuning.push_back(static_cast<uint8_t>(std::max(0, std::min(127, openEff))));
+    }
     sc.tuning = tuning;
 
     // A degraded run announces only the enabled strings (renumbered 1..N), so the

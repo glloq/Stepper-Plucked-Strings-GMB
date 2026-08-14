@@ -247,12 +247,18 @@ test('string CC honours zero-based numbering', function () {
   check(GMB.decodeStringCc(c.sfs, c.p, 3) === 3, 'CC value 3 is axis 3');
 });
 
-test('string CC honours the offset', function () {
-  // offset shifts the value BEFORE the one-based bias, exactly as the firmware does.
-  var c = selCfg(function (sfs) { sfs.string.offset = 10; sfs.string.minimum = 0; sfs.string.maximum = 3; });
-  check(GMB.decodeStringCc(c.sfs, c.p, 0) === -1, 'value+offset lands past the last axis');
-  var d = selCfg(function (sfs) { sfs.string.offset = -1; sfs.string.minimum = 2; sfs.string.maximum = 5; });
+test('string CC applies the offset BEFORE the range check', function () {
+  // "logical = CC + offset, then validated". min/max bound the LOGICAL value, so
+  // the offset moves which RAW values are accepted — that is the whole point of
+  // configuring one. Checking the raw value instead shifts the accepted band and
+  // makes a configured offset accept the wrong values and reject the right ones.
+  var c = selCfg(function (sfs) { sfs.string.offset = 1; sfs.string.minimum = 1; sfs.string.maximum = 4; });
+  check(GMB.decodeStringCc(c.sfs, c.p, 0) === 0, 'raw 0 + offset 1 = logical 1 -> axis 0');
+  check(GMB.decodeStringCc(c.sfs, c.p, 3) === 3, 'raw 3 + offset 1 = logical 4 -> axis 3');
+  check(GMB.decodeStringCc(c.sfs, c.p, 4) === -1, 'raw 4 + offset 1 = logical 5 is out of range');
+  var d = selCfg(function (sfs) { sfs.string.offset = -1; sfs.string.minimum = 1; sfs.string.maximum = 4; });
   check(GMB.decodeStringCc(d.sfs, d.p, 2) === 0, 'a negative offset shifts back onto axis 0');
+  check(GMB.decodeStringCc(d.sfs, d.p, 1) === -1, 'raw 1 - 1 = logical 0 is below the range');
 });
 
 test('string CC honours reverse order', function () {
@@ -278,6 +284,10 @@ test('fret CC range-checks before applying its offset', function () {
   var d = selCfg(function (sfs) { sfs.fret.offset = -2; sfs.fret.minimum = 0; });
   check(GMB.decodeFretCc(d.sfs, 1) === -1, 'a negative result is rejected, not clamped');
   check(GMB.decodeFretCc(d.sfs, 5) === 3, 'the offset shifts the fret');
+  // The bound applies to the LOGICAL fret, so the offset moves the accepted band.
+  var e = selCfg(function (sfs) { sfs.fret.offset = 3; sfs.fret.minimum = 0; sfs.fret.maximum = 12; });
+  check(GMB.decodeFretCc(e.sfs, 9) === 12, 'raw 9 + 3 = fret 12, the last allowed');
+  check(GMB.decodeFretCc(e.sfs, 10) === -1, 'raw 10 + 3 = 13 is past the maximum');
 });
 
 test('CC encoding is the exact inverse of decoding', function () {
@@ -292,6 +302,72 @@ test('CC encoding is the exact inverse of decoding', function () {
   var d = selCfg(function (sfs) { sfs.fret.offset = 3; sfs.fret.minimum = 0; });
   var fv = GMB.encodeFretCc(d.sfs, 7);
   check(GMB.decodeFretCc(d.sfs, fv) === 7, 'the fret value round-trips through the offset');
+});
+
+// ---------------------------------------------------------------------------
+// GMB v2 descriptor. GMB.mockDescriptor is the JS mirror of the firmware's
+// GmbDescriptor::toJson — it is what the offline demo serves for
+// GET /gmb/descriptor.json, so a drift here misrepresents the instrument.
+// ---------------------------------------------------------------------------
+
+test('the descriptor keeps the tuning in physical order', function () {
+  // The sample profile is a RE-ENTRANT ukulele (G4 C4 E4 A4): string 1 is the
+  // highest-pitched. Sorting the tuning would pair each open note with another
+  // string's fret count, and the descriptor builds one voice from that pair.
+  var p = GMB.sampleProfile();
+  var caps = GMB.computeCapabilities(p);
+  check(caps.tuning.join() === '67,60,64,69', 'tuning is positional, not sorted');
+  check(caps.fretsPerString.length === caps.tuning.length,
+        'fretsPerString is index-aligned with tuning');
+  var d = GMB.mockDescriptor(p);
+  check(d.instruments[0].physical.tuning.join() === '67,60,64,69',
+        'the descriptor carries the same order');
+});
+
+test('the descriptor folds the transpose into the announced tuning', function () {
+  var p = GMB.sampleProfile();
+  p.instrument.transpose = 2;
+  var caps = GMB.computeCapabilities(p);
+  check(caps.tuning.join() === '69,62,66,71', 'each open note is shifted');
+  var lowest = Math.min.apply(null, caps.tuning);
+  check(caps.noteMin === lowest + caps.capo,
+        'tuning + capo reproduces the announced range');
+});
+
+test('one descriptor voice per carriage, with its own reach', function () {
+  var p = GMB.sampleProfile();
+  p.strings[0].maxFret = 5;          // give the strings distinguishable reaches
+  p.strings[3].maxFret = 15;
+  var d = GMB.mockDescriptor(p);
+  var v = d.instruments[0].voices;
+  check(v.length === 4, 'one voice per string');
+  check(v[0].id === 's1' && v[0].notes.min === 67 && v[0].notes.max === 72,
+        'voice 1 spans its own 5 frets from its own open note');
+  check(v[3].id === 's4' && v[3].notes.min === 69 && v[3].notes.max === 84,
+        'voice 4 spans its own 15 frets');
+  check(d.instruments[0].polyphony.constraints[0].type === 'one_note_per_voice',
+        'a carriage plays one note at a time');
+});
+
+test('the descriptor announces selection CCs only when selection is on', function () {
+  var p = GMB.sampleProfile();
+  p.stringFretSelection.enabled = false;
+  check(GMB.mockDescriptor(p).instruments[0].physical.selection === undefined,
+        'no selection block when the firmware would ignore the CCs');
+  p.stringFretSelection.enabled = true;
+  var sel = GMB.mockDescriptor(p).instruments[0].physical.selection;
+  check(sel && sel.cc_string === p.stringFretSelection.string.ccNumber,
+        'the configured CC numbers are announced when active');
+});
+
+test('the descriptor is 7-bit clean (it travels over SysEx verbatim)', function () {
+  var p = GMB.sampleProfile();
+  p.instrument.name = 'Ukulélé né\u00e9';
+  var json = JSON.stringify(GMB.mockDescriptor(p));
+  // JSON.stringify keeps non-ASCII literal; the firmware escapes it. What matters
+  // here is that the structure survives and the name round-trips.
+  check(JSON.parse(json).device.name === p.instrument.name, 'the name round-trips');
+  check(json.indexOf('"gmb_descriptor":2') >= 0, 'the version marker is present');
 });
 
 // ---------------------------------------------------------------------------

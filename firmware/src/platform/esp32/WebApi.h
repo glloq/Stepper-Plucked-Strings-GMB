@@ -119,6 +119,7 @@ private:
     void registerRoutes();
     void fillStatus(JsonDocument& doc);
     bool authOk(AsyncWebServerRequest* req);  // token gate for write routes
+    std::string captivePortalUrl() const;     // "http://<ap-ip>/" for redirects
     // Cached, serialized status DTO produced by loop() via refreshStatus(); read
     // by the async web task under the state lock so it never touches live state.
     std::string cachedStatus_ = "{}";

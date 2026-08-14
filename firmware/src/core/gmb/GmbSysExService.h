@@ -10,7 +10,10 @@
 #include <cstdint>
 #include <vector>
 
+#include <string>
+
 #include "Capabilities.h"
+#include "GmbDescriptor.h"
 #include "GmbSysEx.h"
 
 namespace gmb {
@@ -19,8 +22,19 @@ struct Profile;
 
 class GmbSysExService {
 public:
-    void setSnapshot(const CapabilitySnapshot& s) { snapshot_ = s; }
+    // Handshake flags advertised to GMB: bit0 = HTTP descriptor available
+    // (GET /gmb/descriptor.json), bit1 = push notifications (block 0x11 on change).
+    static constexpr uint8_t kHandshakeFlags = 0x03;
+
+    void setSnapshot(const CapabilitySnapshot& s) {
+        snapshot_ = s;
+        descriptorJson_ = GmbDescriptor::toJson(snapshot_);
+    }
     const CapabilitySnapshot& snapshot() const { return snapshot_; }
+
+    // The GMB v2 descriptor JSON for the current snapshot (served over block 0x10
+    // and over HTTP). Rebuilt on every setSnapshot()/rebuild().
+    const std::string& descriptorJson() const { return descriptorJson_; }
 
     // Rebuild the snapshot from the active profile (call after an atomic save).
     void rebuild(const Profile& p, int polyphonyOverride = -1);
@@ -43,15 +57,16 @@ public:
     std::vector<uint8_t> handleMessage(const uint8_t* data, size_t len,
                                        uint32_t nowMs);
 
-    // Spontaneous capabilities-changed notification (block 8).
+    // Spontaneous capabilities-changed notification (GMB v2 block 0x11).
     std::vector<uint8_t> notification(uint8_t flags) const {
-        return GmbSysEx::encodeNotification(snapshot_, flags);
+        return GmbSysEx::encodeChangeNotification(snapshot_, flags);
     }
 
     uint32_t lastResponseMs() const { return lastResponseMs_; }
 
 private:
     CapabilitySnapshot snapshot_;
+    std::string descriptorJson_;
     bool useV2_ = false;
     bool hasDeviceId_ = false;
     uint8_t deviceId_[5] = {0, 0, 0, 0, 0};

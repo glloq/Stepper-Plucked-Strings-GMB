@@ -55,8 +55,12 @@ void MidiParser::feed(uint8_t b, uint32_t nowUs) {
     if (b & 0x80) {
         // Status byte.
         if (b >= 0xF8) return;  // real-time messages: ignore here
-        if (b >= 0xF1 && b <= 0xF6) {
-            status_ = 0;  // system common: not handled, clears running status
+        // System common F1..F6, plus a STRAY 0xF7 (End-of-Exclusive with no open
+        // SysEx — a real 0xF0/0xF7 pair is handled above). None are voice messages:
+        // clear running status and ignore, so a lone 0xF7 cannot latch status_=0xF7
+        // and emit junk events for every following data byte.
+        if (b >= 0xF1 && b <= 0xF7) {
+            status_ = 0;
             return;
         }
         status_ = b;

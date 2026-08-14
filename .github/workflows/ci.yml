@@ -29,6 +29,10 @@ jobs:
           make CXXFLAGS="-std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all -O1 -g"
       - name: Host compile-check (main.cpp + platform adapters)
         run: bash firmware/test/hostcheck/run.sh
+      - name: Embedded web UI is up to date (WebAssets.cpp matches web-interface/)
+        run: |
+          python3 firmware/tools/embed_web_assets.py
+          git diff --exit-code firmware/src/platform/esp32/WebAssets.cpp
       - name: ServoBank routing + controlled-park + ActuatorResult check
         run: bash firmware/test/servobankcheck/run.sh
       - name: StepperBank motion + hard-stop + ActuatorResult check

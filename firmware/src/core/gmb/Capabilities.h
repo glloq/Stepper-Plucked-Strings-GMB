@@ -16,7 +16,8 @@ struct Profile;  // forward decl
 struct DeviceIdentity {
     uint8_t version = 1;
     uint8_t deviceId[5] = {0, 0, 0, 0, 0};
-    std::string deviceName;      // truncated to 32 on the wire
+    std::string deviceName;      // truncated to 32 on the wire (v1); descriptor name (v2)
+    std::string model;           // GMB v2 descriptor `device.model` (project name)
     uint8_t firmware[3] = {1, 0, 0};
     uint8_t features = 0x30;     // INSTRUMENT_CAPABILITIES | STRING_CONFIG
 };
@@ -25,6 +26,7 @@ struct InstrumentDescriptor {
     uint8_t channel = 0;
     uint8_t gmProgram = 24;
     uint8_t typeId = 0x04;
+    std::string type;            // GMB v2 descriptor `type` key (e.g. "guitar")
 };
 
 struct InstrumentCapabilities {

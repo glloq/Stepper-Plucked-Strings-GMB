@@ -10,6 +10,8 @@ void GmbSysExService::rebuild(const Profile& p, int polyphonyOverride) {
     // it to the profile default).
     if (hasDeviceId_)
         for (int i = 0; i < 5; ++i) snapshot_.identity.deviceId[i] = deviceId_[i];
+    // Cache the GMB v2 descriptor for the block 0x10 transfer and the HTTP route.
+    descriptorJson_ = GmbDescriptor::toJson(snapshot_);
 }
 
 bool GmbSysExService::allow(uint32_t nowMs) {
@@ -41,7 +43,18 @@ std::vector<uint8_t> GmbSysExService::handleMessage(const uint8_t* data, size_t 
     if (!allow(nowMs)) return {};
     lastResponseMs_ = nowMs;
 
-    return GmbSysEx::respond(req, snapshot_, useV2_);
+    switch (static_cast<SysExBlock>(req.block)) {
+        case SysExBlock::Identity:
+            // GMB v2: a Block-1 request is answered with the 24-byte handshake
+            // (the deprecated 52-byte v1 identity is no longer the default reply).
+            return GmbSysEx::encodeHandshakeV2(
+                snapshot_, static_cast<uint32_t>(descriptorJson_.size()), kHandshakeFlags);
+        case SysExBlock::DescriptorTransfer:
+            return GmbSysEx::encodeDescriptorChunk(descriptorJson_, req.chunkIndex);
+        default:
+            // Deprecated fixed blocks (5/6/7) kept for any pre-v2 host.
+            return GmbSysEx::respond(req, snapshot_, useV2_);
+    }
 }
 
 }  // namespace gmb

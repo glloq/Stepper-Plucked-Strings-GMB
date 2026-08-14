@@ -80,9 +80,15 @@ The IDE opens the sketch and shows `firmware.ino` as well as the `src/` tree.
 Click **Verify** (✓) to compile, then **Upload** (→) with the board connected
 via USB.
 
-## 7. Upload the Web interface (LittleFS)
+## 7. The Web interface
 
-The interface is served from LittleFS (`/www`). It is uploaded separately:
+**Nothing to do in the normal case.** The interface is compiled into the firmware
+(`firmware/src/platform/esp32/WebAssets.cpp`, generated from `web-interface/` and
+committed), so a plain **Upload** ships a working UI with no filesystem step.
+
+Uploading LittleFS remains an *optional per-file override*: an uploaded
+`/www/<file>` always wins over its embedded copy, which lets you change the
+interface on a device without recompiling. Do that like this:
 
 1. Generate the filesystem image from `web-interface/`:
    ```bash
@@ -113,7 +119,7 @@ At power-on, the ESP32 creates the Wi-Fi access point
 | `fatal error: FastAccelStepper.h: No such file or directory` | Same — see §3. It is required even if you only want to test the servos. |
 | FastAccelStepper errors about `mcpwm_*` / `gpio_matrix_*` | You have 0.30.x against Arduino-ESP32 3.x. Update to ≥ 1.2.7. |
 | `ledcAttach was not declared` | ESP32 core is version 2.x — update to 3.x (§2). |
-| Empty Web interface / 404 | LittleFS image not uploaded — redo §7 after `sync_web_data.sh`. |
+| Empty Web interface / 404 | The build carries no embedded UI: run `python3 firmware/tools/embed_web_assets.py` and flash again (or upload LittleFS, §7). The device serves a page saying exactly this. |
 | `Sketch too big` / no FS | Choose a *Partition Scheme* with a filesystem (§5). |
 | The sketch does not compile the files in `src/` | Make sure you open `firmware/firmware.ino` (the `src/` must be **next to** the `.ino`). |
 | Unit tests | They do **not** compile in the Arduino IDE; use `cd firmware/test && make` (see [`ARCHITECTURE.md`](ARCHITECTURE.md)). |
