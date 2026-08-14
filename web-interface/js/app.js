@@ -25,12 +25,17 @@
     if (attrs) {
       Object.keys(attrs).forEach(function (k) {
         var v = attrs[k];
+        // `value` is a VALUE, not a boolean attribute, so it has to be handled
+        // before the falsy guard below: `value:false` used to be dropped, and an
+        // <option> with no value attribute falls back to its own text — so a
+        // boolean select ("Active low" = false) could never match its model value
+        // and painted blank. Empty string for null/undefined, as before.
+        if (k === 'value') { el.value = (v === null || v === undefined) ? '' : v; return; }
         if (v === null || v === undefined || v === false) return;
         if (k === 'class') el.className += (el.className ? ' ' : '') + v;
         else if (k === 'html') el.innerHTML = v;
         else if (k === 'text') el.textContent = v;
         else if (k.slice(0, 2) === 'on' && typeof v === 'function') el.addEventListener(k.slice(2), v);
-        else if (k === 'value') el.value = v;
         else if (k === 'checked' || k === 'disabled' || k === 'selected') { if (v) el.setAttribute(k, k); el[k] = v; }
         else el.setAttribute(k, v);
       });
@@ -59,12 +64,29 @@
     var el;
     if (type === 'select') {
       el = h('select');
-      (opts.options || []).forEach(function (o) {
+      var choices = opts.options || [];
+      var matched = false;
+      choices.forEach(function (o) {
         var val = o.value !== undefined ? o.value : o;
         var lab = o.label !== undefined ? o.label : o;
-        el.appendChild(h('option', { value: val, selected: String(obj[key]) === String(val) }, lab));
+        var sel = String(obj[key]) === String(val);
+        if (sel) matched = true;
+        el.appendChild(h('option', { value: val, selected: sel }, lab));
       });
-      el.value = obj[key];
+      if (matched) {
+        el.value = obj[key];
+      } else if (choices.length) {
+        // The value is not in the list — almost always because the field is
+        // undefined on a profile written before it existed. `el.value = undefined`
+        // assigns the STRING "undefined", which matches no option, so the select
+        // paints BLANK: the control looks broken and, worse, a save would store a
+        // value the user never saw. Fall back to the first option and write it
+        // into the model so what is on screen is what will be saved.
+        var first = choices[0];
+        var fv = first.value !== undefined ? first.value : first;
+        el.selectedIndex = 0;
+        obj[key] = opts.coerce ? opts.coerce(fv) : fv;
+      }
     } else if (type === 'checkbox') {
       el = h('input', { type: 'checkbox', checked: !!obj[key] });
     } else {
@@ -134,7 +156,7 @@
 
   var state = {
     profile: null,      // working draft (edited in place by views)
-    mode: 'simplified', // 'simplified' | 'advanced' (spec 9.2)
+    mode: 'detailed',   // one mode; the toggle of spec 9.2 was removed
     dirty: false,
     current: 'fretboard'
   };
@@ -146,10 +168,16 @@
     if (b) b.classList.add('visible');
   };
 
-  // Expert mode removed — the interface is simplified-only. Kept as a stable no-op
-  // so any lingering caller (or an old saved profile's mode field) is harmless.
-  GMB.isAdvanced = function () { return false; };
-  function setMode() { state.mode = 'simplified'; document.body.setAttribute('data-mode', 'simplified'); }
+  // The expert-mode TOGGLE is gone: there is one interface, and it is the detailed
+  // one. Views still ask this before rendering their fine-tuning blocks (steps per
+  // revolution, homing speeds, servo pulse windows, the SysEx block switches…), so
+  // it answers TRUE — returning false would not "simplify" anything, it would make
+  // that content permanently unreachable, which is precisely what a bench needs.
+  // Kept as a function so an old profile carrying a `mode` field is harmless.
+  GMB.isAdvanced = function () { return true; };
+  // There is one mode now. Kept so the body attribute (and any CSS keyed on it)
+  // stays defined, and so an old caller does not throw.
+  function setMode() { state.mode = 'detailed'; document.body.setAttribute('data-mode', 'detailed'); }
   GMB.setMode = setMode;
 
   function navigate(id) {
@@ -372,7 +400,7 @@
   // ---- boot -----------------------------------------------------------------
   function boot() {
     buildShell();
-    setMode('simplified');
+    setMode();
     GMB.api.getProfile().then(function (p) {
       state.profile = p;
       var start = (location.hash || '').replace('#', '');

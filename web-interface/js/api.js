@@ -46,13 +46,13 @@
 
   function buildDevKitC1() {
     var pins = [];
-    // Strapping / boot pins — usable but risky, advanced only.
+    // Strapping / boot pins — usable, but their level is sampled at reset.
     pins.push(pin(0, { strapping: true, highSpeedOutput: true, preference: 'reserved',
       note: 'BOOT strapping pin — reserved to keep boot reliable.' }));
     pins.push(pin(1, { adc: true, highSpeedOutput: true, preference: 'recommended', note: 'ADC1_CH0.' }));
     pins.push(pin(2, { adc: true, highSpeedOutput: true, preference: 'recommended', note: 'ADC1_CH1.' }));
     pins.push(pin(3, { adc: true, strapping: true, highSpeedOutput: true, preference: 'caution',
-      note: 'Strapping pin (JTAG source select) — use with care in advanced mode.' }));
+      note: 'Strapping pin (JTAG source select) — usable, but verify the boot level.' }));
     // Recommended general I/O — the auto-assigner draws STEP/DIR/HOME from here.
     [4, 5, 6, 7].forEach(function (g) {
       pins.push(pin(g, { adc: true, highSpeedOutput: true, preference: 'recommended',
@@ -109,9 +109,9 @@
     pins.push(pin(44, { onboardPeripheral: true, preference: 'reserved',
       note: 'U0RXD — programming & diagnostic UART. Reserved.' }));
     pins.push(pin(45, { strapping: true, preference: 'caution',
-      note: 'Strapping pin (VDD_SPI voltage) — advanced use only.' }));
+      note: 'Strapping pin (VDD_SPI voltage) — usable, but verify the boot level.' }));
     pins.push(pin(46, { strapping: true, preference: 'caution',
-      note: 'Strapping pin — advanced use only.' }));
+      note: 'Strapping pin — usable, but verify the boot level.' }));
     pins.push(pin(47, { highSpeedOutput: true, preference: 'recommended',
       note: 'Recommended PCA9685 /OE safety line.' }));
     pins.push(pin(48, { onboardPeripheral: true, preference: 'reserved',
@@ -141,6 +141,37 @@
     diag: 'diag', sda: 'i2cSda', scl: 'i2cScl', servoOe: 'servoOe', servo: 'servo'
   };
   GMB.SIGNAL_KIND = SIGNAL_KIND;
+
+  // Fill the physical power/safety declaration block (HardwareNotes) with its
+  // defaults IN PLACE, so a profile saved before the block existed (or loaded
+  // from an older firmware) binds cleanly in the Power & safety / I²C & PCA
+  // views — both bind their inputs straight to this object, so a missing field
+  // would bind to undefined and the view would render blanks. Returns the block.
+  //
+  // The defaults MUST match ProfileStorage::fromJson()'s, or the UI would show a
+  // value the firmware does not actually hold.
+  GMB.ensureHardware = function (p) {
+    var hw = p.hardware || (p.hardware = {});
+    if (hw.oePullup === undefined) hw.oePullup = false;
+    if (hw.oeGate === undefined) hw.oeGate = false;
+    if (hw.estopCutsPower === undefined) hw.estopCutsPower = false;
+    // Stepper-only: the E-stop must also force the driver ENABLE inactive, since
+    // a driver left energised still holds the carriage and still heats.
+    if (hw.estopCutsDriverEnable === undefined) hw.estopCutsDriverEnable = false;
+    if (hw.mainSwitch === undefined) hw.mainSwitch = false;
+    if (hw.mainFuse === undefined) hw.mainFuse = false;
+    if (hw.branchFuses === undefined) hw.branchFuses = false;
+    if (!(hw.servoIdleMa >= 0)) hw.servoIdleMa = 10;
+    if (!(hw.servoMoveMa >= 0)) hw.servoMoveMa = 250;
+    if (!(hw.servoStallMa >= 0)) hw.servoStallMa = 800;
+    // Per-axis stepper currents the motor-rail estimator sizes from.
+    if (!(hw.stepperHoldMa >= 0)) hw.stepperHoldMa = 400;
+    if (!(hw.stepperMoveMa >= 0)) hw.stepperMoveMa = 800;
+    if (!(hw.extPullupOhm0 >= 0)) hw.extPullupOhm0 = 0;
+    if (!(hw.extPullupOhm1 >= 0)) hw.extPullupOhm1 = 0;
+    if (!Array.isArray(hw.pcaPullups)) hw.pcaPullups = [];
+    return hw;
+  };
 
   // Can a pin (statically) carry a given signal kind? (spec 11.3)
   GMB.pinSupports = function (p, kind) {
@@ -174,7 +205,7 @@
       maxSpeedMmS: 200, maxAccelMmS2: 2000, calibratedFretMm: [],
       homing: {
         direction: -1, fastSpeedMmS: 40, slowSpeedMmS: 5, backoffMm: 3, offsetMm: 0,
-        timeoutMs: 8000, maxSearchMm: 500, sensorActiveHigh: true
+        timeoutMs: 8000, maxSearchMm: 500, sensorActiveHigh: true, limitActiveHigh: false
       }
     };
   }

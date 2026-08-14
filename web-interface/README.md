@@ -84,6 +84,7 @@ web-interface/
 │   ├── sysex.js          GMB identity & capabilities + SysEx tester (§17/§18)
 │   └── profiles.js       profile list/create/copy/rename/delete/export/import/restore (§20)
 ├── test/run-tests.js     behavioural tests of the pure logic (run by CI)
+├── test/smoke.js         mounts every view in a real browser (needs Playwright)
 ├── tools/screenshots.js  regenerates img/screenshots/ with Playwright
 └── README.md
 ```

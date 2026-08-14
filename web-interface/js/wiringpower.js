@@ -44,6 +44,15 @@
   function estopPin(p) {
     return (p.pins || []).filter(function (x) { return x.signal === 'ESTOP'; })[0] || null;
   }
+  // Enabled axes = STEP/DIR drivers on the motor rail. Zero means a servo-only
+  // build, where the whole motor side of this page is simply not drawn.
+  function axisCount(p) {
+    return (p.strings || []).filter(function (s) { return s.enabled !== false; }).length;
+  }
+  function anyAxis(p) { return axisCount(p) > 0; }
+  function enablePin(p) {
+    return (p.pins || []).filter(function (x) { return x.signal === 'ENABLE'; })[0] || null;
+  }
 
   // ---- branch model ---------------------------------------------------------
   // One power branch per PCA9685 (bus, address) + one for the direct-GPIO rail.
@@ -132,20 +141,34 @@
         'Two-transistor non-inverting stage: the E-stop chain’s spare NC contact can then ' +
         'physically forbid enabling, even from a live but buggy ESP32.'));
     }
-    kids.push(declRow(hw, 'estopCutsPower', 'E-stop drops the servo-rail contactor (K1)',
+    kids.push(declRow(hw, 'estopCutsPower', 'E-stop drops BOTH rail contactors (K1 servo, K2 motor)',
       'The only stop that also covers direct-GPIO servos and works with the firmware dead. ' +
-      'The button switches the DC-rated contactor’s coil, never the servo current itself.'));
-    kids.push(declRow(hw, 'mainSwitch', 'Master switch (S1) upstream of the contactor',
+      'The button switches the DC-rated contactors’ coils, never the rail current itself.'));
+    // Motor side. A stepper does not simply stop when told: it holds its position
+    // by burning current, so the driver stays hot and the carriage stays clamped
+    // until ENABLE goes inactive or the rail disappears. This has no equivalent
+    // on a servo-only machine, which is why it is called out separately.
+    if (anyAxis(p)) {
+      kids.push(declRow(hw, 'estopCutsDriverEnable',
+        'E-stop also forces the driver ENABLE inactive',
+        'Stopping the STEP pulses stops the MOTION only — the coils stay energised, the ' +
+        'driver keeps heating and the carriage stays clamped. Gate the shared ENABLE line ' +
+        'with the E-stop chain (same two-transistor stage as /OE), and give it a 10 kΩ ' +
+        'pull-up to 3.3 V: a floating /EN reads LOW on most drivers, so the coils would ' +
+        'energise with the ESP32 absent.'));
+    }
+    kids.push(declRow(hw, 'mainSwitch', 'Master switch (S1) upstream of the contactors',
       'Mandatory on a fixed installation (BOM).'));
-    kids.push(declRow(hw, 'mainFuse', 'Main fuse (F0) on the servo rail'));
+    kids.push(declRow(hw, 'mainFuse', 'Main fuses (F0 servo rail, F0m motor rail)'));
     kids.push(declRow(hw, 'branchFuses', 'One fuse per branch (F1…Fn) at the distribution block',
       'A wiring fault then blows one string group instead of the instrument, and the firmware ' +
       'degrades just those strings (readyDegraded).'));
 
     var missing = [];
     if (m.usePca && !hw.oePullup) missing.push('/OE pull-up');
-    if (!hw.estopCutsPower) missing.push('power-cut contactor');
-    if (!hw.mainFuse) missing.push('main fuse');
+    if (!hw.estopCutsPower) missing.push('power-cut contactors');
+    if (anyAxis(p) && !hw.estopCutsDriverEnable) missing.push('ENABLE gating + pull-up');
+    if (!hw.mainFuse) missing.push('main fuses');
     kids.push(missing.length
       ? h('div.pill.warn', 'Still to fit before stringing the instrument: ' + missing.join(', ') + '.')
       : h('div.pill.ok', 'Safety chain declared complete — verify it with the Commissioning checklist.'));
@@ -164,6 +187,7 @@
       { key: 's1', label: 'S1 master switch', fitted: hw.mainSwitch },
       { key: 'k1', label: 'K1 E-stop contactor', fitted: hw.estopCutsPower }
     ];
+    var axes = axisCount(p);
     var CH_TOP = 86, CH_STEP = 46;
     var distY = CH_TOP + chain.length * CH_STEP + 18;
     var brTop = distY + 34;
@@ -173,7 +197,13 @@
     var oeBusY = brTop + 64 + 26;
     // Right zone: E-stop + ESP32 + /OE interface.
     var rzX = Math.max(brRight + 40, 470);
-    var W = rzX + 350, HH = oeBusY + 44;
+    // The motor rail is a SECOND spine below the servo one: its own PSU, its own
+    // K2 contactor on the same E-stop chain, and one fused branch per driver.
+    var mrTop = axes ? oeBusY + 54 : 0;          // motor PSU box top
+    var mrChainTop = mrTop + 74, mrDistY = mrChainTop + 2 * CH_STEP + 18;
+    var mrBrTop = mrDistY + 34;
+    var mrEnableY = mrBrTop + 64 + 26;
+    var W = rzX + 350, HH = (axes ? mrEnableY + 44 : oeBusY + 44);
 
     var root = svg('svg', { class: 'wire-svg', viewBox: '0 0 ' + W + ' ' + HH,
       preserveAspectRatio: 'xMidYMid meet', role: 'group',
@@ -272,6 +302,56 @@
         hw.oePullup ? 'wire-sub' : 'wire-sub ps-warn');
     }
 
+    // ---- motor rail: a SECOND, independent spine --------------------------
+    // Higher voltage, its own contactor on the same E-stop chain, and a fused +
+    // decoupled branch per driver. It is drawn separately rather than folded into
+    // the servo tree because mixing the two rails is a real wiring mistake: a
+    // mis-plugged connector would put 24 V onto every servo at once.
+    if (axes) {
+      box(24, mrTop, 168, 54, 'wire-psu', false, 'Motor PSU', '12–24 V · separate');
+      line(CH_X, mrTop + 54, CH_X, mrDistY, 'vplus');
+      [{ label: 'F0m main fuse', fitted: hw.mainFuse },
+       { label: 'K2 E-stop contactor', fitted: hw.estopCutsPower }
+      ].forEach(function (c, i) {
+        var y = mrChainTop + i * CH_STEP;
+        root.appendChild(svg('rect', { class: 'ps-chain' + (c.fitted ? '' : ' ps-missing'),
+          x: CH_X - 11, y: y - 11, width: 22, height: 22, rx: 5 }));
+        label(CH_X + 18, y + 4, c.label + (c.fitted ? '' : ' — not declared'),
+          c.fitted ? 'wire-sub' : 'wire-sub ps-warn');
+      });
+      // NC #1 drives BOTH coils, so the same contact reaches K2.
+      line(esX, esY + 25, CH_X + 11, mrChainTop + CH_STEP, 'gnd', !hw.estopCutsPower);
+
+      var mrRight = brX0 + Math.max(1, axes) * (BR_W + BR_GAP) - BR_GAP;
+      line(brX0, mrDistY, Math.max(mrRight, CH_X + 30), mrDistY, 'vplus');
+      label(Math.max(mrRight, CH_X + 30) + 8, mrDistY + 4, 'motor distribution · star');
+      for (var a = 0; a < axes; a++) {
+        var mx = brX0 + a * (BR_W + BR_GAP), mcx = mx + BR_W / 2;
+        line(mcx, mrDistY, mcx, mrBrTop, 'vplus');
+        root.appendChild(svg('rect', { class: 'ps-chain' + (hw.branchFuses ? '' : ' ps-missing'),
+          x: mcx - 8, y: mrDistY + 8, width: 16, height: 14, rx: 4 }));
+        var dg = box(mx, mrBrTop, BR_W, 64, 'wire-board direct', false,
+          'Driver A' + (a + 1), 'axis ' + (a + 1) + ' · VMOT');
+        dg.appendChild(svg('title', null,
+          'F' + (a + 1) + 'm' + (hw.branchFuses ? '' : ' (not declared)') +
+          ' + a ≥100 µF bulk cap AT the driver, then driver A' + (a + 1)));
+        label(mx + 10, mrBrTop + 52, 'F' + (a + 1) + 'm · C' + (a + 1) + 'm',
+          hw.branchFuses ? 'wire-sub' : 'wire-sub ps-warn');
+        // Every driver taps the shared ENABLE bus below.
+        line(mcx, mrBrTop + 64, mcx, mrEnableY, 'oe', !hw.estopCutsDriverEnable);
+      }
+      var enPin = enablePin(p);
+      line(brX0, mrEnableY, esX + 110, mrEnableY, 'oe', !hw.estopCutsDriverEnable);
+      line(esX + 110, espY + 58, esX + 110, mrEnableY, 'oe', !hw.estopCutsDriverEnable);
+      label(brX0, mrEnableY + 16,
+        'ENABLE bus → every driver' +
+        (enPin && enPin.gpio >= 0 ? ' (GPIO' + enPin.gpio + ')' : ' — unassigned') +
+        ' · ACTIVE-LOW, so the 10 kΩ pull-up keeps the drivers OFF' +
+        (hw.estopCutsDriverEnable ? ' · gated by the E-stop chain'
+                                  : ' — gating NOT declared'),
+        hw.estopCutsDriverEnable ? 'wire-sub' : 'wire-sub ps-warn');
+    }
+
     return root;
   }
 
@@ -286,7 +366,7 @@
   //   • the PEAK — a chord moves several carriages at once. The governor staggers
   //     the STARTS, so it bounds how many accelerate together; the rest are holding.
   function motorRailBlock(p, hw) {
-    var axes = (p.strings || []).filter(function (s) { return s.enabled !== false; }).length;
+    var axes = axisCount(p);
     if (!axes) return h('p.muted', 'No axis enabled — no motor rail to size.');
     var hold = (hw.stepperHoldMa || 0) / 1000, move = (hw.stepperMoveMa || 0) / 1000;
     var cap = (p.power && p.power.maxConcurrentMoves) || 0;

@@ -1,7 +1,7 @@
 /*
  * pins.js — GPIO pin assignment grid (spec section 11).
  *
- * Colour categories: Green=recommended / Yellow=caution (advanced only) /
+ * Colour categories: Green=recommended / Yellow=caution (offered, with its reason) /
  * Red=reserved (never selectable) / Grey=used. Per-signal candidate lists are
  * filtered by capability (STEP needs fast output, HOME needs input+interrupt,
  * SDA/SCL need I2C...). An "Assign automatically" button reproduces the
@@ -17,7 +17,10 @@
   function render(host) {
     var p = GMB.state.profile;
     if (!board) {
-      GMB.api.getBoard(p.board.profile).then(function (b) { board = b; render(host); });
+      // Re-render through the SHELL, not back into this host: `host` already has
+      // the placeholder in it, so calling render(host) again just appends the real
+      // content underneath and leaves "Loading…" stuck on screen for good.
+      GMB.api.getBoard(p.board.profile).then(function (b) { board = b; GMB.render(); });
       host.appendChild(h('div.card', 'Loading board profile…'));
       return;
     }
@@ -25,7 +28,7 @@
     // Controls.
     host.appendChild(h('div.card', [
       h('div.card-head', [h('h2', 'Pin assignment — ' + board.displayName),
-        h('span.muted', GMB.isAdvanced() ? 'Advanced: manual assignment + caution pins' : 'Simplified: recommended pins only')]),
+        h('span.muted', 'green first, caution pins flagged, reserved never offered')]),
       h('div.toolbar', [
         h('label.inline', [GMB.input(p.board, 'automaticPinAssignment', { type: 'checkbox' }), h('span', 'Automatic pin assignment')]),
         h('label.inline', [GMB.input(p.board, 'reserveUsb', { type: 'checkbox', onChange: function () { validate(); } }),
@@ -41,7 +44,7 @@
       h('h2', 'Board GPIO map'),
       h('div.legend', [
         legend('recommended', 'Recommended'),
-        legend('caution', 'Caution (advanced)'),
+        legend('caution', 'Caution — usable, reason shown'),
         legend('reserved', 'Reserved / incompatible'),
         legend('used', 'Used')
       ]),
@@ -131,8 +134,8 @@
     GMB.markDirty();
   }
 
-  // Candidate GPIOs for a signal (spec 11.3): compatible, not
-  // reserved, not used elsewhere. Caution pins only surface in advanced mode.
+  // Candidate GPIOs for a signal (spec 11.3): compatible, not reserved, not used
+  // elsewhere. Recommended pins are listed first, caution pins after and labelled.
   function candidates(kind, signal) {
     var reserveUsb = GMB.state.profile.board.reserveUsb;
     var used = usedMap(signal);
@@ -141,8 +144,18 @@
       if (used[cap.gpio]) return false;
       if (cap.reserved || cap.preference === 'reserved') return false;
       if (cap.usb && reserveUsb) return false;
-      if (cap.preference === 'caution' && !GMB.isAdvanced()) return false;
+      // Caution pins ARE offered. They used to be hidden outside "advanced mode";
+      // with that mode gone, hiding them would mean nobody could ever pick one —
+      // and on a classic ESP32 the caution pins (2/5/12/15) are a large share of
+      // what is usable. They sort last and carry their reason, so the choice is
+      // informed rather than removed. Reserved pins are still never listed.
       return GMB.pinSupports(cap, wantKind);
+    }).sort(function (a, b) {
+      // Recommended first: the safe choice stays the obvious one even though the
+      // cautious one is now reachable.
+      var ra = a.preference === 'recommended' ? 0 : 1;
+      var rb = b.preference === 'recommended' ? 0 : 1;
+      return ra - rb || a.gpio - b.gpio;
     });
   }
 
@@ -154,13 +167,16 @@
       var cands = candidates(spec.kind, spec.signal);
       var sel = h('select');
       sel.appendChild(h('option', { value: -1, selected: cur < 0 }, '— unassigned —'));
-      // Keep the current pin visible even if it is a caution pin, so advanced
-      // choices survive a mode switch.
+      // Keep the current pin visible even when it is not a candidate (it may be
+      // taken by another signal, or reserved on a board the profile was moved
+      // from), so an existing assignment is never silently blanked.
       var seen = {};
       cands.forEach(function (cap) {
         seen[cap.gpio] = true;
-        sel.appendChild(h('option', { value: cap.gpio, selected: cap.gpio === cur },
-          'GPIO' + cap.gpio + (cap.preference === 'caution' ? ' (caution)' : '')));
+        var why = cap.preference === 'caution'
+          ? ' (caution' + (cap.note ? ' — ' + cap.note : '') + ')' : '';
+        sel.appendChild(h('option', { value: cap.gpio, selected: cap.gpio === cur, title: cap.note || null },
+          'GPIO' + cap.gpio + why));
       });
       if (cur >= 0 && !seen[cur]) {
         sel.appendChild(h('option', { value: cur, selected: true }, 'GPIO' + cur + ' (current)'));

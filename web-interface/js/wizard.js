@@ -403,7 +403,8 @@
       if (used[cap.gpio]) return false;
       if (cap.reserved || cap.preference === 'reserved') return false;
       if (cap.usb && reserveUsb) return false;
-      if (cap.preference === 'caution' && !GMB.isAdvanced()) return false;
+      // Caution pins are offered here too (see pins.js): hiding them would leave
+      // a classic ESP32 with too few selectable pins to wire an instrument.
       return GMB.pinSupports(cap, wantKind);
     });
   }
@@ -428,7 +429,7 @@
   // ---- Step 5: Homing & endstops -------------------------------------------
   function stepHoming(body) {
     body.appendChild(h('h3', 'Homing & endstops per string'));
-    body.appendChild(h('p.muted', 'Each string homes on its own HOME switch. Pick the GPIO and the homing behaviour; a LIMIT switch is optional (Advanced).'));
+    body.appendChild(h('p.muted', 'Each string homes on its own HOME switch. Pick the GPIO and the homing behaviour; a LIMIT switch is optional but strongly recommended — without it, a missed HOME sensor is only caught by the search-distance timeout, after the carriage has run to the end of its travel.'));
     body.appendChild(stringTabs());
     var i = activeStr, s = GMB.state.profile.strings[i];
     if (!s) return;

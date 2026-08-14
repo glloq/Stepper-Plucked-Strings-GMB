@@ -239,6 +239,19 @@ node web-interface/tools/screenshots.js
 Keep the file names stable — they are referenced from this document and from
 `README.md`.
 
+Before regenerating, run the browser smoke test — it mounts every view, every
+Setup step, every Wiring sub-tab and every Settings tab, and fails on a page
+error or a rendered “View error” card:
+
+```bash
+node web-interface/test/smoke.js       # same env vars as above
+```
+
+It exists because `node --check` and `test/run-tests.js` cannot catch a view
+that calls a function which does not exist: the render throws, the shell paints
+an error card, and every other check still passes. That is exactly how the
+Power & safety tab once shipped broken.
+
 ---
 
 ## 7. REST / WebSocket API
