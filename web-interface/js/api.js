@@ -86,6 +86,37 @@
   //
   // The defaults MUST match ProfileStorage::fromJson()'s, or the UI would show a
   // value the firmware does not actually hold.
+  // Fill in every section an imported profile may be missing, from the sample
+  // profile's defaults. An import used to be adopted after a four-key shape check,
+  // so a file with no `board`, `midi`, `stringFretSelection`, `power` or `pluck`
+  // reached the views and surfaced later as blank fields or a thrown render. This
+  // is the normalisation step between "parses as JSON" and "is a usable draft";
+  // the device's validator still has the final say on the content.
+  GMB.ensureProfileDefaults = function (p) {
+    if (!p || typeof p !== 'object') return p;
+    var d = sampleProfile();
+    // Whole sections: adopt the default only when absent, never merged field by
+    // field — a half-merged section is harder to reason about than a default one.
+    ['instrument', 'board', 'hardware', 'network', 'midi', 'stringFretSelection',
+     'power', 'pluck'].forEach(function (k) {
+      if (!p[k] || typeof p[k] !== 'object') p[k] = d[k];
+    });
+    if (!Array.isArray(p.pins)) p.pins = [];
+    if (!Array.isArray(p.servos)) p.servos = [];
+    if (!Array.isArray(p.strings)) p.strings = [];
+    if (!p.project) p.project = d.project;
+    if (!(p.profileVersion >= 1)) p.profileVersion = d.profileVersion;
+    if (!(p.capabilitiesRevision >= 0)) p.capabilitiesRevision = 0;
+    // Per-string blocks the views bind to directly.
+    p.strings.forEach(function (st) {
+      if (!st.homing || typeof st.homing !== 'object') st.homing = d.strings[0].homing;
+      if (!Array.isArray(st.calibratedFretMm)) st.calibratedFretMm = [];
+      if (st.enabled === undefined) st.enabled = true;
+    });
+    GMB.ensureHardware(p);
+    return p;
+  };
+
   GMB.ensureHardware = function (p) {
     var hw = p.hardware || (p.hardware = {});
     if (hw.oePullup === undefined) hw.oePullup = false;

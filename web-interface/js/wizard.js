@@ -17,7 +17,7 @@
 
   var STEPS = [
     'Identification', 'Board', 'Pins', 'Mechanics', 'Homing',
-    'Servos', 'Notes', 'Test', 'Validation'
+    'Servos', 'Notes', 'MIDI', 'Test', 'Validation'
   ];
   var step = 0;
   var board = null;              // board profile (for GPIO capability filtering)
@@ -208,11 +208,23 @@
           if (!(strs[n].maxFret >= 0)) return 'String ' + (n + 1) + ' has no fret count.';
         }
         return null;
-      case 7:
+      case 7: {
+        // MIDI & playback. Only the settings that would make the instrument
+        // unplayable are gating; the rest have workable defaults.
+        var sfs = p.stringFretSelection;
+        if (p.midi.globalChannel < 0 || p.midi.globalChannel > 15)
+          return 'The global MIDI channel must be 1–16.';
+        if (sfs.string.ccNumber === sfs.fret.ccNumber)
+          return 'The string CC and the fret CC must differ.';
+        if (sfs.string.ccNumber > 119 || sfs.fret.ccNumber > 119)
+          return 'CC numbers must be 0–119 (120–127 are channel-mode messages).';
+        return null;
+      }
+      case 8:
         // The Test step owns no configuration; it is complete once everything it
         // can exercise is configured.
         return stepMissing(4, p) || stepMissing(5, p);
-      case 8:
+      case 9:
         var problems = GMB.validateProfile(p);
         return problems.length ? problems[0] : null;
     }
@@ -287,7 +299,7 @@
     if (!body) return;
     body.innerHTML = '';
     ([stepIdentification, stepBoard, stepPins, stepMechanics, stepHoming,
-      stepServos, stepNotes, stepTest, stepValidation][step])(body);
+      stepServos, stepNotes, stepMidi, stepTest, stepValidation][step])(body);
   }
 
   // ---- Step 1: Identification ----------------------------------------------
@@ -1263,7 +1275,35 @@
     drawStep();
   }
 
-  // ---- Step 8: Test ---------------------------------------------------------
+  // ---- Step 8: MIDI & playback ----------------------------------------------
+  //
+  // The Setup page is meant to build a COMPLETE instrument from end to end, and
+  // it could not: everything about how the instrument answers MIDI — channel,
+  // omni, transpose, sustain, chord saturation, the note/finger/strum timing and
+  // the whole string/fret CC selection — was only reachable from the Settings
+  // modal, which is where the device settings and the bench tools live. Those are
+  // instrument configuration, so they belong in the flow that builds one.
+  //
+  // The panels themselves are midiselect.js's; this step mounts them rather than
+  // growing a second copy. The LIVE tools (monitor, note tester) deliberately
+  // stay in Settings > Tools: they are diagnostics, not configuration.
+  function stepMidi(body) {
+    body.appendChild(h('h3', 'MIDI & playback'));
+    body.appendChild(h('p.muted', 'How the instrument answers a controller: channel and ' +
+      'note handling, the timing between receiving a note and hearing it, and the ' +
+      'string/fret selection over CC. The live monitor and the note tester are in ' +
+      'Settings → Tools.'));
+    if (GMB.midiSettings && GMB.midiSettings.settings) {
+      GMB.midiSettings.settings(body);
+    } else {
+      body.appendChild(h('div.card', 'The MIDI module failed to load.'));
+    }
+    body.appendChild(h('div.toolbar', [
+      GMB.button('Open the live MIDI tools', function () { GMB.openSettings('tools'); }, 'ghost')
+    ]));
+  }
+
+  // ---- Step 9: Test ---------------------------------------------------------
   function stepTest(body) {
     body.appendChild(h('h3', 'Test'));
     body.appendChild(h('p', 'Fire individual actuators and notes. In normal mode nothing actuates until critical errors are cleared.'));
@@ -1282,12 +1322,12 @@
           .then(function (res) {
             if (res && res.ok === false) { GMB.toast(res.error || 'Instrument not ready.', 'warn'); return; }
             GMB.toast('Tested string ' + (i + 1), 'ok');
-            markTested(7);
+            markTested(8);
           }).catch(function (e) { testErr('Note test failed', e); });
       }, 'ghost'));
     });
     testWrap.appendChild(guardedButton('Test chord (all open strings)',
-      stepMissing(7, p), function () { testChord(p); }, 'ghost'));
+      stepMissing(8, p), function () { testChord(p); }, 'ghost'));
     testWrap.appendChild(GMB.button('STOP', GMB.doPanic, 'danger'));
     body.appendChild(testWrap);
     body.appendChild(h('p.muted', 'Full note/string/fret testing with a step trace lives on the MIDI page.'));

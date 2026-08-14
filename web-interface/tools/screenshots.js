@@ -100,6 +100,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     ['Homing', 'setup-homing'],
     ['Servos', 'setup-servos'],
     ['Notes', 'setup-notes'],
+    ['MIDI', 'setup-midi'],
     ['Test', 'setup-test'],
     ['Validation', 'setup-validation'],
   ]) {

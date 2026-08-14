@@ -371,6 +371,42 @@ test('the descriptor is 7-bit clean (it travels over SysEx verbatim)', function 
 });
 
 // ---------------------------------------------------------------------------
+// Import normalisation. A profile file can legitimately be old, hand-edited or
+// truncated; what it must NEVER do is reach the views half-formed, because a
+// missing section there is a blank field or a thrown render, discovered later
+// and far from its cause.
+// ---------------------------------------------------------------------------
+
+test('an incomplete imported profile is filled in, not adopted raw', function () {
+  // The bare minimum the old four-key shape check accepted.
+  var bare = {
+    project: 'Stepper-Plucked-Strings-GMB',
+    instrument: { name: 'Half a profile', stringCount: 1 },
+    strings: [{ openNote: 60, maxFret: 12 }]
+  };
+  var p = GMB.ensureProfileDefaults(bare);
+  ['board', 'hardware', 'network', 'midi', 'stringFretSelection', 'power', 'pluck']
+    .forEach(function (k) {
+      check(p[k] && typeof p[k] === 'object', 'section "' + k + '" is present');
+    });
+  check(Array.isArray(p.pins) && Array.isArray(p.servos), 'array sections exist');
+  check(p.strings[0].homing && typeof p.strings[0].homing === 'object',
+        'each string gets its homing block');
+  check(Array.isArray(p.strings[0].calibratedFretMm), 'and its calibration array');
+  check(p.strings[0].enabled === true, 'a string with no enabled flag is enabled');
+  // The imported values themselves are untouched.
+  check(p.instrument.name === 'Half a profile', 'the imported name survives');
+  check(p.strings[0].openNote === 60, 'the imported tuning survives');
+});
+
+test('normalising a complete profile changes nothing', function () {
+  var p = GMB.sampleProfile();
+  var before = JSON.stringify(p);
+  GMB.ensureProfileDefaults(p);
+  check(JSON.stringify(p) === before, 'a full profile is left exactly as it was');
+});
+
+// ---------------------------------------------------------------------------
 // Small utilities that other modules rely on.
 // ---------------------------------------------------------------------------
 
