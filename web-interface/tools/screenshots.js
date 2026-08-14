@@ -122,15 +122,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   console.log('Settings modal');
   await view('fretboard');                       // calm backdrop behind the overlay
-  await page.evaluate(() => GMB.openSettings('network'));
+  await page.evaluate(() => GMB.openSettings('profiles'));
+  await sleep(1200);
+  await shot('settings-profiles', { fit: false });
+  await page.click('.settings-tab:text-is("Network")');
   await sleep(900);
   await shot('settings-network', { fit: false });
+  await page.click('.settings-tab:text-is("Security")');
+  await sleep(1200);
+  await shot('settings-security', { fit: false });
   await page.click('.settings-tab:text-is("Diagnostics")');
   await sleep(1400);                             // first /api/diagnostics poll
   await shot('settings-diagnostics', { fit: false });
-  await page.click('.settings-tab:text-is("Advanced")');
+  await page.click('.settings-tab:text-is("Tools")');
   await sleep(1400);
-  await shot('settings-advanced', { fit: false });
+  await shot('settings-tools', { fit: false });
 
   // The Advanced tab scrolls; bring each card into view for its own capture.
   async function scrollTo(heading) {

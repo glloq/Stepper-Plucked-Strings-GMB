@@ -88,16 +88,19 @@
       ]),
       h('div.toolbar', [
         GMB.button('Apply General-Midi-Boop preset', applyGmbPreset, 'primary'),
-        GMB.button('Send a test', function () { GMB.openSettings('advanced'); }, 'ghost')
+        GMB.button('Send a test', function () { GMB.openSettings('tools'); }, 'ghost')
       ]),
       h('p.muted', mode_desc(sfs.mode))
     ]);
     host.appendChild(simplified);
 
-    // ---- Advanced settings --------------------------------------------------
-    if (GMB.isAdvanced()) {
-      host.appendChild(advancedPanel(sfs, p));
-    }
+    // The preset above covers the normal case; the full selector configuration
+    // (mode, per-CC bounds, offsets, mapping, invalid-value policies) folds away
+    // rather than being gated by a mode, so it is always one click from here.
+    host.appendChild(GMB.details('midi-selector-advanced', 'Selector configuration',
+      function () { return advancedPanel(sfs, p); },
+      { hint: 'CC' + sfs.string.ccNumber + ' / CC' + sfs.fret.ccNumber +
+              ' · ' + sfs.mode }));
   }
 
   // The LIVE tools (monitor + note tester). Separate from the settings above so

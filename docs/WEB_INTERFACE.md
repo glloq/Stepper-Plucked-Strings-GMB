@@ -22,10 +22,17 @@ mode are simply on the page where they belong.
 
 | Page | What it is for |
 | ---- | -------------- |
-| **Instrument** | play it, and watch where every carriage actually is |
+| **Instrument** | play it, watch where every carriage is, and see why it will not play |
 | **Setup** | build the instrument, in order, from identity to validation |
 | **Wiring & GPIO** | the harness, the power & safety circuit, I²C, pins, commissioning |
-| *Settings modal* | device Wi-Fi, runtime diagnostics, security, SysEx and MIDI tools |
+| *Settings modal* | the profile library, device settings, diagnostics and bench tools |
+
+Disclosure is **local, not modal**. A global Simplified/Advanced switch makes the
+one field you need at the bench unreachable and doubles every page into two
+variants to maintain, so instead each step shows the handful of decisions it owns
+and folds its fine tuning into a block you open on the spot. Nothing is ever out
+of reach. Safety-relevant fields — the LIMIT endstop, the E-stop declarations —
+stay in plain sight regardless of how rarely they are touched.
 
 A red **STOP** button sits at the bottom of the sidebar on every page. It calls
 `POST /api/panic`, which is deliberately unauthenticated — a stop must never fail
@@ -48,6 +55,14 @@ show is **where each carriage is**:
 * the millimetre readout per string, and an **Axes** table with the open note,
   fret range, nut offset, live position, the note currently sounding and the
   axis state (a faulted axis is flagged and its lane goes dashed).
+
+At the top, four readings that decide whether the machine will do anything at
+all — state, axes ready, notes sounding, MIDI input — and, when something is
+wrong, the **faults themselves, listed**, with *Clear faults & re-home* next to
+them. This used to be one pill in a heading with the detail behind the Settings
+modal; when the instrument will not play, "why" belongs on the page you are
+already looking at. A device that booted config-safe says so here and offers the
+two pages that fix it.
 
 **Play** — clicking a fret sends a real MIDI note through `/api/test/note`, so it
 exercises the entire chain (allocate → move the carriage → press → pluck → damp)
@@ -76,7 +91,7 @@ time** through a string-tab strip, so a 6-string instrument stays navigable.
 | 4 **Mechanics** | per string: axis enabled, scale length, transmission, motor polarity, max speed & acceleration, and a **jog ±1/±5 mm** to check the direction live; *Copy mechanics to all strings* |
 | 5 **Homing** | per axis: HOME pin & active level, search direction, zero offset, speeds, back-off, timeout, LIMIT pin & level; *Home all axes now*, *Copy homing to all* |
 | 6 **Servos** | per servo: source (PCA bus/board/channel or direct GPIO), rest / active / mute pulses, travel & settle, disable-at-rest, stroke shaping, engage delay, and a **Test strike** |
-| 7 **Notes** | per string a **fret offset from the HOME endstop** that shifts the whole fretboard, automatic fret computation *or* manual calibration (move the axis and **Capture position**) |
+| 7 **Notes** | per string a **fret offset from the HOME endstop** that shifts the whole fretboard, automatic fret computation, then a **sequential calibration assistant** (§3.2) |
 | 8 **Test** | motors, sensors, fingers, plectrums, a note, a string, a chord, the emergency stop |
 | 9 **Validation** | "valid" or a precise list of problems; nothing is armed until the critical errors are fixed |
 
@@ -92,6 +107,48 @@ time** through a string-tab strip, so a 6-string instrument stays navigable.
 | ![Validation](../img/screenshots/setup-validation.png) | |
 
 </details>
+
+### 3.1 Step status, and what it gates
+
+Each step carries a state **derived from the profile**, not from how far you have
+clicked: a step you walked past without filling in is not done, and a step you
+fixed later stops nagging without being revisited.
+
+| Mark | Meaning |
+| ---- | ------- |
+| a number | something this step owns is missing — hover it for the reason |
+| ✓ | complete |
+| ✓✓ | complete **and** exercised against the machine in this session |
+
+"Exercised" is session-scoped and never saved: it means *I saw this work just
+now*, and persisting it would let a stale claim outlive the wiring change that
+invalidated it.
+
+Navigation stays free — every step is always open — but an incomplete step
+**gates the actions that move metal**. *Home all axes now* is inert while any
+enabled axis has no HOME sensor, because the only thing that would then stop that
+carriage is the search-distance timeout at the end of its travel; a jog is inert
+without STEP/DIR/HOME; a string test is inert without a striker. A blocked button
+stays clickable and explains itself when pressed — a disabled button answers no
+questions. This is on top of the firmware's own refusal, which remains the actual
+guarantee.
+
+### 3.2 The fret calibration assistant
+
+Calibration is a sequence, so the screen is one. The old layout was a table of
+every fret with a move and a capture button on each row: on a 6×20 guitar that is
+120 rows and 240 equally-prominent buttons, with nothing showing where you were
+or whether the last capture was sane.
+
+One fret at a time instead, showing **theory, target, measured and live position
+side by side** plus the **Δ against theory** — colour-coded, because a few tenths
+is normal mechanical reality and several millimetres means the carriage was not
+where you thought, and catching that at capture time is the entire point. A rail
+of fret numbers marks what is already measured and jumps anywhere. *Move to
+fret*, a ±0.5 mm nudge, *Capture position* and *Next fret* are the whole loop.
+
+The full table is still there, folded away: reviewing a finished calibration and
+bulk editing are real tasks that a one-at-a-time flow is bad at.
 
 The step-by-step walkthrough is in [`FIRST_CONFIGURATION.md`](FIRST_CONFIGURATION.md);
 the maths behind steps 4–7 is in [`CALIBRATION.md`](CALIBRATION.md).
@@ -170,6 +227,29 @@ touching the profile.
 
 ## 5. Settings modal
 
+Five tabs, split strictly by **what a thing belongs to**. Mixing those categories
+is what produced two editors for the Wi-Fi (only one of which could apply
+anything) and a complete profile library that no route reached:
+
+| Tab | Category |
+| --- | -------- |
+| **Profiles** | the instrument **library** — slots, startup slot, import/export |
+| **Network** | **device**: link config and credentials, applied live |
+| **Security** | **device**: admin token and the network-MIDI source policy |
+| **Diagnostics** | read-only runtime telemetry |
+| **Tools** | bench tools: SysEx identity & tester, MIDI monitor, note tester |
+
+Building an instrument is not in here at all — that is the Setup page.
+
+### 5.0 Profiles
+
+![Profiles](../img/screenshots/settings-profiles.png)
+
+Saved instruments, one per device storage slot: load, copy, rename, delete, pick
+the **startup slot**, import and export. The network settings and Wi-Fi passwords
+are deliberately *not* part of a profile — they stay with the machine, so moving
+an instrument between devices never moves one machine's SSID onto another.
+
 ### 5.1 Network
 
 ![Network settings](../img/screenshots/settings-network.png)
@@ -218,13 +298,22 @@ what a bench session needs when something behaves oddly but nothing has faulted:
 The body is built by the firmware's main loop and only *copied* by the web task,
 so reading it never touches the I²C bus or a live counter.
 
-### 5.3 Advanced
+### 5.3 Security
 
-![Advanced settings](../img/screenshots/settings-advanced.png)
+![Security](../img/screenshots/settings-security.png)
 
-Device security (admin token, network MIDI source policy), then the GMB identity
-and capabilities with its SysEx tester, then the live MIDI monitor and the
-integrated note tester.
+Who may change this device (the **admin token** — write routes answer 401 without
+it, and `POST /api/panic` never requires it), and who may play it over the
+network (the **UDP source policy**: accept any sender, lock to the first
+controller heard, or refuse network MIDI entirely). Both live on the device and
+are never part of an exported profile.
+
+### 5.4 Tools
+
+![Tools](../img/screenshots/settings-tools.png)
+
+The GMB identity and capabilities with its SysEx tester, the live MIDI monitor,
+and the integrated note tester. These are diagnostics, not configuration.
 
 The **integrated test tool** sends the two selection CC *values* a controller
 would put on the wire, and the firmware decodes them with the live selector

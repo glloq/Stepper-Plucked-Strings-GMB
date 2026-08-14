@@ -59,9 +59,12 @@
     ]));
 
     // ---- Advanced ------------------------------------------------------------
-    if (GMB.isAdvanced()) {
-      host.appendChild(h('div.card', [
-        h('h2', 'Advanced GMB options'),
+    // Which SysEx blocks the device answers, and the block-7 wire version. These
+    // matter when a controller does not understand the extended block; nothing
+    // here needs deciding on a normal build, so it folds away.
+    host.appendChild(GMB.details('sysex-advanced', 'Advanced GMB options',
+      function () {
+        return [
         h('div.form-grid', [
           GMB.field('Enable block 5 (descriptor)', GMB.input(adv, 'block5', { type: 'checkbox' })),
           GMB.field('Enable block 6 (capabilities)', GMB.input(adv, 'block6', { type: 'checkbox' })),
@@ -75,11 +78,13 @@
         h('div.cc-list', caps.supportedCc.map(function (c) { return h('span.pill.mini', 'CC' + c); })),
         h('div.toolbar', [
           GMB.button('View raw SysEx bytes', function () { runSysEx('capabilities'); }, 'ghost'),
-          GMB.button('Send change notification (block 8)', function () { runSysEx('notify'); }, 'ghost'),
-          GMB.button('Regenerate device id', function () { GMB.toast('Device id regenerated (mock).', 'ok'); }, 'ghost')
+          GMB.button('Send change notification (block 8)', function () { runSysEx('notify'); }, 'ghost')
         ])
-      ]));
-    }
+        ];
+      },
+      { hint: 'blocks ' + [adv.block5 ? '5' : null, adv.block6 ? '6' : null,
+                           adv.block7 ? '7' : null].filter(Boolean).join('/') +
+              ' · block 7 v' + adv.block7Version }));
 
     // ---- Integrated SysEx tester (section 18) -------------------------------
     var out = h('div#sysex-out.sysex-out', h('p.muted', 'Run a request to see the sent + received bytes and decoded fields.'));

@@ -117,11 +117,13 @@ function fail(where, what) {
 
   console.log('Settings modal');
   where = 'Settings (open)';
-  await page.evaluate(() => GMB.openSettings('network'));
-  await sleep(700);
-  await assertClean('Settings › Network');
+  await page.evaluate(() => GMB.openSettings('profiles'));
+  await sleep(900);
+  await assertClean('Settings › Profiles');
+  await settingsTab('Network', 'Settings › Network');
+  await settingsTab('Security', 'Settings › Security');
   await settingsTab('Diagnostics', 'Settings › Diagnostics');
-  await settingsTab('Advanced', 'Settings › Advanced');
+  await settingsTab('Tools', 'Settings › Tools');
   where = 'Settings (close)';
   await page.evaluate(() => GMB.closeSettings());
   await sleep(400);

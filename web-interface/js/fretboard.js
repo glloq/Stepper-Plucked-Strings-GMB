@@ -281,6 +281,98 @@
     return h('span.pill.warn', status.state || 'boot');
   }
 
+  // ---- operating dashboard --------------------------------------------------
+  //
+  // The state that decides whether the machine will do anything at all used to be
+  // one pill in a heading, with the faults behind the Settings modal. That is the
+  // wrong place for it: when the instrument will not play, "why" should be on the
+  // page you are already looking at. Four readings — phase, axes ready, notes
+  // sounding, transport — plus the faults themselves, in full.
+  function dashboard() {
+    if (!status) return h('div.dash', h('span.muted', 'Connecting to the device…'));
+    var ss = strings();
+    var total = ss.filter(function (s) { return s.enabled !== false; }).length;
+    var ready = 0, faults = [], playing = 0;
+    ss.forEach(function (s, i) {
+      if (s.enabled === false) return;
+      var st = stringStatus(i);
+      if (!st) return;
+      if (isFaulted(i)) {
+        faults.push({ i: i, why: st.lastFault && st.lastFault !== 'none' ? st.lastFault : 'faulted' });
+      } else if (st.home !== false) {
+        ready++;
+      }
+      if (st.note !== null && st.note !== undefined) playing++;
+    });
+    // Prefer the device's own count when it reports one — it knows about axes the
+    // profile draft has not caught up with.
+    if (typeof status.stringsReady === 'number') ready = status.stringsReady;
+    if (typeof status.notesPlaying === 'number') playing = status.notesPlaying;
+
+    var s = String(status.state || '').toLowerCase();
+    var phaseCls = (s === 'ready') ? 'ok'
+      : (s === 'readydegraded' || s === 'homing' || s === 'reconfiguring') ? 'warn' : 'error';
+
+    var tiles = [
+      tile('State', status.state || 'boot', phaseCls),
+      tile('Axes ready', ready + ' / ' + total, ready === total && total > 0 ? 'ok' : 'warn'),
+      tile('Notes sounding', String(playing), null),
+      tile('MIDI in', midiSourceLabel(status), status.midiSourcePolicy === 'disabled' ? 'warn' : null)
+    ];
+    var kids = [h('div.dash', tiles)];
+
+    // Faults get their own block, listed rather than counted: "2 faults" tells you
+    // nothing you can act on.
+    var devFaults = (status.faults || []).slice();
+    if (faults.length || devFaults.length) {
+      kids.push(h('div.dash-faults', [
+        h('div.card-head', [h('h3', 'Faults'),
+          h('span.muted', 'the instrument keeps playing on the axes that are still good')]),
+        h('ul.problem-list',
+          faults.map(function (f) {
+            return h('li', 'String ' + (f.i + 1) + ' — ' + f.why + ' (out of service until reset)');
+          }).concat(devFaults.map(function (f) {
+            return h('li', typeof f === 'string' ? f : (f.message || JSON.stringify(f)));
+          }))),
+        h('div.toolbar', [
+          GMB.button('Clear faults & re-home', function () {
+            GMB.api.resetSystem().then(function (r) {
+              GMB.toast(r && r.ok === false
+                ? ('Reset refused: ' + (r.error || 'E-stop still latched')) : 'Reset requested — homing.',
+                r && r.ok === false ? 'warn' : 'ok');
+            }).catch(function (e) { GMB.toast('Reset failed: ' + (e && e.message || e), 'error'); });
+          }, 'primary'),
+          GMB.button('Open diagnostics', function () { GMB.openSettings('diagnostics'); }, 'ghost')
+        ])
+      ]));
+    } else if (s === 'configsafe') {
+      // Boot-safe is not a fault, but it IS the reason nothing moves, and the
+      // answer is a different page.
+      kids.push(h('div.dash-faults', [
+        h('p.warn-text', 'No valid profile: the device booted config-safe and will not arm. ' +
+          'Build or load an instrument, then save & publish.'),
+        h('div.toolbar', [
+          GMB.button('Go to Setup', function () { GMB.navigate('wizard'); }, 'primary'),
+          GMB.button('Load a saved profile', function () { GMB.openSettings('profiles'); }, 'ghost')
+        ])
+      ]));
+    }
+    return kids;
+  }
+
+  function tile(label, value, cls) {
+    return h('div.dash-tile' + (cls ? '.' + cls : ''),
+      [h('span.dash-label', label), h('span.dash-value', String(value))]);
+  }
+
+  function midiSourceLabel(st) {
+    if (st.midiSourcePolicy === 'disabled') return 'off';
+    var src = st.midiSource || 'wifiUdp';
+    var name = { wifiUdp: 'Wi-Fi UDP', din: 'DIN', usb: 'USB' }[src] || src;
+    if (st.midiSourcePolicy === 'lockToFirst') name += st.midiSourceLocked ? ' · locked' : ' · unlocked';
+    return name;
+  }
+
   var CHORDS = [
     { name: 'C',  pcs: [0, 4, 7] },
     { name: 'G',  pcs: [7, 11, 2] },
@@ -392,6 +484,7 @@
     host.appendChild(h('div.card', [
       h('div.card-head', [h('h2', p.instrument.name || 'Instrument'),
         statePill()]),
+      h('div#fb-dash', dashboard()),
       h('p.muted', 'The live instrument: one lane per string, with each carriage drawn where ' +
         'it actually is. A hollow marker is where a carriage has been TOLD to go while it is ' +
         'still travelling. Fret spacing follows the real geometry — a calibrated fret sits ' +
@@ -420,6 +513,10 @@
       paint();
       var pill = host.querySelector('.card-head .pill');
       if (pill && pill.parentNode) pill.parentNode.replaceChild(statePill(), pill);
+      // The dashboard is the reason to look at this page when something is wrong,
+      // so it follows the live frame rather than the last full render.
+      var dash = document.getElementById('fb-dash');
+      if (dash) { dash.innerHTML = ''; GMB.appendChildren(dash, dashboard()); }
     });
     GMB.api.getStatus().then(function (s) { status = s; paint(); }).catch(function () {});
   }

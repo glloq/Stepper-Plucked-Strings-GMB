@@ -3,9 +3,13 @@
  *
  * Nine steps: Identification -> Board choice -> Automatic pin assignment ->
  * Mechanics per string -> Homing -> Servo calibration -> Note calibration ->
- * Test -> Validation. Honours the Simplified / Advanced toggle (9.2): advanced
- * mode exposes the detailed per-axis parameters, simplified mode keeps the
- * recommended defaults and hides fine tuning.
+ * Test -> Validation.
+ *
+ * Disclosure is LOCAL, not a global mode (9.2). Each step shows the few decisions
+ * you have to make and parks the fine tuning in a GMB.details block you open on
+ * the spot: a global Simplified/Advanced toggle makes the one field you need at
+ * the bench unreachable, and doubles every page into two variants to maintain.
+ * Safety-relevant fields (the LIMIT endstop) stay in plain sight regardless.
  */
 (function (global) {
   'use strict';
@@ -97,10 +101,20 @@
     }
     host.appendChild(h('div.card.wizard-card', [
       h('div.stepper', STEPS.map(function (label, i) {
-        return h('button.step' + (i === step ? '.active' : '') + (i < step ? '.done' : ''),
-          { onclick: function () { goto(i); } },
-          [h('span.step-num', String(i + 1)), h('span.step-label', label)]);
+        // Status is DERIVED from the profile, not from how far the user has
+        // clicked. A step you walked past without filling in is not done, and a
+        // step you fixed later should stop nagging without being revisited.
+        var st = stepStatus(i);
+        return h('button.step.st-' + st.state + (i === step ? '.active' : ''),
+          { onclick: function () { goto(i); }, title: st.why },
+          [h('span.step-num', st.state === 'tested' ? '✓✓'
+                            : (st.state === 'valid' ? '✓' : String(i + 1))),
+           h('span.step-label', label)]);
       })),
+      h('p.muted.stepper-legend',
+        'Steps show what the profile says, not where you have been: ' +
+        '✓ complete · ✓✓ complete and exercised on the machine · a number means ' +
+        'something is still missing (hover it).'),
       h('div#wizard-body.wizard-body'),
       h('div.wizard-nav', [
         GMB.button('Back', function () { goto(step - 1); }, 'ghost'),
@@ -119,6 +133,153 @@
     if (i < 0 || i >= STEPS.length) return;
     step = i;
     GMB.render();
+  }
+
+  // ---- per-step status ------------------------------------------------------
+  //
+  // Three states: `incomplete` (the profile is missing something this step owns),
+  // `valid` (nothing missing), `tested` (valid AND exercised against the machine
+  // in this session). Navigation stays free — you can always open any step — but
+  // a step that is not `valid` gates the DANGEROUS actions inside it, because
+  // homing an axis with no HOME pin or plucking with no striker is how mechanisms
+  // get broken.
+  //
+  // "Tested" is deliberately session-scoped and never saved: it means "I saw this
+  // work just now", and persisting it would let a stale claim outlive the wiring
+  // change that invalidated it.
+  var tested = {};
+  function markTested(stepIndex) {
+    if (tested[stepIndex]) return;
+    tested[stepIndex] = true;
+    GMB.render();
+  }
+
+  function enabledStrings() {
+    return (GMB.state.profile.strings || []).filter(function (s) { return s.enabled !== false; });
+  }
+
+  function stepStatus(i) {
+    var p = GMB.state.profile;
+    var missing = stepMissing(i, p);
+    if (missing) return { state: 'incomplete', why: missing };
+    return tested[i] ? { state: 'tested', why: 'Complete, and exercised on the machine this session.' }
+                     : { state: 'valid', why: 'Complete.' };
+  }
+
+  // What this step still needs, or null. One reason, the first one — a list of
+  // nine problems in a tooltip helps nobody.
+  function stepMissing(i, p) {
+    var strs = p.strings || [];
+    switch (i) {
+      case 0:
+        if (!p.instrument.name) return 'The instrument has no name.';
+        if (p.instrument.stringCount < 1 || p.instrument.stringCount > 6) return 'String count must be 1–6.';
+        if (strs.length !== p.instrument.stringCount) return 'The string array does not match the string count.';
+        return null;
+      case 1:
+        if (!p.board.profile) return 'No controller board chosen.';
+        if (!boardKnows(p.board.profile)) return 'This board is not one the firmware supports.';
+        return pinsFitBoard(p);
+      case 2:
+        return pinsAssigned(p);
+      case 3:
+        for (var m = 0; m < strs.length; m++) {
+          if (strs[m].enabled === false) continue;
+          if (!(strs[m].scaleLengthMm > 0)) return 'String ' + (m + 1) + ' has no scale length.';
+          if (!(stepsPerMm(strs[m]) > 0)) return 'String ' + (m + 1) + ' resolves to 0 steps/mm.';
+          if (!(strs[m].maxSpeedMmS > 0)) return 'String ' + (m + 1) + ' has no maximum speed.';
+        }
+        return null;
+      case 4:
+        for (var hgi = 0; hgi < strs.length; hgi++) {
+          if (strs[hgi].enabled === false) continue;
+          if (pinSignalGpio('HOME' + (hgi + 1)) < 0) return 'String ' + (hgi + 1) + ' has no HOME sensor pin.';
+        }
+        return null;
+      case 5:
+        for (var sv = 0; sv < strs.length; sv++) {
+          if (strs[sv].enabled === false) continue;
+          if (!strikerFor(p, sv)) return 'String ' + (sv + 1) + ' has no pluck or strum servo.';
+        }
+        return null;
+      case 6:
+        for (var n = 0; n < strs.length; n++) {
+          if (strs[n].enabled === false) continue;
+          if (!(strs[n].maxFret >= 0)) return 'String ' + (n + 1) + ' has no fret count.';
+        }
+        return null;
+      case 7:
+        // The Test step owns no configuration; it is complete once everything it
+        // can exercise is configured.
+        return stepMissing(4, p) || stepMissing(5, p);
+      case 8:
+        var problems = GMB.validateProfile(p);
+        return problems.length ? problems[0] : null;
+    }
+    return null;
+  }
+
+  function boardKnows(id) {
+    var all = GMB.BOARD_PROFILES || [];
+    if (!all.length) return true;            // no table loaded: do not cry wolf
+    for (var i = 0; i < all.length; i++) if (all[i].identifier === id) return true;
+    return false;
+  }
+
+  function pinsFitBoard(p) {
+    var all = GMB.BOARD_PROFILES || [];
+    var b = null;
+    for (var i = 0; i < all.length; i++) if (all[i].identifier === p.board.profile) b = all[i];
+    if (!b) return null;
+    var byGpio = {};
+    b.pins.forEach(function (c) { byGpio[c.gpio] = c; });
+    for (var k = 0; k < (p.pins || []).length; k++) {
+      var a = p.pins[k];
+      if (a.gpio < 0) continue;
+      var cap = byGpio[a.gpio];
+      if (!cap) return a.signal + ' uses GPIO' + a.gpio + ', which does not exist on this board.';
+      if (cap.reserved || cap.preference === 'reserved')
+        return a.signal + ' uses GPIO' + a.gpio + ', which is reserved on this board.';
+    }
+    return null;
+  }
+
+  function pinsAssigned(p) {
+    var seen = {};
+    for (var i = 0; i < (p.pins || []).length; i++) {
+      var a = p.pins[i];
+      if (a.gpio < 0) return a.signal + ' has no GPIO assigned.';
+      if (seen[a.gpio]) return 'GPIO' + a.gpio + ' is used by both ' + seen[a.gpio] + ' and ' + a.signal + '.';
+      seen[a.gpio] = a.signal;
+    }
+    var n = p.instrument.stringCount;
+    for (var s = 0; s < n; s++) {
+      if (p.strings[s] && p.strings[s].enabled === false) continue;
+      if (pinSignalGpio('STEP' + (s + 1)) < 0) return 'String ' + (s + 1) + ' has no STEP pin.';
+      if (pinSignalGpio('DIR' + (s + 1)) < 0) return 'String ' + (s + 1) + ' has no DIR pin.';
+    }
+    return null;
+  }
+
+  // The servo that actually strikes a string: the plectrum, or the per-string
+  // strum servo. Mirrors perStringStrikeIndex() in the firmware.
+  function strikerFor(p, stringIndex) {
+    return (p.servos || []).filter(function (sv) {
+      return sv.enabled && sv.stringIndex === stringIndex &&
+             (sv.function === 'pluck' || sv.function === 'strum');
+    })[0] || null;
+  }
+
+  // A button that refuses to move the machine while its prerequisites are unmet,
+  // and says why instead of failing at the device. This is not a substitute for
+  // the firmware's own refusal (which is the real guarantee) — it is so the
+  // operator is not invited to press it in the first place.
+  function guardedButton(label, reason, onClick, cls) {
+    if (!reason) return GMB.button(label, onClick, cls);
+    var b = GMB.button(label, function () { GMB.toast(reason, 'warn'); }, 'ghost');
+    b.classList.add('blocked');
+    b.title = reason;
+    return b;
   }
 
   function drawStep() {
@@ -375,9 +536,12 @@
       GMB.field('Max acceleration (mm/s²)', GMB.input(s, 'maxAccelMmS2', { type: 'number' }),
         'Motion is trapezoidal (FastAccelStepper) — this is the accel magnitude.')
     ];
-    var adv = [];
-    if (GMB.isAdvanced()) {
-      adv = [
+    // Transmission geometry and travel limits: set once per machine, then never
+    // touched again. Parked behind a disclosure so the six decisions above stay
+    // the visible ones, with the derived steps/mm in the header as the hint that
+    // tells you whether you need to look inside.
+    var geometry = GMB.details('mech-geometry-' + i, 'Transmission geometry & travel limits', function () {
+      return h('div.form-grid', [
         GMB.field('Steps / revolution', GMB.input(s, 'stepsPerRevolution', { type: 'number', onChange: function () { drawStep(); } })),
         GMB.field('Microsteps', GMB.input(s, 'microsteps', { type: 'number', onChange: function () { drawStep(); } })),
         s.transmission === 'screw'
@@ -387,20 +551,25 @@
             : [GMB.field('Pulley teeth', GMB.input(s, 'pulleyTeeth', { type: 'number', onChange: function () { drawStep(); } })),
                GMB.field('Belt pitch (mm)', GMB.input(s, 'beltPitchMm', { type: 'number', onChange: function () { drawStep(); } }))]),
         GMB.field('Min position (mm)', GMB.input(s, 'minPositionMm', { type: 'number', onChange: function () { drawStep(); } })),
-        GMB.field('Max position (mm)', GMB.input(s, 'maxPositionMm', { type: 'number' }))
-      ];
-    }
+        GMB.field('Max position (mm)', GMB.input(s, 'maxPositionMm', { type: 'number' }),
+          'Hard clamp on every move, including a jog.')
+      ]);
+    }, { hint: 'steps/mm = ' + spm.toFixed(2) });
+
     var mp = motorPos[i] !== undefined ? motorPos[i] : 0;
     body.appendChild(h('div.substring', [
-      h('div.substring-head', [h('strong', 'String ' + (i + 1)), h('span.pill.mini', GMB.noteName(s.openNote)),
-        h('span.muted', 'steps/mm = ' + spm.toFixed(2))]),
-      h('div.form-grid', basic.concat(adv)),
+      // steps/mm is not repeated here: it is the geometry block's hint, right
+      // where the numbers that produce it live.
+      h('div.substring-head', [h('strong', 'String ' + (i + 1)),
+        h('span.pill.mini', GMB.noteName(s.openNote))]),
+      h('div.form-grid', basic),
+      geometry,
       h('div.toolbar.wrap', [
         h('span.muted', 'Jog axis (check direction):'),
-        GMB.button('−5', function () { jogAxis(i, -5); }, 'ghost'),
-        GMB.button('−1', function () { jogAxis(i, -1); }, 'ghost'),
-        GMB.button('+1', function () { jogAxis(i, 1); }, 'ghost'),
-        GMB.button('+5', function () { jogAxis(i, 5); }, 'ghost'),
+        guardedButton('−5', jogBlockedReason(i), function () { jogAxis(i, -5); }, 'ghost'),
+        guardedButton('−1', jogBlockedReason(i), function () { jogAxis(i, -1); }, 'ghost'),
+        guardedButton('+1', jogBlockedReason(i), function () { jogAxis(i, 1); }, 'ghost'),
+        guardedButton('+5', jogBlockedReason(i), function () { jogAxis(i, 5); }, 'ghost'),
         h('span.motor-pos', { id: 'motor-pos-live' }, 'Motor: ' + mp.toFixed(2) + ' mm')
       ]),
       h('div.toolbar', [copyToAllBtn('Copy mechanics to all strings', copyMechToAll, s)])
@@ -412,6 +581,16 @@
   // The jog acts on the RUNNING instrument, so it is only meaningful once the
   // edited profile has been saved & activated (otherwise the draft axis index may
   // not match the active one). We gate on the dirty flag and poll the real outcome.
+  // A jog with no STEP/DIR pin cannot move anything, and with no HOME pin the
+  // axis has no reference — the firmware refuses both, but there is no reason to
+  // invite the press.
+  function jogBlockedReason(i) {
+    if (pinSignalGpio('STEP' + (i + 1)) < 0) return 'String ' + (i + 1) + ' has no STEP pin assigned.';
+    if (pinSignalGpio('DIR' + (i + 1)) < 0) return 'String ' + (i + 1) + ' has no DIR pin assigned.';
+    if (pinSignalGpio('HOME' + (i + 1)) < 0) return 'String ' + (i + 1) + ' has no HOME sensor — the axis has no reference to jog from.';
+    return null;
+  }
+
   function jogAxis(i, deltaMm) {
     if (GMB.state && GMB.state.dirty) {
       GMB.toast('Save & activate the profile first — jog moves the running instrument.', 'warn');
@@ -426,6 +605,7 @@
   }
   function jogToast(i, deltaMm) {
     GMB.toast('String ' + (i + 1) + ': jog ' + (deltaMm > 0 ? '+' : '') + deltaMm + ' mm.', 'ok');
+    markTested(3);   // the axis really moved: the Mechanics step is exercised
   }
   // Poll the queued jog for its real loop-side outcome so a refusal (axis busy /
   // faulted / a note playing / not homed) is surfaced instead of a false success.
@@ -535,43 +715,59 @@
         coerce: Number
       }), 'Which way the carriage moves to find HOME.'),
       GMB.field('Zero offset / rest position (mm)', GMB.input(hm, 'offsetMm', { type: 'number' }),
-        'Where the axis rests past the HOME sensor (the FDC position).')
+        'Where the axis rests past the HOME sensor (the FDC position).'),
+      // The LIMIT endstop stays in plain sight. It is the switch that stops a
+      // runaway carriage, so burying it behind a disclosure would be exactly the
+      // wrong thing to hide — the intro paragraph above urges fitting one.
+      GMB.field('LIMIT switch GPIO (optional)',
+        gpioSelect('limit', limitGpio, usedGpios({ exceptSignal: limitSignal }),
+          function (g) { setPinSignal(limitSignal, 'limit', g); drawStep(); }),
+        'End-of-travel safety switch — strongly recommended.'),
+      GMB.field('LIMIT active level', GMB.input(hm, 'limitActiveHigh', {
+        type: 'select', options: [{ value: false, label: 'Active low' }, { value: true, label: 'Active high' }],
+        coerce: function (v) { return v === 'true' || v === true; }
+      }))
     ];
-    if (GMB.isAdvanced()) {
-      fields = fields.concat([
-        GMB.field('Fast speed (mm/s)', GMB.input(hm, 'fastSpeedMmS', { type: 'number' })),
-        GMB.field('Slow speed (mm/s)', GMB.input(hm, 'slowSpeedMmS', { type: 'number' })),
+    // Seek tuning: the defaults work on a normal machine, and these only get
+    // touched when homing is unreliable or too slow.
+    var seek = GMB.details('homing-seek-' + i, 'Homing seek tuning', function () {
+      return h('div.form-grid', [
+        GMB.field('Fast speed (mm/s)', GMB.input(hm, 'fastSpeedMmS', { type: 'number' }),
+          'First approach, until HOME first triggers.'),
+        GMB.field('Slow speed (mm/s)', GMB.input(hm, 'slowSpeedMmS', { type: 'number' }),
+          'Second approach after the back-off — this one sets the accuracy.'),
         GMB.field('Backoff (mm)', GMB.input(hm, 'backoffMm', { type: 'number' })),
         GMB.field('Timeout (ms)', GMB.input(hm, 'timeoutMs', { type: 'number' })),
-        GMB.field('Max search (mm)', GMB.input(hm, 'maxSearchMm', { type: 'number' })),
-        GMB.field('LIMIT switch GPIO (optional)',
-          gpioSelect('limit', limitGpio, usedGpios({ exceptSignal: limitSignal }),
-            function (g) { setPinSignal(limitSignal, 'limit', g); drawStep(); }),
-          'Optional end-of-travel safety switch.'),
-        GMB.field('LIMIT active level', GMB.input(hm, 'limitActiveHigh', {
-          type: 'select', options: [{ value: false, label: 'Active low' }, { value: true, label: 'Active high' }],
-          coerce: function (v) { return v === 'true' || v === true; }
-        }))
+        GMB.field('Max search (mm)', GMB.input(hm, 'maxSearchMm', { type: 'number' }),
+          'How far to travel before giving up on a missed sensor.')
       ]);
-    }
+    }, { hint: hm.fastSpeedMmS + ' / ' + hm.slowSpeedMmS + ' mm/s, back-off ' + hm.backoffMm + ' mm' });
     var readout = h('div.endstop-readout', h('span.muted', 'Press “Test endstop” to read the live level.'));
     body.appendChild(h('div.substring', [
       h('div.substring-head', [h('strong', 'String ' + (i + 1) + ' homing'),
         h('span.pill.mini', GMB.noteName(s.openNote)),
         homeGpio < 0 ? h('span.pill.mini.error', 'no HOME pin') : h('span.pill.mini.ok', 'HOME GPIO' + homeGpio)]),
       h('div.form-grid', fields),
+      seek,
       h('div.toolbar.wrap', [
-        GMB.button('Test endstop', function () { testEndstop(i, s, readout); }, 'ghost'),
+        guardedButton('Test endstop',
+          pinSignalGpio('HOME' + (i + 1)) < 0 ? 'String ' + (i + 1) + ' has no HOME sensor pin to read.' : null,
+          function () { testEndstop(i, s, readout); }, 'ghost'),
         copyToAllBtn('Copy homing to all strings', copyHomingToAll, s)
       ]),
       readout
     ]));
-    body.appendChild(h('div.toolbar', [GMB.button('Home all axes now', function () {
+    // Homing drives every carriage at speed toward its endstop. Refuse to even
+    // offer it while an axis has no HOME sensor: the only thing that would stop
+    // that carriage is the search-distance timeout, at the end of its travel.
+    var homeBlocked = stepMissing(4, GMB.state.profile);
+    body.appendChild(h('div.toolbar', [guardedButton('Home all axes now', homeBlocked, function () {
       GMB.api.resetSystem().then(function (res) {
         if (res && res.ok === false) {
           GMB.toast('Homing refused: ' + (res.error || 'E-stop/LIMIT active or invalid config') + '.', 'warn');
         } else {
           GMB.toast('Homing started on all axes.', 'ok');
+          markTested(4);
         }
       }).catch(function (e) { testErr('Homing failed', e); });
     }, 'primary')]));
@@ -611,7 +807,15 @@
     body.appendChild(channelMap());
     body.appendChild(stringTabs());
     body.appendChild(stringServoSection(activeStr));
-    if (GMB.isAdvanced()) body.appendChild(sharedServoSection());
+    // Shared / auxiliary servos are rare (most instruments have none), so they
+    // fold away — but they are always reachable, which is the point of the whole
+    // disclosure scheme. Opened by default when the instrument actually has some.
+    var shared = (GMB.state.profile.servos || [])
+      .filter(function (sv) { return sv.stringIndex === -1; });
+    body.appendChild(GMB.details('servos-shared', 'Shared / auxiliary servos',
+      sharedServoSection,
+      { open: shared.length > 0,
+        hint: shared.length ? shared.length + ' configured' : 'none — a shared damper or auxiliary actuator' }));
   }
 
   // Compact PCA channel availability map; duplicates are flagged in red.
@@ -712,6 +916,7 @@
     }).then(function (res) {
       if (res && res.ok === false) { GMB.toast('Servo not driven: ' + (res.error || 'actuators not armed') + '.', 'warn'); return; }
       GMB.toast(res.message || ('Servo driven to ' + to + '.'), 'ok');
+      markTested(5);
     }).catch(function (e) { testErr('Servo test failed', e); });
   }
 
@@ -780,23 +985,32 @@
       fields.push(GMB.field('Min strike depth (µs, 0 = off)', GMB.input(sv, 'minStrikeUs', { type: 'number', min: 0 }),
         'Guaranteed depth toward the string so soft notes still catch it.'));
     }
-    if (GMB.isAdvanced()) {
-      fields = fields.concat([
+    // Timing and pulse envelope: set once when the servo is fitted. The key is
+    // the servo's identity, not its index, so adding or removing a servo does not
+    // reshuffle which blocks are open.
+    var key = 'servo-' + sv.stringIndex + '-' + sv.function + '-' +
+              (sv.source === 'gpio' ? 'g' + sv.gpio : 'p' + sv.pcaBoard + 'c' + sv.channel);
+    var tuning = GMB.details(key, 'Timing & pulse envelope', function () {
+      return h('div.form-grid', [
         GMB.field('Function', GMB.input(sv, 'function', {
           type: 'select', options: ['finger', 'pluck', 'strum', 'strumLift', 'damper', 'sharedDamper', 'aux'],
           onChange: function () { drawStep(); }
-        })),
+        }), 'What this servo does — changing it changes how the firmware drives it.'),
         GMB.field('Pulse min (µs)', GMB.input(sv, 'pulseMinUs', { type: 'number' })),
-        GMB.field('Pulse max (µs)', GMB.input(sv, 'pulseMaxUs', { type: 'number' })),
+        GMB.field('Pulse max (µs)', GMB.input(sv, 'pulseMaxUs', { type: 'number' }),
+          'Hard limits: rest/active are clamped to this window.'),
         GMB.field('Inverted', GMB.input(sv, 'inverted', { type: 'checkbox' })),
         GMB.field('Travel (ms)', GMB.input(sv, 'travelMs', { type: 'number' })),
         GMB.field('Settle (ms)', GMB.input(sv, 'settleMs', { type: 'number' })),
-        GMB.field('Disable at rest', GMB.input(sv, 'disableAtRest', { type: 'checkbox' }))
+        GMB.field('Disable at rest', GMB.input(sv, 'disableAtRest', { type: 'checkbox' }),
+          'Stop the pulse once at rest — the servo stops buzzing and drawing current.')
       ]);
-    }
+    }, { hint: sv.travelMs + ' ms travel · ' + sv.pulseMinUs + '–' + sv.pulseMaxUs + ' µs' });
+
     return h('div.servo-row', [
       head,
       h('div.form-grid', fields),
+      tuning,
       h('div.toolbar', [
         GMB.button('Test rest', function () { testServo(sv, 'rest'); }, 'ghost'),
         GMB.button('Test active', function () { testServo(sv, 'active'); }, 'ghost'),
@@ -810,10 +1024,22 @@
     ]);
   }
 
-  // ---- Step 7: Notes / fret position editor --------------------------------
+  // ---- Step 7: Notes / fret calibration -------------------------------------
+  //
+  // Calibration is a SEQUENCE, and the UI is now shaped like one. The old screen
+  // was a table of every fret with a move and a capture button on each row: on a
+  // 6×20 guitar that is 120 rows and 240 buttons, all equally prominent, with
+  // nothing showing where you were or whether the last capture was sane. One
+  // fret at a time, with theory / measured / Δ side by side, is both fewer
+  // decisions per moment and the only layout that makes a bad Δ obvious.
+  //
+  // The table is still there, folded away, because bulk editing and reviewing a
+  // finished calibration are real tasks that a one-at-a-time flow is bad at.
+  var calFret = {};        // per string: which fret the assistant is on
+
   function stepNotes(body) {
     body.appendChild(h('h3', 'Fret positions per string'));
-    body.appendChild(h('p.muted', 'Auto-fill the theoretical positions, then fine-tune any fret by hand. Move the axis to the real fret and use “Capture position” to record the live motor position. A calibrated value always overrides theory in the firmware.'));
+    body.appendChild(h('p.muted', 'Auto-fill the theoretical positions, then measure the frets that matter. A calibrated value always overrides theory in the firmware.'));
     body.appendChild(stringTabs());
     var i = activeStr, s = GMB.state.profile.strings[i];
     if (!s) return;
@@ -834,8 +1060,108 @@
         GMB.button('Clear calibration', function () { s.calibratedFretMm = []; GMB.markDirty(); drawStep(); }, 'ghost'),
         copyToAllBtn('Copy scale + calibration to all', copyFretsToAll, s)
       ]),
-      fretEditor(s, i)
+      calibrationAssistant(s, i),
+      GMB.details('fret-table-' + i, 'All frets (table)', function () { return fretEditor(s, i); },
+        { hint: calibratedCount(s) + ' of ' + (s.maxFret + 1) + ' measured' })
     ]));
+  }
+
+  function calibratedCount(s) {
+    var n = 0;
+    for (var f = 0; f <= s.maxFret; f++) {
+      var v = s.calibratedFretMm[f];
+      if (v !== undefined && v !== null) n++;
+    }
+    return n;
+  }
+
+  // One fret at a time: move → let it settle → capture → next.
+  function calibrationAssistant(s, i) {
+    var f = calFret[i];
+    if (f === undefined || f > s.maxFret) f = calFret[i] = 0;
+    var theo = GMB.fretTheoreticalMm(s, f);
+    var cal = s.calibratedFretMm[f];
+    var measured = (cal === undefined || cal === null) ? null : Number(cal);
+    var target = GMB.fretAbsoluteMm(s, f);
+    var live = motorPos[i];
+
+    // Δ against theory is the number that tells you whether the capture was sane.
+    // A few tenths is normal mechanical reality; several millimetres means the
+    // carriage was not where you thought, and catching that HERE is the whole
+    // point of showing it next to the value.
+    var delta = measured === null ? null : measured - theo;
+    var deltaPill;
+    if (delta === null) {
+      deltaPill = h('span.pill.mini', 'not measured');
+    } else {
+      var mag = Math.abs(delta);
+      var cls = mag > 3 ? 'error' : (mag > 1 ? 'warn' : 'ok');
+      deltaPill = h('span.pill.mini.' + cls,
+        'Δ ' + (delta >= 0 ? '+' : '') + delta.toFixed(2) + ' mm vs theory');
+    }
+
+    function step(d) {
+      var next = f + d;
+      if (next < 0 || next > s.maxFret) return;
+      calFret[i] = next;
+      drawStep();
+    }
+
+    var dots = [];
+    for (var k = 0; k <= s.maxFret; k++) {
+      (function (idx) {
+        var v = s.calibratedFretMm[idx];
+        var done = v !== undefined && v !== null;
+        dots.push(h('button.caldot' + (idx === f ? '.active' : '') + (done ? '.done' : ''),
+          { type: 'button', title: 'Fret ' + idx + (done ? ' — measured' : ' — not measured'),
+            onclick: function () { calFret[i] = idx; drawStep(); } },
+          String(idx)));
+      })(k);
+    }
+
+    return h('div.cal-assist', [
+      h('div.cal-head', [
+        h('div.cal-fret', [h('span.cal-fret-num', String(f)),
+          h('span.cal-fret-note', GMB.noteName(s.openNote + f))]),
+        h('div.cal-readouts', [
+          readout('Theory (nut)', theo.toFixed(2) + ' mm'),
+          readout('Target (from FDC)', target.toFixed(2) + ' mm'),
+          readout('Measured (nut)', measured === null ? '—' : measured.toFixed(2) + ' mm'),
+          readout('Live motor', live === undefined ? 'no signal' : Number(live).toFixed(2) + ' mm')
+        ]),
+        deltaPill
+      ]),
+      h('div.toolbar.wrap', [
+        GMB.button('Move to fret ' + f, function () { jogToFret(s, i, f); }, 'ghost'),
+        GMB.button('−0.5', function () { nudgeAxis(i, -0.5); }, 'ghost'),
+        GMB.button('+0.5', function () { nudgeAxis(i, 0.5); }, 'ghost'),
+        GMB.button('Capture position', function () { saveFret(s, i, f); }, 'primary'),
+        h('span.spacer'),
+        GMB.button('Use theory here', function () {
+          s.calibratedFretMm[f] = +theo.toFixed(2);
+          GMB.markDirty(); drawStep();
+        }, 'ghost')
+      ]),
+      h('div.toolbar.wrap', [
+        GMB.button('◀ Previous', function () { step(-1); }, 'ghost'),
+        GMB.button('Next fret ▶', function () { step(1); }, 'primary'),
+        h('span.spacer'),
+        h('span.muted', calibratedCount(s) + ' of ' + (s.maxFret + 1) + ' frets measured')
+      ]),
+      h('div.caldots', dots)
+    ]);
+  }
+
+  function readout(label, value) {
+    return h('div.cal-readout', [h('span.cal-label', label), h('span.cal-value', value)]);
+  }
+
+  // A fine nudge during calibration. Same endpoint as the Mechanics-step jog; it
+  // exists here so the operator never has to leave the fret they are measuring.
+  function nudgeAxis(i, mm) {
+    GMB.api.jog({ axis: i, deltaMm: mm }).then(function (res) {
+      if (res && res.ok === false) GMB.toast('Jog refused: ' + (res.error || 'axis not ready') + '.', 'warn');
+    }).catch(function (e) { testErr('Jog failed', e); });
   }
 
   // Live per-axis motor position from /ws/status, so “Capture position” records
@@ -928,6 +1254,7 @@
     s.calibratedFretMm[f] = +(abs - (s.fretOffsetMm || 0)).toFixed(2);
     GMB.markDirty();
     GMB.toast('Fret ' + f + ' captured at ' + abs.toFixed(2) + ' mm from FDC.', 'ok');
+    markTested(6);   // a real measurement landed in the profile
     drawStep();
   }
 
@@ -938,21 +1265,28 @@
     var p = GMB.state.profile;
     var testWrap = h('div.toolbar.wrap');
     p.strings.forEach(function (s, i) {
-      testWrap.appendChild(GMB.button('Test string ' + (i + 1), function () {
-        GMB.api.testNote({ channel: 0, note: s.openNote, velocity: 100, durationMs: 400 })
+      // Playing a note moves a carriage AND fires a striker. A string with no
+      // HOME reference or no striker cannot do that, so say so rather than let
+      // the operator hunt for why nothing happened.
+      var blocked = s.enabled === false ? 'String ' + (i + 1) + ' is disabled.'
+        : (pinSignalGpio('HOME' + (i + 1)) < 0 ? 'String ' + (i + 1) + ' has no HOME sensor pin.'
+          : (!strikerFor(p, i) ? 'String ' + (i + 1) + ' has no pluck or strum servo.' : null));
+      testWrap.appendChild(guardedButton('Test string ' + (i + 1), blocked, function () {
+        GMB.api.testNote({ channel: p.midi.globalChannel | 0, note: s.openNote,
+                           velocity: 100, durationMs: 400 })
           .then(function (res) {
             if (res && res.ok === false) { GMB.toast(res.error || 'Instrument not ready.', 'warn'); return; }
             GMB.toast('Tested string ' + (i + 1), 'ok');
+            markTested(7);
           }).catch(function (e) { testErr('Note test failed', e); });
       }, 'ghost'));
     });
-    testWrap.appendChild(GMB.button('Test chord (all open strings)', function () {
-      testChord(p);
-    }, 'ghost'));
+    testWrap.appendChild(guardedButton('Test chord (all open strings)',
+      stepMissing(7, p), function () { testChord(p); }, 'ghost'));
     testWrap.appendChild(GMB.button('STOP', GMB.doPanic, 'danger'));
     body.appendChild(testWrap);
     body.appendChild(h('p.muted', 'Full note/string/fret testing with a step trace lives on the MIDI page.'));
-    body.appendChild(GMB.button('Open MIDI test tool', function () { GMB.openSettings('advanced'); }, 'primary'));
+    body.appendChild(GMB.button('Open MIDI test tool', function () { GMB.openSettings('tools'); }, 'primary'));
   }
 
   // Strum every enabled string open. This used to be a bare toast claiming a
