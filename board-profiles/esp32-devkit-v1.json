@@ -402,8 +402,8 @@
       "strapping": false,
       "usb": false,
       "onboardPeripheral": false,
-      "preference": "reserved",
-      "note": "Input-only (ADC1) — cannot drive STEP/DIR/I2C//OE"
+      "preference": "caution",
+      "note": "Input-only (ADC1), no internal pull-up — read-only signals such as MIDI_RX; cannot drive an output, and needs an external pull-up"
     },
     {
       "gpio": 35,
@@ -419,8 +419,8 @@
       "strapping": false,
       "usb": false,
       "onboardPeripheral": false,
-      "preference": "reserved",
-      "note": "Input-only (ADC1) — cannot drive STEP/DIR/I2C//OE"
+      "preference": "caution",
+      "note": "Input-only (ADC1), no internal pull-up — read-only signals such as MIDI_RX; cannot drive an output, and needs an external pull-up"
     },
     {
       "gpio": 36,
@@ -436,8 +436,8 @@
       "strapping": false,
       "usb": false,
       "onboardPeripheral": false,
-      "preference": "reserved",
-      "note": "Input-only sensor VP (ADC1) — cannot output"
+      "preference": "caution",
+      "note": "Input-only sensor VP (ADC1), no internal pull-up — read-only signals such as MIDI_RX; cannot output"
     },
     {
       "gpio": 39,
@@ -453,8 +453,8 @@
       "strapping": false,
       "usb": false,
       "onboardPeripheral": false,
-      "preference": "reserved",
-      "note": "Input-only sensor VN (ADC1) — cannot output"
+      "preference": "caution",
+      "note": "Input-only sensor VN (ADC1), no internal pull-up — read-only signals such as MIDI_RX; cannot output"
     }
   ]
 }

@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 #include "../src/core/board/BoardProfile.h"
+#include "../src/core/board/FirmwareTarget.h"
 #include "../src/core/board/PinManager.h"
 
 using namespace gmb;
@@ -189,4 +190,80 @@ TEST(uart_rx_accepts_input_only_pins_but_refuses_strapping) {
 TEST(pin_manager_maps_midi_rx_to_uart_rx) {
     CHECK(signalKindFromName("MIDI_RX") == SignalKind::UartRx);
     CHECK(signalKindFromName("ESTOP") == SignalKind::SafetyInput);
+}
+
+// ---- firmware target vs profile board (audit: hardware identity) -------------
+//
+// The GMB_BOARD_* macros existed for three builds and were read by nothing, so the
+// only thing choosing a GPIO map was a field in a portable JSON file. These pin
+// down the family mapping itself, which is the part that must be total and right;
+// the compile-time half is exercised by the CI build matrix.
+
+TEST(board_family_of_every_shipped_identifier) {
+    // Both S3 DevKitC-1 revisions run the same binary — they differ only in which
+    // GPIO carries the RGB LED, which the board profile handles.
+    CHECK(boardFamilyOf("esp32-s3-devkitc-1") == BoardFamily::Esp32S3);
+    CHECK(boardFamilyOf("esp32-s3-devkitc-1-v1.1") == BoardFamily::Esp32S3);
+    // Same classic die on two breakouts.
+    CHECK(boardFamilyOf("esp32-wroom-32") == BoardFamily::Esp32Classic);
+    CHECK(boardFamilyOf("esp32-devkit-v1") == BoardFamily::Esp32Classic);
+    // Every built-in profile must be classifiable, or the guard silently passes
+    // for a board we do ship.
+    for (const BoardProfile* b : builtinBoardProfiles())
+        CHECK(boardFamilyOf(b->identifier) != BoardFamily::Unknown);
+    // ...and something we never shipped is Unknown, not guessed into a family.
+    CHECK(boardFamilyOf("esp32-c3-nonsense") == BoardFamily::Unknown);
+    CHECK(boardFamilyOf("") == BoardFamily::Unknown);
+}
+
+// The host build declares no target, so it must permit everything: this guard is
+// for catching a profile aimed at the wrong chip, not for breaking the Arduino IDE
+// path or the native tests.
+TEST(untargeted_build_enforces_nothing) {
+    CHECK(compiledBoardFamily() == BoardFamily::Unknown);
+    CHECK(!firmwareTargetKnown());
+    CHECK(boardMatchesFirmware("esp32-s3-devkitc-1"));
+    CHECK(boardMatchesFirmware("esp32-wroom-32"));
+    CHECK(boardMatchesFirmware("anything-at-all"));
+}
+
+// Input-only pins are CAUTION, not Reserved: "cannot drive an output" is not
+// "cannot be used". They must actually be OFFERED for the one signal they suit —
+// candidatesFor() skips Reserved entirely, so marking them Reserved meant MIDI_RX
+// could never be assigned to them even though supports() said yes.
+TEST(classic_esp32_input_only_pins_are_offered_for_midi_rx) {
+    for (const char* id : {"esp32-wroom-32", "esp32-devkit-v1"}) {
+        const BoardProfile* b = builtinBoardProfile(id);
+        CHECK(b != nullptr);
+        if (!b) continue;
+        bool offered34 = false;
+        for (const PinCapability* c : b->candidatesFor(SignalKind::UartRx))
+            if (c->gpio == 34) offered34 = true;
+        CHECK(offered34);
+        // ...and still offered for NOTHING that drives a level or needs a pull-up.
+        for (SignalKind k : {SignalKind::Step, SignalKind::Dir, SignalKind::Enable,
+                             SignalKind::ServoOe, SignalKind::I2cSda, SignalKind::I2cScl,
+                             SignalKind::Home, SignalKind::Limit,
+                             SignalKind::SafetyInput}) {
+            for (const PinCapability* c : b->candidatesFor(k))
+                CHECK(c->gpio != 34 && c->gpio != 35 && c->gpio != 36 && c->gpio != 39);
+        }
+    }
+}
+
+// HOME and LIMIT are sampled INPUT_PULLUP by StepperBank, so a pin with no internal
+// pull-up would float and the endstop would read as noise — a homing sensor that
+// never asserts, or asserts at random. The capability, not the preference, is what
+// must refuse it.
+TEST(endstops_require_an_internal_pull_up) {
+    const BoardProfile* w = builtinBoardProfile("esp32-wroom-32");
+    CHECK(w != nullptr);
+    if (!w) return;
+    for (int8_t g : {34, 35, 36, 39}) {
+        CHECK(!w->supports(g, SignalKind::Home));
+        CHECK(!w->supports(g, SignalKind::Limit));
+    }
+    CHECK(w->supports(13, SignalKind::Home));  // an ordinary GPIO still works
+    for (const PinCapability* c : w->candidatesFor(SignalKind::Home))
+        CHECK(c->internalPullUp);
 }

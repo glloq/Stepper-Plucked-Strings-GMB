@@ -3,6 +3,7 @@
 #include <cmath>
 #include <utility>
 
+#include "../board/FirmwareTarget.h"
 #include "../motion/StepperAxis.h"
 
 namespace gmb {
@@ -204,6 +205,25 @@ std::vector<ValidationIssue> ProfileValidator::validate(const Profile& p) {
             if (h.slowSpeedMmS > h.fastSpeedMmS)
                 err(t + ".homing.slowSpeed", "Homing slow speed is faster than the fast speed");
         }
+    }
+
+    // Does this profile's board match the chip this binary was built for?
+    //
+    // Checked BEFORE the pin validation below, because that validation is the very
+    // thing being misled: an S3 profile on a classic-ESP32 binary would otherwise be
+    // validated against the S3 pin table — GPIO40+ approved on a chip whose GPIOs
+    // stop at 39 — and then those pins would be configured on real hardware.
+    //
+    // An Error, so it also blocks save() and boot activation: a mismatched profile
+    // lands in CONFIG_SAFE, where the web UI is still up to fix it. Builds that
+    // declare no target (Arduino IDE, host tests) enforce nothing.
+    if (!boardMatchesFirmware(p.boardIdentifier)) {
+        err("board", "This firmware was built for " +
+                         std::string(boardFamilyName(compiledBoardFamily())) +
+                         ", but the profile declares '" + p.boardIdentifier +
+                         "' (" + boardFamilyName(boardFamilyOf(p.boardIdentifier)) +
+                         "). Flash the matching build, or pick a board of the right "
+                         "family.");
     }
 
     // Pin validation on the reference board.

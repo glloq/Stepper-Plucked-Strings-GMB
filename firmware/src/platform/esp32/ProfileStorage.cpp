@@ -132,8 +132,16 @@ const char* signalKindName(SignalKind k) {
         case SignalKind::I2cSda: return "i2cSda";
         case SignalKind::I2cScl: return "i2cScl";
         case SignalKind::ServoOe: return "servoOe";
-        default: return "generic";
+        // Added with the E-stop input and DIN MIDI. Without these two cases they fell
+        // through to "generic", so an export claimed `{"signal":"MIDI_RX","kind":
+        // "generic"}` — harmless to reload (the kind is re-derived from the signal
+        // NAME) but a false statement about the schema, and the JSON is what a human
+        // reads and what another tool would parse.
+        case SignalKind::SafetyInput: return "safetyInput";
+        case SignalKind::UartRx: return "uartRx";
+        case SignalKind::Generic: return "generic";
     }
+    return "generic";
 }
 
 const char* saturationName(SaturationStrategy s) {
@@ -828,38 +836,31 @@ bool ProfileStorage::load(int slot, Profile& out) const {
     return fromSlotJson(doc.as<JsonVariantConst>(), out);
 }
 
-bool ProfileStorage::save(int slot, const Profile& p) {
-    if (slot < 0 || slot >= kMaxProfiles) return false;
-    // Centralised gate: never persist a semantically invalid profile — it could
-    // be chosen as the startup slot and would then be rejected at boot (§21.1).
-    if (!ProfileValidator::isActivatable(p)) return false;
-    // Write to a temp file first, and only replace the existing slot once the
-    // temp file is fully written — so a failure never destroys the old profile.
-    std::string finalPath = slotPath(slot);
+bool ProfileStorage::writeJsonAtomic(const std::string& finalPath, const JsonDocument& doc,
+                                     bool (*verify)(JsonVariantConst)) {
+    // Write to a temp file first, and only replace the existing file once the temp
+    // file is fully written — so a failure never destroys what is already stored.
     std::string tmp = finalPath + ".tmp";
     File f = LittleFS.open(tmp.c_str(), "w");
     if (!f) return false;
-    JsonDocument doc;
-    toSlotJson(p, doc);  // split device/instrument on-disk form (P1.13)
     size_t written = serializeJson(doc, f);
     f.close();
-    if (written == 0) {  // write failed: keep the old slot intact
+    if (written == 0) {  // write failed: keep the old file intact
         LittleFS.remove(tmp.c_str());
         return false;
     }
-    // Read the temp file back and confirm it deserialises to a valid profile
-    // BEFORE replacing the existing slot (guards against a truncated write).
+    // Read the temp file back and confirm it deserialises BEFORE replacing the
+    // existing file (guards against a truncated write).
     {
         File rf = LittleFS.open(tmp.c_str(), "r");
         if (!rf) { LittleFS.remove(tmp.c_str()); return false; }
         JsonDocument vd;
-        Profile check;
         bool ok = deserializeJson(vd, rf) == DeserializationError::Ok &&
-                  fromSlotJson(vd.as<JsonVariantConst>(), check);
+                  verify(vd.as<JsonVariantConst>());
         rf.close();
         if (!ok) { LittleFS.remove(tmp.c_str()); return false; }
     }
-    // Keep a backup of the existing slot so a failed rename never loses data.
+    // Keep a backup of the existing file so a failed rename never loses data.
     std::string bak = finalPath + ".bak";
     LittleFS.remove(bak.c_str());
     bool hadOld = LittleFS.exists(finalPath.c_str());
@@ -868,10 +869,88 @@ bool ProfileStorage::save(int slot, const Profile& p) {
         LittleFS.remove(bak.c_str());  // success: drop the backup
         return true;
     }
-    // Rename failed: restore the previous profile from the backup.
+    // Rename failed: restore the previous file from the backup.
     if (hadOld) LittleFS.rename(bak.c_str(), finalPath.c_str());
     LittleFS.remove(tmp.c_str());
     return false;
+}
+
+namespace {
+bool verifySlotDoc(JsonVariantConst v) {
+    Profile check;
+    return ProfileStorage::fromSlotJson(v, check);
+}
+// A device file carries no instrument half, so it cannot be verified by parsing it
+// into a Profile. Verifying the section is present is what this level can prove;
+// the field values were validated before the write.
+bool verifyDeviceDoc(JsonVariantConst v) { return v["device"].is<JsonObjectConst>(); }
+}  // namespace
+
+bool ProfileStorage::save(int slot, const Profile& p) {
+    if (slot < 0 || slot >= kMaxProfiles) return false;
+    // Centralised gate: never persist a semantically invalid profile — it could
+    // be chosen as the startup slot and would then be rejected at boot (§21.1).
+    if (!ProfileValidator::isActivatable(p)) return false;
+    JsonDocument doc;
+    toSlotJson(p, doc);  // split device/instrument on-disk form (P1.13)
+    return writeJsonAtomic(slotPath(slot), doc, verifySlotDoc);
+}
+
+// ---- the machine's own config, and what is actually running -------------------
+
+bool ProfileStorage::saveDevice(const Profile& p) {
+    // Only the device section. Deliberately NOT gated on isActivatable(): that check
+    // is about a playable instrument, and the device half has no strings to judge.
+    JsonDocument slot;
+    toSlotJson(p, slot);
+    JsonDocument doc;
+    doc["storageFormat"] = kSlotFormat;
+    doc["profileVersion"] = slot["profileVersion"];
+    doc["device"] = slot["device"];
+    return writeJsonAtomic("/device.json", doc, verifyDeviceDoc);
+}
+
+bool ProfileStorage::hasDevice() const { return LittleFS.exists("/device.json"); }
+
+bool ProfileStorage::loadDevice(Profile& inout) const {
+    File f = LittleFS.open("/device.json", "r");
+    if (!f) return false;
+    JsonDocument doc;
+    bool parsed = deserializeJson(doc, f) == DeserializationError::Ok;
+    f.close();
+    if (!parsed || !doc["device"].is<JsonObjectConst>()) return false;
+    // Re-flatten THIS device's section over the caller's instrument half and hand the
+    // whole thing to the one field parser, so device fields have exactly one decoder.
+    JsonObjectConst dev = doc["device"];
+    JsonDocument flat;
+    toJson(inout, flat);
+    flat["board"] = dev["board"];
+    flat["pins"] = dev["pins"];
+    flat["hardware"] = dev["hardware"];
+    flat["network"] = dev["network"];
+    Profile merged;
+    if (!fromJson(flat.as<JsonVariantConst>(), merged)) return false;
+    inout = merged;
+    return true;
+}
+
+bool ProfileStorage::saveCurrent(const Profile& p) {
+    if (!ProfileValidator::isActivatable(p)) return false;
+    JsonDocument doc;
+    toSlotJson(p, doc);
+    return writeJsonAtomic("/current.json", doc, verifySlotDoc);
+}
+
+bool ProfileStorage::hasCurrent() const { return LittleFS.exists("/current.json"); }
+
+bool ProfileStorage::loadCurrent(Profile& out) const {
+    File f = LittleFS.open("/current.json", "r");
+    if (!f) return false;
+    JsonDocument doc;
+    bool parsed = deserializeJson(doc, f) == DeserializationError::Ok;
+    f.close();
+    if (!parsed) return false;
+    return fromSlotJson(doc.as<JsonVariantConst>(), out);
 }
 
 bool ProfileStorage::remove(int slot) {
@@ -904,6 +983,12 @@ std::vector<std::string> ProfileStorage::list() const { return {}; }
 bool ProfileStorage::load(int, Profile&) const { return false; }
 bool ProfileStorage::save(int, const Profile&) { return false; }
 bool ProfileStorage::remove(int) { return false; }
+bool ProfileStorage::saveDevice(const Profile&) { return false; }
+bool ProfileStorage::loadDevice(Profile&) const { return false; }
+bool ProfileStorage::hasDevice() const { return false; }
+bool ProfileStorage::saveCurrent(const Profile&) { return false; }
+bool ProfileStorage::loadCurrent(Profile&) const { return false; }
+bool ProfileStorage::hasCurrent() const { return false; }
 int ProfileStorage::startupSlot() const { return 0; }
 void ProfileStorage::setStartupSlot(int) {}
 #endif

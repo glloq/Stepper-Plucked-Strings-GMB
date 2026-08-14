@@ -481,22 +481,24 @@
     var rx = -1;
     (p.pins || []).forEach(function (a) { if (a.signal === 'MIDI_RX') rx = a.gpio; });
     return [
-      { name: 'wifiUdp', label: 'Wi-Fi (UDP)', bound: true, detail: 'UDP port 5006', events: 0 },
+      { name: 'wifiUdp', label: 'Wi-Fi (UDP)', bound: true, detail: 'UDP port 5006',
+        events: 0, lastEventMs: 0 },
       { name: 'usb', label: 'USB-MIDI', bound: false,
-        detail: 'not built in (see the esp32-s3-usbmidi env)', events: 0 },
+        detail: 'not built in (see the esp32-s3-usbmidi env)', events: 0, lastEventMs: 0 },
       { name: 'din', label: 'DIN-5 / TRS', bound: rx >= 0,
         detail: rx >= 0 ? ('GPIO' + rx + ', UART2, 31250 baud') : 'no MIDI_RX pin assigned',
-        events: 0 }
+        events: 0, lastEventMs: 0 }
     ];
   }
-  // Same rule as the firmware: most messages wins, ties go to the first bound one.
+  // Same rule as the firmware: the transport that most recently delivered a message,
+  // and "none" until something actually arrives. The mock receives no MIDI, so it
+  // reports none rather than inventing an active source.
   function mockActiveTransport(p) {
-    var best = null;
+    var last = null;
     mockTransports(p).forEach(function (t) {
-      if (!t.bound) return;
-      if (!best || t.events > best.events) best = t;
+      if (t.lastEventMs && (!last || t.lastEventMs > last.lastEventMs)) last = t;
     });
-    return best ? best.name : 'none';
+    return last ? last.name : 'none';
   }
 
   function sampleStatus() {
@@ -512,6 +514,7 @@
       // teaches the wrong thing about the option it just offered.
       midiTransports: mockTransports(p),
       midiSource: mockActiveTransport(p),
+      lastMidiEventAtMs: 0,
       // UDP source posture (P1.11) so the Settings panel shows the live state.
       midiSourcePolicy: MOCK.midiSourcePolicy,
       midiSourceLocked: MOCK.midiSourceLocked,
