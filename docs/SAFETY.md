@@ -97,10 +97,30 @@ interface triggers a new homing before playback resumes.
 
 ### Hardware emergency stop and limit switches
 
-* **Hardware E-stop**: if an `ESTOP` pin is assigned (active low), `loop()`
-  reads it on every pass and immediately triggers a panic (drivers cut off,
-  servos neutralized). Without an assigned `ESTOP` pin, only the software panic
-  (Web STOP button / CC120/CC123) is available.
+* **Hardware E-stop**: if an `ESTOP` pin is assigned, `loop()` reads it on every
+  pass and immediately triggers a panic (drivers cut off, servos neutralized).
+  Without an assigned `ESTOP` pin, only the software panic (Web STOP button /
+  CC120/CC123) is available.
+
+  Two wirings are supported, declared per profile by `estopNormallyClosed`:
+
+  | Wiring | Healthy | Asserted |
+  | ------ | ------- | -------- |
+  | normally **open** (a plain button to GND) | HIGH (pull-up) | LOW |
+  | normally **closed** (recommended, `hardware/POWER_AND_SAFETY.md`) | LOW (closed loop to GND) | HIGH — pressed, cut wire, or unplugged connector |
+
+  The normally-closed chain is the one to build: losing the chain reads as
+  *asserted*, so a broken wire fails safe instead of silently disarming the
+  E-stop.
+
+  **Every** read normalises through `estopAssertedFor()`
+  (`core/safety/EstopPolarity.h`) — the boot check, `beginHoming()`, `doReset()`
+  and the continuous supervision. That is not decoration: two of those call sites
+  used to carry their own `digitalRead(pin) == LOW` test, which is inverted on a
+  closed loop. A healthy E-stop looked pressed (so the instrument could never
+  home) while a genuinely pressed one went undetected at pre-arm. The predicate
+  is a pure constexpr in the core precisely so the truth table can be, and is,
+  unit-tested.
 * **`LIMIT` switches**: an active `LIMIT` during a movement causes an
   **immediate stop** of the axis concerned (not a deceleration), invalidates its
   position (re-homing required) and puts it into a fault state, without

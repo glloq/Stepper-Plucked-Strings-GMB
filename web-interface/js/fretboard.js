@@ -368,7 +368,14 @@
   function midiSourceLabel(st) {
     if (st.midiSourcePolicy === 'disabled') return 'off';
     var src = st.midiSource || 'wifiUdp';
+    if (src === 'none') return 'no input';
     var name = { wifiUdp: 'Wi-Fi UDP', din: 'DIN', usb: 'USB' }[src] || src;
+    // Name the second live input too, so a DIN cable plugged in beside the Wi-Fi
+    // link is visible from the dashboard rather than only in Settings.
+    var others = (st.midiTransports || []).filter(function (t) {
+      return t.bound && t.name !== src;
+    });
+    if (others.length) name += ' +' + others.length;
     if (st.midiSourcePolicy === 'lockToFirst') name += st.midiSourceLocked ? ' · locked' : ' · unlocked';
     return name;
   }

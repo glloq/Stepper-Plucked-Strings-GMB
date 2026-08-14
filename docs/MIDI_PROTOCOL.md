@@ -38,8 +38,82 @@ struct MidiEvent {
 };
 ```
 
-Possible future extensions without modifying the core: BLE MIDI, USB MIDI, MIDI DIN,
-serial link, CAN/RS485. GPIO19/GPIO20 remain reserved for native USB.
+Possible future extensions without modifying the core: BLE MIDI, serial link,
+CAN/RS485. GPIO19/GPIO20 remain reserved for native USB.
+
+### 1.1 Physical inputs
+
+Every transport feeds the **same** `InstrumentController`; `MidiEvent.source`
+keeps them apart. Two are built:
+
+| Transport | Class | State | Bound when |
+| --------- | ----- | ----- | ---------- |
+| Wi-Fi UDP | `MidiWifi` | working, validated | always (UDP port 5006), subject to the source policy below |
+| DIN-5 / TRS | `MidiDinTransport` | working, validated | a `MIDI_RX` GPIO is assigned |
+| Native USB | `MidiUsbTransport` | built, **not hardware-validated** | the `esp32-s3-usbmidi` image is flashed *and* a host has enumerated it |
+
+DIN MIDI needs no special stack: it is 31250-baud serial. `bindDinMidi()`
+(`main.cpp`) opens **UART2** — UART0 is the programming/diagnostic console, and
+binding MIDI there would eat the boot log — as **RX only**, so no TX pin is
+claimed from the user. It is re-bound after every profile activation, because the
+`MIDI_RX` pin can move with a new configuration.
+
+The pin comes from the `MIDI_RX` signal in the GPIO editor
+(**Wiring & GPIO → GPIO pins**, `SignalKind::UartRx`). Its rule is deliberately
+wider than the E-stop's: any readable, non-strapping pin will do, including the
+classic ESP32's input-only 34/35/36/39. A powered MIDI sender can hold the line
+either way through a reset, which is exactly what a strapping pin must not see.
+
+With no `MIDI_RX` pin the transport stays inert rather than half-configured, and
+`GET /api/status` says so:
+
+```json
+"midiSource": "wifiUdp",
+"midiTransports": [
+  { "name": "wifiUdp", "label": "Wi-Fi (UDP)", "bound": true,  "detail": "UDP port 5006",         "events": 412 },
+  { "name": "usb",     "label": "USB-MIDI",    "bound": false, "detail": "not implemented in this build", "events": 0 },
+  { "name": "din",     "label": "DIN-5 / TRS", "bound": true,  "detail": "GPIO16, UART2, 31250 baud",     "events": 37 }
+]
+```
+
+`midiSource` names the bound transport that has decoded the most messages since
+boot (`"none"` if none is bound), so "which input is actually driving this
+instrument?" has a measured answer. It used to be the constant `"wifiUdp"`, which
+was wrong the moment a second transport existed.
+
+The **source policy** (`POST /api/midi/source`, Settings → Security) governs the
+Wi-Fi transport only. A physical cable is trusted by being plugged in — there is
+no sender identity on a DIN line to lock to.
+
+Hardware wiring for the optocoupled DIN/TRS input is in
+[`hardware/POWER_AND_SAFETY.md`](../hardware/POWER_AND_SAFETY.md) §4.1 — the
+isolation there is mandatory, not a refinement.
+
+### 1.2 Native USB-MIDI — opt-in, and why
+
+`Adafruit_USBD_MIDI` is a `Stream`: it de-packetises the 4-byte USB-MIDI packets
+into a plain MIDI byte stream, so the transport is the same three lines as the
+DIN one. The cost is not the code, it is the peripheral.
+
+The ESP32-S3 has **one** USB peripheral and two mutually exclusive Arduino modes:
+
+| | `ARDUINO_USB_MODE=1` (default env) | `ARDUINO_USB_MODE=0` (`esp32-s3-usbmidi`) |
+| --- | --- | --- |
+| USB stack | hardware USB-CDC / JTAG | TinyUSB |
+| USB-MIDI | impossible | available |
+| Serial console | always there, even if the firmware hangs | emulated CDC — absent while enumerating or wedged |
+| Reflash | plain `esptool` | manual BOOT-button entry when it goes wrong |
+
+Losing a console that survives a hang is a real cost during bring-up, so the
+default S3 image keeps the hardware CDC and `esp32-s3-usbmidi` is a separate env.
+Both are built in CI, so the TinyUSB path cannot rot unnoticed.
+
+**Not hardware-validated.** It compiles; nobody has enumerated it against a host,
+and the Adafruit TinyUSB tracker carries known S3-specific enumeration quirks.
+Treat the first flash as a bench experiment — confirm the device appears as a
+MIDI port *and* that the console still reaches you — before relying on it. Wi-Fi
+UDP and DIN are the validated inputs. The classic ESP32 has no native USB at all;
+there is nothing to enable there.
 
 ---
 
@@ -553,15 +627,20 @@ Unknown SysEx messages are ignored without affecting musical operation.
 ### 3.11 Transport independence (§21)
 
 ```text
-Wi-Fi MIDI ─┐
-BLE MIDI ───┤
+Wi-Fi MIDI ─┐  (built)
+MIDI DIN ───┤  (built)
 USB MIDI ───┼──► MidiMessageRouter ─► GmbSysExService
-MIDI DIN ───┤
-serial ─────┘
+BLE MIDI ───┤  (future)
+serial ─────┘  (future)
 ```
 
 Future Bluetooth/wired versions reuse exactly the same blocks, encoder, decoder,
-snapshot and tests. The first version uses Wi-Fi.
+snapshot and tests.
+
+One asymmetry today: a SysEx **reply** is addressed to its sender's IP, so
+request/response still runs on the concrete UDP transport. Notes and CCs arrive
+on any transport; a DIN cable can play the instrument but cannot yet interrogate
+its capabilities. Each transport will get its own reply path as it lands.
 
 ### 3.12 Initial compatibility (§22)
 

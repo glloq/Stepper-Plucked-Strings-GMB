@@ -24,27 +24,36 @@ void StringFretSelector::applyGmbPreset() {
     cfg_.fret.offset = 0;
 }
 
-int StringFretSelector::mapStringValue(uint8_t rawValue) const {
-    // Apply the offset FIRST, then validate the LOGICAL value against the allowed
-    // range (STRING_FRET_SELECTION.md: "logical = CC + offset, then validated").
-    // Validating the raw value instead shifts the accepted band away from
-    // [min,max] as soon as the offset is non-zero, so a configuration with an
-    // offset silently accepts the wrong CC values and rejects the right ones.
+// Offset + one-based bias only: the value the range check then judges. Kept
+// separate so the Clamp policy can bring an out-of-range index back in and run
+// the SAME order/mapping rules on it, rather than reimplementing them.
+int StringFretSelector::logicalStringIndex(uint8_t rawValue) const {
     int logical = static_cast<int>(rawValue) + cfg_.string.offset;
-    if (logical < cfg_.string.minimum || logical > cfg_.string.maximum) return -1;
+    if (cfg_.string.numbering == StringNumbering::OneBased) logical -= 1;
+    return logical;
+}
 
-    int index = logical;
-    if (cfg_.string.numbering == StringNumbering::OneBased) index -= 1;
+// Range check, order reversal and the custom mapping table.
+int StringFretSelector::physicalAxisFor(int index) const {
     if (index < 0 || index >= instrument_.stringCount) return -1;
-
     if (cfg_.string.reverseOrder) index = (instrument_.stringCount - 1) - index;
-
     if (!cfg_.string.mapping.empty()) {
         if (index >= static_cast<int>(cfg_.string.mapping.size())) return -1;
         index = cfg_.string.mapping[index];
     }
     if (index < 0 || index >= instrument_.stringCount) return -1;
     return index;
+}
+
+int StringFretSelector::mapStringValue(uint8_t rawValue) const {
+    // Apply the offset FIRST, then validate the LOGICAL value against the allowed
+    // range (STRING_FRET_SELECTION.md: "logical = CC + offset, then validated").
+    // Validating the raw value instead shifts the accepted band away from
+    // [min,max] as soon as the offset is non-zero, so a configuration with an
+    // offset silently accepts the wrong CC values and rejects the right ones.
+    const int logical = static_cast<int>(rawValue) + cfg_.string.offset;
+    if (logical < cfg_.string.minimum || logical > cfg_.string.maximum) return -1;
+    return physicalAxisFor(logicalStringIndex(rawValue));
 }
 
 int StringFretSelector::mapFretValue(uint8_t rawValue) const {
@@ -71,10 +80,13 @@ bool StringFretSelector::onControlChange(const MidiEvent& e) {
             // here, so it is not left orphaned for a LATER, unrelated string CC to
             // mis-pair with; the note is then resolved by the invalid-value policy
             // at Note On.
+            const int16_t logical =
+                static_cast<int16_t>(logicalStringIndex(e.data2));
             for (auto& s : pending_) {
                 if (s.midiChannel == key && s.hasFret && !s.hasString) {
                     s.hasString = true;
                     s.invalid = true;
+                    s.logicalString = logical;   // Clamp needs the rejected value
                     s.expiresAtUs = e.timestampUs + timeoutUs;
                     return true;
                 }
@@ -84,6 +96,7 @@ bool StringFretSelector::onControlChange(const MidiEvent& e) {
             s.midiChannel = key;
             s.hasString = true;
             s.invalid = true;
+            s.logicalString = logical;
             s.receivedAtUs = e.timestampUs;
             s.expiresAtUs = e.timestampUs + timeoutUs;
             pending_.push_back(s);
@@ -117,10 +130,13 @@ bool StringFretSelector::onControlChange(const MidiEvent& e) {
         if (fret < 0) {
             // Invalid fret value: mirror the string branch — fill the fret slot as
             // INVALID, binding a string already waiting for its fret.
+            const int16_t logical =
+                static_cast<int16_t>(static_cast<int>(e.data2) + cfg_.fret.offset);
             for (auto& s : pending_) {
                 if (s.midiChannel == key && s.hasString && !s.hasFret) {
                     s.hasFret = true;
                     s.invalid = true;
+                    s.logicalFret = logical;     // Clamp needs the rejected value
                     s.expiresAtUs = e.timestampUs + timeoutUs;
                     return true;
                 }
@@ -130,6 +146,7 @@ bool StringFretSelector::onControlChange(const MidiEvent& e) {
             s.midiChannel = key;
             s.hasFret = true;
             s.invalid = true;
+            s.logicalFret = logical;
             s.receivedAtUs = e.timestampUs;
             s.expiresAtUs = e.timestampUs + timeoutUs;
             pending_.push_back(s);
@@ -309,8 +326,28 @@ NoteResolution StringFretSelector::onNoteOn(const MidiEvent& e, uint32_t nowUs) 
             case InvalidValuePolicy::AutomaticFallback:
                 return automaticResolution();
             case InvalidValuePolicy::Clamp: {
+                // Clamp the value that was actually REQUESTED. stringValue /
+                // fretValue only hold the value of a CC that passed validation —
+                // for a rejected one they are still 0, so clamping them turned
+                // "fret 127, bring it into range" into "fret 0": the far end of
+                // the fretboard, on a carriage that then really travels there.
+                // The logical values recorded at CC time are what to clamp.
+                if (sel.logicalString != PendingStringSelection::kNoValue) {
+                    int idxLogical = sel.logicalString;
+                    if (idxLogical < 0) idxLogical = 0;
+                    if (idxLogical >= instrument_.stringCount)
+                        idxLogical = instrument_.stringCount - 1;
+                    // Back through the SAME order/mapping rules a valid value takes.
+                    int axis = physicalAxisFor(idxLogical);
+                    if (axis >= 0) stringIndex = static_cast<uint8_t>(axis);
+                }
                 if (stringIndex >= instrument_.stringCount)
                     stringIndex = instrument_.stringCount - 1;
+                if (sel.logicalFret != PendingStringSelection::kNoValue) {
+                    int fretLogical = sel.logicalFret;
+                    if (fretLogical < 0) fretLogical = 0;
+                    fret = static_cast<uint8_t>(fretLogical > 127 ? 127 : fretLogical);
+                }
                 uint8_t mf = instrument_.maxFret(stringIndex);
                 if (fret > mf) fret = mf;
                 break;

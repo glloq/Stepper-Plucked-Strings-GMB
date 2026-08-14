@@ -117,6 +117,13 @@
     specs.push({ signal: 'SCL', kind: 'scl', label: 'I2C SCL' });
     specs.push({ signal: 'ENABLE', kind: 'enable', label: 'Global ENABLE' });
     specs.push({ signal: 'SERVO_OE', kind: 'servoOe', label: 'PCA9685 /OE (safety)' });
+    // Optional device-level inputs. Both were missing from this list, so neither
+    // could be assigned from the interface at all: Wiring told the user to "assign
+    // ESTOP in the GPIO sub-tab" and the sub-tab did not offer it, and the DIN MIDI
+    // transport had no way to ever be given a pin. They stay `— unassigned —` by
+    // default because both are genuinely optional hardware.
+    specs.push({ signal: 'ESTOP', kind: 'safetyInput', label: 'Hardware E-stop input' });
+    specs.push({ signal: 'MIDI_RX', kind: 'uartRx', label: 'DIN/TRS MIDI in (RX)' });
     return specs;
   }
 
@@ -159,6 +166,11 @@
     });
   }
 
+  // The capability class shown beside each signal. Most kinds read fine upper-cased;
+  // the compound ones do not ("SAFETYINPUT", "UARTRX"), so they get a real name.
+  var KIND_TAG = { servoOe: 'PWM OUT', safetyInput: 'SAFE IN', uartRx: 'UART RX' };
+  function kindTag(kind) { return KIND_TAG[kind] || kind.toUpperCase(); }
+
   function drawSignals() {
     var list = document.getElementById('signal-list');
     list.innerHTML = '';
@@ -187,7 +199,7 @@
       });
       list.appendChild(h('div.signal-row', [
         h('span.signal-name', spec.label),
-        h('span.signal-kind', spec.kind.toUpperCase()),
+        h('span.signal-kind', kindTag(spec.kind)),
         sel
       ]));
     });
@@ -196,6 +208,9 @@
   function autoAssign() {
     var p = GMB.state.profile;
     GMB.api.autoPins({
+      // `board` is not optional: without it the firmware falls back to its default
+      // profile and hands out pins for a board you are not using.
+      board: p.board.profile,
       stringCount: p.instrument.stringCount, useI2cServos: true,
       globalEnable: true, servoSafetyOe: true, reserveUsb: p.board.reserveUsb
     }).then(function (res) {
@@ -204,7 +219,7 @@
       } else {
         GMB.toast('Pins assigned automatically.', 'ok');
       }
-      p.pins = res.pins;
+      p.pins = GMB.mergeAutoPins(p.pins, res.pins);
       GMB.markDirty();
       drawGrid(); drawSignals(); validate();
     });

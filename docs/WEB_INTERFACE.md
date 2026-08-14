@@ -84,7 +84,7 @@ the axis is homed, idle and un-faulted.
 
 ---
 
-## 3. Setup — nine steps
+## 3. Setup — ten steps
 
 The whole instrument creation, in order. Per-string steps show **one string at a
 time** through a string-tab strip, so a 6-string instrument stays navigable.
@@ -98,8 +98,14 @@ time** through a string-tab strip, so a 6-string instrument stays navigable.
 | 5 **Homing** | per axis: HOME pin & active level, search direction, zero offset, speeds, back-off, timeout, LIMIT pin & level; *Home all axes now*, *Copy homing to all* |
 | 6 **Servos** | per servo: source (PCA bus/board/channel or direct GPIO), rest / active / mute pulses, travel & settle, disable-at-rest, stroke shaping, engage delay, and a **Test strike** |
 | 7 **Notes** | per string a **fret offset from the HOME endstop** that shifts the whole fretboard, automatic fret computation, then a **sequential calibration assistant** (§3.2) |
-| 8 **Test** | motors, sensors, fingers, plectrums, a note, a string, a chord, the emergency stop |
-| 9 **Validation** | "valid" or a precise list of problems; nothing is armed until the critical errors are fixed |
+| 8 **MIDI & playback** | channel, omni, transpose, sustain, chord window and saturation strategy; the note/finger/strum timing; the string/fret CC selection with its preset and full configuration |
+| 9 **Test** | motors, sensors, fingers, plectrums, a note, a string, a chord, the emergency stop |
+| 10 **Validation** | "valid" or a precise list of problems; nothing is armed until the critical errors are fixed |
+
+Setup builds a **complete** instrument: everything about how it answers a
+controller is here, not split off into the Settings modal. The live MIDI monitor
+and the note tester stay in Settings → Tools, because those are diagnostics
+rather than configuration.
 
 <details>
 <summary>Screenshots of each step</summary>
@@ -109,8 +115,8 @@ time** through a string-tab strip, so a 6-string instrument stays navigable.
 | ![Identification](../img/screenshots/setup-identification.png) | ![Board](../img/screenshots/setup-board.png) |
 | ![Pins](../img/screenshots/setup-pins.png) | ![Mechanics](../img/screenshots/setup-mechanics.png) |
 | ![Homing](../img/screenshots/setup-homing.png) | ![Servos](../img/screenshots/setup-servos.png) |
-| ![Notes](../img/screenshots/setup-notes.png) | ![Test](../img/screenshots/setup-test.png) |
-| ![Validation](../img/screenshots/setup-validation.png) | |
+| ![Notes](../img/screenshots/setup-notes.png) | ![MIDI](../img/screenshots/setup-midi.png) |
+| ![Test](../img/screenshots/setup-test.png) | ![Validation](../img/screenshots/setup-validation.png) |
 
 </details>
 
@@ -219,6 +225,21 @@ The pin-assignment grid with per-signal capability filtering and live validation
 Colours and rules come from the board profile — see
 [`PIN_CONFIGURATION.md`](PIN_CONFIGURATION.md).
 
+Below the per-string signals sit the two **optional device inputs**, both left
+`— unassigned —` by default because the hardware behind them is optional:
+
+| Signal | Kind | For |
+| ------ | ---- | --- |
+| `ESTOP` | `SAFE IN` | the hardware emergency-stop contact ([`../hardware/POWER_AND_SAFETY.md`](../hardware/POWER_AND_SAFETY.md) §4) |
+| `MIDI_RX` | `UART RX` | the DIN-5 / TRS MIDI input ([`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) §1.1) |
+
+Neither used to appear here at all: the Harness tab told you to "assign ESTOP in
+the GPIO sub-tab" and the sub-tab did not offer it, and the DIN transport had no
+way to ever be given a pin. **Assign automatically** now folds its result into
+the existing map rather than replacing it, so a hand-placed E-stop or MIDI pin
+survives a re-assign — it is only dropped if the new map genuinely needs that
+GPIO.
+
 ### 4.5 Commissioning
 
 ![Commissioning](../img/screenshots/commissioning.png)
@@ -254,7 +275,17 @@ Building an instrument is not in here at all — that is the Setup page.
 Saved instruments, one per device storage slot: load, copy, rename, delete, pick
 the **startup slot**, import and export. The network settings and Wi-Fi passwords
 are deliberately *not* part of a profile — they stay with the machine, so moving
-an instrument between devices never moves one machine's SSID onto another.
+an instrument between devices never moves one machine's SSID onto another. (This
+page used to carry a second Wi-Fi credential panel of its own; it is gone, so
+there is exactly one editor for the network.)
+
+An **import** is normalised (every missing section filled from the defaults) and
+then validated **by the device** before it is adopted. The firmware owns the
+schema, the migration and the cross-field rules; the client-side check only
+confirms the file is the right shape, so a profile missing `board`, `midi` or
+`stringFretSelection` no longer reaches the views half-formed. Blocking issues
+refuse the import with the device's own reasons; warnings let it through so it
+can be fixed in the wizard.
 
 ### 5.1 Network
 
@@ -313,6 +344,14 @@ it, and `POST /api/panic` never requires it), and who may play it over the
 network (the **UDP source policy**: accept any sender, lock to the first
 controller heard, or refuse network MIDI entirely). Both live on the device and
 are never part of an exported profile.
+
+Below them, **MIDI inputs** lists every transport with its real state, straight
+from `GET /api/status`: Wi-Fi UDP, USB-MIDI (which says *not built in* on the
+default image rather than implying it works — see
+[`MIDI_PROTOCOL.md`](MIDI_PROTOCOL.md) §1.2), and DIN-5/TRS with the GPIO and
+UART it is bound to, or `no MIDI_RX pin assigned` when it is not. The source policy above applies to
+the Wi-Fi transport only — a physical cable is trusted by being plugged in, and
+there is no sender identity on a DIN line to lock to.
 
 ### 5.4 Tools
 
@@ -392,7 +431,7 @@ Power & safety tab once shipped broken.
 | `POST` | `/api/profiles` | save a profile to a slot (optionally as the startup slot) |
 | `GET` | `/api/boards` | the boards this firmware supports (the Setup board picker) |
 | `GET` | `/api/board/{id}` | board profile + full GPIO capabilities (colours, filtering) |
-| `POST` | `/api/pins/auto` | automatic assignment (`PinRequest`) → assignments |
+| `POST` | `/api/pins/auto` | automatic assignment for the **named board** (`board` + `PinRequest`) → assignments; 422 on an unknown board |
 | `POST` | `/api/pins/validate` | pin validation → list of `PinError` |
 | `POST` | `/api/panic` | software panic — **never authenticated** |
 | `POST` | `/api/reset` | clear a latched panic / E-stop, then re-home |
@@ -405,6 +444,7 @@ Power & safety tab once shipped broken.
 | `POST` | `/api/auth/check` | does this token authorise writes? |
 | `POST` | `/api/hotspot` | switch to the access point + captive portal now |
 | `GET` | `/api/wifi/scan[?start=1]` | asynchronous network survey |
+| `POST` | `/api/midi/source` | UDP MIDI source policy (`open` / `lockToFirst` / `disabled`, `unlock`) |
 | `POST` | `/api/wifi` | device network settings: mode/ssid/apSsid/hostname, passwords (write-only), `clearStationPassword`/`clearApPassword`, `apply` |
 | `GET` | `/gmb/descriptor.json` | the GMB v2 instrument descriptor (what a controller reads) |
 | `POST` | `/api/sysex/request` | run a GMB SysEx request → decoded response |

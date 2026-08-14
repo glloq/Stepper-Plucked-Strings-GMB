@@ -5,9 +5,17 @@
  * (GET /api/profiles -> { profiles:[{slot,name,used}], startupSlot }). Because
  * the firmware exposes no "read one slot" endpoint, copy / rename / set-startup
  * are composed client-side by loading the slot (which returns it as the active
- * profile), editing it and re-saving via POST /api/profiles. Exports never
- * include the Wi-Fi password (section 20 / SysEx spec 20); Wi-Fi credentials
- * are set write-only through POST /api/wifi.
+ * profile), editing it and re-saving via POST /api/profiles.
+ *
+ * This page is the instrument LIBRARY and nothing else. Network settings belong
+ * to the device and live in Settings > Network — there is exactly one editor for
+ * them. Exports never include a Wi-Fi password (they are not part of the schema,
+ * and the export strips the field defensively anyway).
+ *
+ * An import is normalised (GMB.ensureProfileDefaults) and then validated BY THE
+ * DEVICE before it is adopted: the firmware owns the schema, the migration and
+ * the cross-field rules, so a second, weaker validator here would only disagree
+ * with it.
  */
 (function (global) {
   'use strict';
@@ -35,8 +43,6 @@
       ]),
       h('div.toolbar', [GMB.button('Save & publish', function () { GMB.saveProfile(); }, 'primary')])
     ]));
-
-    host.appendChild(wifiCard());
 
     loadList();
   }
@@ -179,27 +185,11 @@
   }
 
   // ---- Wi-Fi credentials (write-only) --------------------------------------
-  var wifi = { stationPassword: '', apPassword: '' };
-  function wifiCard() {
-    return h('div.card', [
-      h('div.card-head', [h('h2', 'Wi-Fi credentials'),
-        h('span.muted', 'write-only — never exported or displayed')]),
-      h('p.muted', 'Passwords are stored on the device and applied after a reboot. Leaving a field blank leaves that password unchanged.'),
-      h('div.form-grid', [
-        GMB.field('Station (client) password', GMB.input(wifi, 'stationPassword', { type: 'password' })),
-        GMB.field('Access-point password', GMB.input(wifi, 'apPassword', { type: 'password' }))
-      ]),
-      h('div.toolbar', [GMB.button('Save Wi-Fi credentials', saveWifi, 'primary')])
-    ]);
-  }
-  function saveWifi() {
-    GMB.api.setWifi({ stationPassword: wifi.stationPassword, apPassword: wifi.apPassword }).then(function (res) {
-      if (res && res.ok === false) { GMB.toast('Could not store Wi-Fi credentials.', 'error'); return; }
-      wifi.stationPassword = ''; wifi.apPassword = '';
-      GMB.toast('Wi-Fi credentials stored' + (res && res.note ? ' — ' + res.note : '') + '.', 'ok');
-      GMB.render();
-    }).catch(function (e) { reportErr('Wi-Fi save failed', e); });
-  }
+  // (The Wi-Fi credential panel that used to live here is gone.) Network settings
+  // belong to the DEVICE, not to the instrument library, and Settings > Network
+  // is the one editor for them — it can also apply them without a reboot, which
+  // this panel could not. Two editors for one setting is how the interface ended
+  // up promising actions only one of them could perform.
 
   // Export — strips the Wi-Fi password (never present in our schema, but we also
   // guard against a passworded field) and downloads pretty JSON.
@@ -221,21 +211,58 @@
       if (!file) return;
       var reader = new FileReader();
       reader.onload = function () {
+        var obj;
         try {
-          var obj = JSON.parse(reader.result);
-          var errs = validateImport(obj);
-          if (errs.length) { alert('Invalid profile:\n- ' + errs.join('\n- ')); return; }
-          if (confirm('Load imported profile "' + (obj.instrument && obj.instrument.name) + '" as the working profile?')) {
-            GMB.state.profile = obj;
-            GMB.markDirty();
-            GMB.toast('Profile imported. Review and save to publish.', 'ok');
-            GMB.navigate('fretboard');
+          obj = JSON.parse(reader.result);
+        } catch (e) { alert('Not valid JSON: ' + e.message); return; }
+        // Shape check first, so an obviously wrong file fails immediately with a
+        // readable message rather than through the API.
+        var errs = validateImport(obj);
+        if (errs.length) { alert('Invalid profile:\n- ' + errs.join('\n- ')); return; }
+        if (!confirm('Load imported profile "' + (obj.instrument && obj.instrument.name) +
+                     '" as the working profile?')) return;
+        // Then hand it to the DEVICE's validator before adopting it. The firmware
+        // owns the schema, the migration and the cross-field rules; the check
+        // above only knows four keys, so a file missing board / midi /
+        // stringFretSelection / hardware used to land in the UI unnoticed and
+        // surface later as a mystery. The backend answers 422 with the reasons.
+        GMB.api.validatePins(obj).then(function (res) {
+          adoptImported(obj, (res && res.issues) || []);
+        }).catch(function (e) {
+          var body = e && e.body;
+          if (body && body.issues) { adoptImported(obj, body.issues); return; }
+          // The device is unreachable (offline demo): fall back to the local
+          // validator rather than refusing to import at all, and say so.
+          var local = GMB.validateProfile ? GMB.validateProfile(GMB.ensureProfileDefaults(obj)) : [];
+          if (local.length) {
+            alert('Invalid profile:\n- ' + local.join('\n- '));
+            return;
           }
-        } catch (e) { alert('Not valid JSON: ' + e.message); }
+          adoptImported(obj, []);
+        });
       };
       reader.readAsText(file);
     });
     document.body.appendChild(input); input.click(); input.remove();
+  }
+
+  // Adopt an imported profile as the working draft. Blocking issues refuse the
+  // import; warnings are surfaced but let it through, so a profile that merely
+  // needs attention can still be opened and fixed in the wizard.
+  function adoptImported(obj, issues) {
+    var blocking = issues.filter(function (i) { return i.severity !== 'warning'; });
+    if (blocking.length) {
+      alert('The device refused this profile:\n- ' +
+            blocking.slice(0, 8).map(function (i) {
+              return (i.field ? i.field + ' — ' : '') + i.message;
+            }).join('\n- '));
+      return;
+    }
+    GMB.state.profile = GMB.ensureProfileDefaults(obj);
+    GMB.markDirty();
+    if (issues.length) GMB.reportIssues('Imported with warnings', issues);
+    GMB.toast('Profile imported. Review and save to publish.', 'ok');
+    GMB.navigate('fretboard');
   }
 
   function validateImport(obj) {

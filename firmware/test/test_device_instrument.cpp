@@ -115,3 +115,70 @@ TEST(device_and_instrument_halves_are_disjoint) {
     CHECK(p.instrument.name == "Guitar");
     CHECK(p.strings.size() == 6);
 }
+
+// ---------------------------------------------------------------------------
+// Loading a stored INSTRUMENT must not adopt the stored DEVICE. These pin the
+// semantics the runtime relies on: POST /api/profiles/load merges the slot's
+// instrument half onto the running device half, while PUT /api/profile (the
+// draft the user just edited for this machine) is taken whole.
+// ---------------------------------------------------------------------------
+
+TEST(loading_an_instrument_keeps_this_machines_device_config) {
+    // The machine as it is actually running.
+    Profile running = Profile::makeDefault("Running uke", 4, {67, 60, 64, 69}, 12);
+    running.boardIdentifier = "esp32-wroom-32";
+    running.estopNormallyClosed = true;         // this machine's E-stop wiring
+    running.network.mode = NetworkMode::Station;
+    running.network.ssid = "bench-wifi";
+    running.network.hostname = "bench-gmb";
+    running.hardware.estopCutsPower = true;     // declared fitted on THIS machine
+    running.pins.push_back({"STEP1", SignalKind::Step, 4});
+
+    // A slot saved elsewhere: a different instrument AND a different machine.
+    Profile stored = Profile::makeDefault("Stored guitar", 6, {40, 45, 50, 55, 59, 64}, 20);
+    stored.boardIdentifier = "esp32-s3-devkitc-1";
+    stored.estopNormallyClosed = false;         // the OTHER machine's wiring
+    stored.network.mode = NetworkMode::AccessPoint;
+    stored.network.ssid = "somewhere-else";
+    stored.network.hostname = "other-gmb";
+    stored.hardware.estopCutsPower = false;
+    stored.pins.push_back({"STEP1", SignalKind::Step, 40});  // may not exist here
+
+    Profile merged = mergeProfile(deviceConfigOf(running), instrumentProfileOf(stored),
+                                  stored);
+
+    // The instrument came across...
+    CHECK(merged.instrument.name == "Stored guitar");
+    CHECK_EQ((int)merged.instrument.stringCount, 6);
+    CHECK_EQ((int)merged.strings.size(), 6);
+
+    // ...and every piece of the DEVICE stayed.
+    CHECK(merged.boardIdentifier == "esp32-wroom-32");
+    CHECK(merged.network.ssid == "bench-wifi");        // /api/status would have lied
+    CHECK(merged.network.hostname == "bench-gmb");
+    CHECK(merged.network.mode == NetworkMode::Station);
+    CHECK(merged.estopNormallyClosed == true);         // safety-relevant: never imported
+    CHECK(merged.hardware.estopCutsPower == true);
+    // This machine's wiring, not the slot's: STEP1 is GPIO4 here, GPIO40 there.
+    CHECK_EQ((int)merged.pins.size(), (int)running.pins.size());
+    int step1 = -1;
+    for (const auto& a : merged.pins) if (a.signal == "STEP1") step1 = a.gpio;
+    CHECK_EQ(step1, 4);
+}
+
+// The other direction: publishing an edited draft is taken whole, because the
+// user edited it FOR this machine — otherwise the wizard's own pin and network
+// edits would be silently discarded on save.
+TEST(publishing_a_draft_takes_the_device_half_too) {
+    Profile running = Profile::makeDefault("Before", 4, {67, 60, 64, 69}, 12);
+    running.boardIdentifier = "esp32-s3-devkitc-1";
+
+    Profile draft = running;
+    draft.boardIdentifier = "esp32-wroom-32";   // the user changed the board...
+    draft.pins.push_back({"STEP1", SignalKind::Step, 13});  // ...and its pins
+
+    // PUT /api/profile does no merge: the draft IS the new truth.
+    CHECK(draft.boardIdentifier == "esp32-wroom-32");
+    CHECK_EQ((int)draft.pins.size(), (int)running.pins.size() + 1);
+    CHECK(draft.pins.back().gpio == 13);
+}

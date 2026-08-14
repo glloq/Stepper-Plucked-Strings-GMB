@@ -71,10 +71,33 @@
            { STEP: [], DIR: [], HOME: [], SDA: -1, SCL: -1, ENABLE: -1, SERVO_OE: -1 };
   };
 
+  // Fold an auto-assignment into the current pin map instead of replacing it.
+  //
+  // Auto-assign only places the signals it knows the instrument needs (STEP/DIR/
+  // HOME/SDA/SCL/ENABLE/SERVO_OE). Assigning `p.pins = res.pins` therefore silently
+  // DELETED anything the operator had placed by hand — the hardware E-stop input and
+  // the DIN MIDI RX, precisely the two optional signals the pin editor now offers.
+  // Losing the E-stop pin that way is the worst case: nothing warns, and the machine
+  // simply comes back with no hardware stop.
+  //
+  // A hand-placed signal survives unless the new map genuinely needs its GPIO.
+  GMB.mergeAutoPins = function (existing, assigned) {
+    var out = (assigned || []).slice();
+    var bySignal = {}, byGpio = {};
+    out.forEach(function (a) { bySignal[a.signal] = true; byGpio[a.gpio] = a.signal; });
+    (existing || []).forEach(function (a) {
+      if (bySignal[a.signal]) return;              // auto-assign owns this signal
+      if (a.gpio >= 0 && byGpio[a.gpio]) return;   // its pin was just taken
+      out.push(a);
+    });
+    return out;
+  };
+
   // Which capability a signal kind needs (mirrors BoardProfile::candidatesFor).
   var SIGNAL_KIND = {
     step: 'step', dir: 'dir', enable: 'enable', home: 'home', limit: 'limit',
-    diag: 'diag', sda: 'i2cSda', scl: 'i2cScl', servoOe: 'servoOe', servo: 'servo'
+    diag: 'diag', sda: 'i2cSda', scl: 'i2cScl', servoOe: 'servoOe', servo: 'servo',
+    safetyInput: 'safetyInput', uartRx: 'uartRx'
   };
   GMB.SIGNAL_KIND = SIGNAL_KIND;
 
@@ -86,6 +109,37 @@
   //
   // The defaults MUST match ProfileStorage::fromJson()'s, or the UI would show a
   // value the firmware does not actually hold.
+  // Fill in every section an imported profile may be missing, from the sample
+  // profile's defaults. An import used to be adopted after a four-key shape check,
+  // so a file with no `board`, `midi`, `stringFretSelection`, `power` or `pluck`
+  // reached the views and surfaced later as blank fields or a thrown render. This
+  // is the normalisation step between "parses as JSON" and "is a usable draft";
+  // the device's validator still has the final say on the content.
+  GMB.ensureProfileDefaults = function (p) {
+    if (!p || typeof p !== 'object') return p;
+    var d = sampleProfile();
+    // Whole sections: adopt the default only when absent, never merged field by
+    // field — a half-merged section is harder to reason about than a default one.
+    ['instrument', 'board', 'hardware', 'network', 'midi', 'stringFretSelection',
+     'power', 'pluck'].forEach(function (k) {
+      if (!p[k] || typeof p[k] !== 'object') p[k] = d[k];
+    });
+    if (!Array.isArray(p.pins)) p.pins = [];
+    if (!Array.isArray(p.servos)) p.servos = [];
+    if (!Array.isArray(p.strings)) p.strings = [];
+    if (!p.project) p.project = d.project;
+    if (!(p.profileVersion >= 1)) p.profileVersion = d.profileVersion;
+    if (!(p.capabilitiesRevision >= 0)) p.capabilitiesRevision = 0;
+    // Per-string blocks the views bind to directly.
+    p.strings.forEach(function (st) {
+      if (!st.homing || typeof st.homing !== 'object') st.homing = d.strings[0].homing;
+      if (!Array.isArray(st.calibratedFretMm)) st.calibratedFretMm = [];
+      if (st.enabled === undefined) st.enabled = true;
+    });
+    GMB.ensureHardware(p);
+    return p;
+  };
+
   GMB.ensureHardware = function (p) {
     var hw = p.hardware || (p.hardware = {});
     if (hw.oePullup === undefined) hw.oePullup = false;
@@ -121,6 +175,14 @@
       case 'home':
       case 'limit': return p.input && p.interrupt;
       case 'diag': return p.input;
+      // ESTOP is sampled as INPUT_PULLUP, so a pin without an internal pull-up
+      // would float; and the recommended NC loop holds it LOW through a reset,
+      // which a strapping pin must never see. Mirrors SignalKind::SafetyInput.
+      case 'safetyInput':
+        return p.input && p.interrupt && p.internalPullUp && !p.strapping;
+      // DIN MIDI RX: the UART matrix routes to any readable pin; a powered sender
+      // can hold the line either way across a reset, so no strapping pin either.
+      case 'uartRx': return p.input && !p.strapping;
       case 'i2cSda':
       case 'i2cScl': return p.input && p.output;
       default: return p.output;
@@ -414,6 +476,29 @@
   // ---------------------------------------------------------------------------
   // Live status (dashboard, spec 19). Mock evolves over time.
   // ---------------------------------------------------------------------------
+  // Mirrors WebApi::fillStatus's midiTransports block.
+  function mockTransports(p) {
+    var rx = -1;
+    (p.pins || []).forEach(function (a) { if (a.signal === 'MIDI_RX') rx = a.gpio; });
+    return [
+      { name: 'wifiUdp', label: 'Wi-Fi (UDP)', bound: true, detail: 'UDP port 5006', events: 0 },
+      { name: 'usb', label: 'USB-MIDI', bound: false,
+        detail: 'not built in (see the esp32-s3-usbmidi env)', events: 0 },
+      { name: 'din', label: 'DIN-5 / TRS', bound: rx >= 0,
+        detail: rx >= 0 ? ('GPIO' + rx + ', UART2, 31250 baud') : 'no MIDI_RX pin assigned',
+        events: 0 }
+    ];
+  }
+  // Same rule as the firmware: most messages wins, ties go to the first bound one.
+  function mockActiveTransport(p) {
+    var best = null;
+    mockTransports(p).forEach(function (t) {
+      if (!t.bound) return;
+      if (!best || t.events > best.events) best = t;
+    });
+    return best ? best.name : 'none';
+  }
+
   function sampleStatus() {
     var p = MOCK.profile;
     var caps = GMB.computeCapabilities(p);
@@ -421,7 +506,12 @@
       state: 'READY',
       wifi: { mode: p.network.mode, ssid: p.network.mode === 'station' ? p.network.ssid : p.network.apSsid,
         ip: p.network.mode === 'station' ? '192.168.1.42' : '192.168.4.1', rssi: -54, connected: true },
-      midiSource: 'wifiUdp',
+      // Real transport picture, mirroring the firmware's: whether a DIN cable can
+      // be received at all depends on the MIDI_RX pin, so assigning it in the GPIO
+      // editor has to change what the dashboard says — otherwise the offline demo
+      // teaches the wrong thing about the option it just offered.
+      midiTransports: mockTransports(p),
+      midiSource: mockActiveTransport(p),
       // UDP source posture (P1.11) so the Settings panel shows the live state.
       midiSourcePolicy: MOCK.midiSourcePolicy,
       midiSourceLocked: MOCK.midiSourceLocked,
@@ -1055,10 +1145,18 @@
       return this._call('/api/boards', null, function () { return { boards: boardList() }; })
         .then(function (r) { return (r && r.boards) || []; });
     },
+    // POST /api/pins/auto. The board is injected HERE rather than left to each
+    // caller: the backend assigns against whichever board it is told, and a caller
+    // that forgot the field would silently get pins for the wrong one. Two of the
+    // three call sites did exactly that.
     autoPins: function (req) {
+      var draft = (global.GMB.state && global.GMB.state.profile) || MOCK.profile;
+      var body = {};
+      Object.keys(req || {}).forEach(function (k) { body[k] = req[k]; });
+      if (!body.board) body.board = draft && draft.board && draft.board.profile;
       return this._call('/api/pins/auto', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req)
-      }, function () { return mockAutoAssign(req); });
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      }, function () { return mockAutoAssign(body); });
     },
     // POST /api/pins/validate -> { ok, issues:[{field,message,severity}] }.
     // The backend decodes the body as a full Profile and runs its validator, so

@@ -145,7 +145,28 @@ void WebApi::fillStatus(JsonDocument& doc) {
     wifi["ssid"] = ctx_.profile ? ctx_.profile->network.ssid : "";
     wifi["ip"] = ctx_.net ? ctx_.net->ipAddress() : "";
     wifi["connected"] = ctx_.net ? ctx_.net->connected() : false;
-    doc["midiSource"] = "wifiUdp";
+    // Real transport state, not a constant: `midiSource` is whichever transport has
+    // actually decoded the most messages since boot (ties go to the first bound one),
+    // and `midiTransports` carries the full picture so the UI can show a DIN cable
+    // that is wired but silent separately from one that is not wired at all.
+    if (ctx_.midiTransports) {
+        auto states = ctx_.midiTransports();
+        JsonArray arr = doc["midiTransports"].to<JsonArray>();
+        const WebContext::MidiTransportState* best = nullptr;
+        for (const auto& t : states) {
+            JsonObject o = arr.add<JsonObject>();
+            o["name"] = t.name;
+            o["label"] = t.label;
+            o["bound"] = t.bound;
+            o["detail"] = t.detail;
+            o["events"] = t.events;
+            if (!t.bound) continue;
+            if (!best || t.events > best->events) best = &t;
+        }
+        doc["midiSource"] = best ? best->name : "none";
+    } else {
+        doc["midiSource"] = "wifiUdp";
+    }
     // UDP source posture (audit P1.11) so the Settings UI shows the live state.
     doc["midiSourcePolicy"] = ctx_.midiSourcePolicy ? ctx_.midiSourcePolicy() : "open";
     doc["midiSourceLocked"] = ctx_.midiSourceLocked ? ctx_.midiSourceLocked() : false;
@@ -441,7 +462,22 @@ void WebApi::registerRoutes() {
     // currently-active profile.
     auto* pinsAuto = new AsyncCallbackJsonWebHandler(
         "/api/pins/auto", [this](AsyncWebServerRequest* req, JsonVariant& body) {
-            const BoardProfile* b = builtinBoardProfile("esp32-s3-devkitc-1");
+            // Assign against the board the request names — the DRAFT's board, not
+            // a hard-coded one. This used to always build a PinManager for the
+            // ESP32-S3 while the UI's offline mock was board-aware, so the browser
+            // demo produced a correct map and the real device handed out S3 pins
+            // that may not even exist on the selected board. An unknown board is
+            // refused rather than silently substituted.
+            std::string boardId = body["board"] | "";
+            if (boardId.empty() && ctx_.profile) boardId = ctx_.profile->boardIdentifier;
+            const BoardProfile* b = builtinBoardProfile(boardId);
+            if (!b) {
+                JsonDocument err;
+                err["ok"] = false;
+                err["error"] = "unknown board \"" + boardId + "\"";
+                sendJson(req, err, 422);
+                return;
+            }
             PinManager pm(*b);
             PinRequest r;
             int fallback = ctx_.profile ? ctx_.profile->instrument.stringCount : 4;
@@ -454,6 +490,7 @@ void WebApi::registerRoutes() {
             bool ok = pm.autoAssign(r);
             JsonDocument doc;
             doc["ok"] = ok;
+            doc["board"] = b->identifier;   // echo it: the caller can verify the target
             JsonArray pins = doc["pins"].to<JsonArray>();
             for (const auto& a : pm.assignments()) {
                 JsonObject o = pins.add<JsonObject>();
@@ -582,7 +619,10 @@ void WebApi::registerRoutes() {
             }
             // Validated above; the actual activation runs in loop() (motor stop,
             // reconfigure, re-home). Report ACCEPTED, not "done".
-            uint32_t cmdId = ctx_.onActivateProfile ? ctx_.onActivateProfile(p) : 0;
+            // This is the draft the user edited FOR THIS MACHINE — pins, board and
+            // network included — so it is taken whole.
+            uint32_t cmdId = ctx_.onActivateProfile
+                                 ? ctx_.onActivateProfile(p, /*keepDeviceConfig=*/false) : 0;
             bool queued = cmdId != 0;
             doc["ok"] = queued;
             doc["accepted"] = queued;
@@ -651,12 +691,19 @@ void WebApi::registerRoutes() {
                 sendJson(req, doc, 404);
                 return;
             }
-            uint32_t cmdId = ctx_.onActivateProfile ? ctx_.onActivateProfile(p) : 0;
+            // Loading a stored slot swaps the INSTRUMENT; this machine keeps its
+            // own device config (board, pins, network, E-stop wiring, fitted
+            // hardware). Taking the slot's device half would, among other things,
+            // report a network the radio is not on and adopt another machine's
+            // E-stop polarity.
+            uint32_t cmdId = ctx_.onActivateProfile
+                                 ? ctx_.onActivateProfile(p, /*keepDeviceConfig=*/true) : 0;
             bool queued = cmdId != 0;
             doc["ok"] = queued;
             doc["accepted"] = queued;
             doc["commandId"] = cmdId;
-            doc["note"] = queued ? "activation queued" : "invalid profile or queue full";
+            doc["note"] = queued ? "instrument activation queued (device config kept)"
+                                 : "invalid profile or queue full";
             sendJson(req, doc, queued ? 202 : 422);
         });
     loadProfile->setMethod(HTTP_POST);
@@ -905,6 +952,48 @@ void WebApi::registerRoutes() {
         });
     setWifi->setMethod(HTTP_POST);
     server_->addHandler(setWifi);
+
+    // ---- POST /api/midi/source (UDP MIDI source posture) ----
+    // Body: { policy: "open"|"lockToFirst"|"disabled" (optional), unlock: bool }.
+    // The Settings > Security panel has always offered these controls; the route
+    // did not exist, so the browser mock accepted them and the real device 404ed.
+    // The policy is stored in NVS (device state, survives reboots) and applied by
+    // the main loop, which owns the MIDI transport.
+    auto* midiSource = new AsyncCallbackJsonWebHandler(
+        "/api/midi/source", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized"; sendJson(req, d, 401); return; }
+            JsonDocument doc;
+            if (!ctx_.onSetMidiSource) {
+                doc["ok"] = false;
+                doc["error"] = "not supported by this build";
+                sendJson(req, doc, 409);
+                return;
+            }
+            int policy = -1;   // -1 = leave the stored policy alone
+            if (!body["policy"].isNull()) {
+                std::string p = body["policy"] | "";
+                if (p == "open") policy = 0;
+                else if (p == "lockToFirst") policy = 1;
+                else if (p == "disabled") policy = 2;
+                else {
+                    doc["ok"] = false;
+                    doc["error"] = "policy must be open, lockToFirst or disabled";
+                    sendJson(req, doc, 422);
+                    return;
+                }
+            }
+            const bool unlock = body["unlock"] | false;
+            if (!ctx_.onSetMidiSource(policy, unlock)) {
+                doc["ok"] = false;
+                doc["error"] = "storing the MIDI source policy failed (NVS write error)";
+                sendJson(req, doc, 500);
+                return;
+            }
+            doc["ok"] = true;
+            sendJson(req, doc);
+        });
+    midiSource->setMethod(HTTP_POST);
+    server_->addHandler(midiSource);
 
     // ---- POST /api/auth (set the admin token; first-run bootstrap allowed) ----
     auto* setAuth = new AsyncCallbackJsonWebHandler(

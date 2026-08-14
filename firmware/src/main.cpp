@@ -23,6 +23,7 @@
 #include "core/app/AppPhase.h"
 #include "core/app/Readiness.h"
 #include "core/configuration/Profile.h"
+#include "core/configuration/DeviceInstrument.h"
 #include "core/configuration/ProfileActivation.h"
 #include "core/configuration/ProfileValidator.h"
 #include "core/diagnostics/Diagnostics.h"
@@ -32,6 +33,7 @@
 #include "core/instrument/InstrumentController.h"
 #include "core/midi/MidiEvent.h"
 #include "core/motion/HomingController.h"
+#include "core/safety/EstopPolarity.h"
 #include "core/safety/SafetyManager.h"
 #include "core/util/CommandResultRing.h"
 #include "core/util/HoldButton.h"
@@ -39,7 +41,10 @@
 #include "platform/esp32/MidiUsbTransport.h"
 #include "platform/esp32/MidiWifi.h"
 #include "platform/esp32/Net.h"
+#include "platform/esp32/CommandDispatcher.h"
+#include "platform/esp32/PlaybackScheduler.h"
 #include "platform/esp32/ProfileStorage.h"
+#include "platform/esp32/SafetySupervisor.h"
 #include "platform/esp32/ServoBank.h"
 #include "platform/esp32/StepperBank.h"
 #include "platform/esp32/WebApi.h"
@@ -62,6 +67,11 @@ MidiDinTransport g_dinMidi;  // DIN-5/TRS UART — P1.7 functional, inert until 
 // Every transport feeds the SAME InstrumentController (P1.7): adding a transport
 // never touches the instrument logic, and MidiEvent.source keeps the inputs apart.
 MidiTransport* const g_transports[] = {&g_midi, &g_usbMidi, &g_dinMidi};
+// Messages decoded per transport since boot, in g_transports order. `/api/status`
+// reports these so "which MIDI input is actually feeding the instrument?" has a
+// measured answer rather than an assumed one.
+std::atomic<uint32_t> g_transportEvents[3]{};
+constexpr uint16_t kMidiUdpPort = 5006;  // AppleMIDI-free raw UDP MIDI (spec §8.1)
 WebApi g_web;
 
 // AppPhase + its wire labels now live in core/app/AppPhase.h (host-tested, P2.17).
@@ -103,6 +113,10 @@ constexpr uint32_t kBootHoldMs = 2000;
 HoldButton g_bootHold;  // long-press on BOOT -> force hotspot (host-tested, P2.17)
 std::atomic<bool> g_hotspotRequested{false};   // BOOT button / web -> force AP
 std::atomic<bool> g_wifiScanRequested{false};  // GET /api/wifi/scan?start=1
+// POST /api/midi/source. The web task must not touch the MIDI transport, so it
+// only records the request; loop() applies it. -1 = no policy change pending.
+std::atomic<int> g_midiSourceRequested{-1};
+std::atomic<bool> g_midiUnlockRequested{false};
 // POST /api/wifi with apply:true. The web task must never touch the radio, so it
 // only raises this flag; loop() (which owns Net) does the reconfiguration.
 std::atomic<bool> g_netApplyRequested{false};
@@ -118,45 +132,11 @@ Debouncer g_estopDeb;  // debounced E-stop input (avoids a spurious trip)
 struct TestNoteOff { uint8_t channel; uint8_t note; uint32_t atMs; };
 std::vector<TestNoteOff> g_testOffs;
 
-// Per-string non-blocking playback scheduler.
-struct StringSched {
-    enum Phase { Idle, WaitStopped, ReleasingFinger, MovingToFret, PressingFinger,
-                 Settling, Ready, StrumLiftDown, StrumLiftHold }
-        phase = Idle;
-    uint32_t phaseStartMs = 0;
-    uint32_t commandId = 0;
-    int fingerIndex = -1;
-    uint32_t dampUntilMs = 0;   // don't move until the damper has acted (replace)
-    uint32_t moveDeadlineMs = 0;  // fault the axis if the move isn't done by then
-    int liftIndex = -1;    // engaged strum-lift servo during a stroke (-1 = none)
-    int strikeIndex = -1;  // striker to fire once the lift has lowered
-    uint32_t executeAtMs = 0;   // earliest time the note may sound (fixed delay)
-    bool executeAnchored = false;  // executeAtMs fixed at the Note-On instant
-    uint32_t estArriveMs = 0;   // estimated carriage arrival time (finger lead)
-    bool fingerPressStarted = false;  // finger descent already begun (lead)
-    uint32_t liftStartMs = 0;   // when the strum lift began lowering
-    bool liftStarted = false;   // strum lift descent already begun (lead)
-    uint32_t jogSafeAtMs = 0;   // earliest a manual jog may move (finger lifted)
-};
-
-// Estimate a trapezoidal/triangular move time (ms) for a distance at a given max
-// speed (mm/s) and acceleration (mm/s^2). Used to set a move watchdog that scales
-// with the profile instead of a fixed 4 s (audit P1-1).
-uint32_t estimateMoveMs(double distanceMm, double vMaxMmS, double aMmS2) {
-    distanceMm = std::fabs(distanceMm);
-    if (distanceMm < 1e-6) return 0;
-    if (vMaxMmS < 1e-6 || aMmS2 < 1e-6) return 0;  // caller applies a floor anyway
-    double tAccel = vMaxMmS / aMmS2;              // time to reach cruise
-    double dAccel = vMaxMmS * vMaxMmS / aMmS2;    // distance for accel + decel
-    double t;
-    if (distanceMm >= dAccel) {
-        t = 2.0 * tAccel + (distanceMm - dAccel) / vMaxMmS;  // trapezoid
-    } else {
-        t = 2.0 * std::sqrt(distanceMm / aMmS2);             // triangle
-    }
-    return static_cast<uint32_t>(t * 1000.0);
-}
-std::vector<StringSched> g_sched;
+// Per-string playback FSM (StringSched, estimateMoveMs, the mechanical sequence)
+// now lives in platform/esp32/PlaybackScheduler.h.
+PlaybackScheduler g_scheduler;
+// Arming / homing / hard stop / panic / runtime faults (SafetySupervisor.h).
+SafetySupervisor g_supervisor;
 
 // ---- Web -> loop() command queue (P0: no mechanical state off the main loop) --
 //
@@ -167,45 +147,10 @@ std::vector<StringSched> g_sched;
 // here; loop() is the SOLE owner of the mechanical state and drains the queue
 // sequentially. Read-only handlers take g_stateMutex so a reallocation in loop()
 // (profile reload, capability rebuild) can never be seen half-done.
-enum class CmdType : uint8_t { Panic, Reset, ActivateProfile, TestNote, TestServo, Jog, MoveTo };
-struct AppCommand {
-    CmdType type;
-    uint32_t id = 0;             // for result tracking (GET /api/commands)
-    Profile* profile = nullptr;  // owned by the command (ActivateProfile)
-    uint8_t channel = 0, note = 0, velocity = 0;
-    uint16_t durationMs = 0;
-    // TestNote: selection CC values to emit before the Note On, or -1 for none.
-    int16_t ccStringValue = -1;
-    int16_t ccFretValue = -1;
-    int16_t servoIndex = -1;
-    bool servoActive = false;
-    int16_t axisIndex = -1;      // Jog/MoveTo: which axis
-    float jogDeltaMm = 0.0f;     // Jog: signed distance (mm)
-    float targetMm = 0.0f;       // MoveTo: absolute position from the HOME zero
-};
+// CmdType / AppCommand / the queue + result ring now live in
+// platform/esp32/CommandDispatcher.h.
+CommandDispatcher g_commands;
 
-// Result registry so a 202-accepted command can be followed up by the web UI:
-// GET /api/commands?id=N reports queued / succeeded / refused (audit P1-18).
-std::atomic<uint32_t> g_nextCmdId{1};
-CommandResultRing g_cmdResults;             // host-tested ring (P2.17)
-SemaphoreHandle_t g_resultMutex = nullptr;  // guards the tiny result ring
-
-void setCommandResult(uint32_t id, uint8_t state) {
-    if (id == 0) return;
-    if (g_resultMutex) xSemaphoreTake(g_resultMutex, portMAX_DELAY);
-    g_cmdResults.set(id, state);
-    if (g_resultMutex) xSemaphoreGive(g_resultMutex);
-}
-
-// "queued" / "running" / "succeeded" / "refused" / "cancelled" / "failed" /
-// "unknown" for a command id.
-std::string commandStateStr(uint32_t id) {
-    if (g_resultMutex) xSemaphoreTake(g_resultMutex, portMAX_DELAY);
-    std::string out = g_cmdResults.stateStr(id);
-    if (g_resultMutex) xSemaphoreGive(g_resultMutex);
-    return out;
-}
-QueueHandle_t g_cmdQueue = nullptr;      // holds AppCommand* pointers
 // In-memory runtime state (profile / sysex snapshot / status). loop() takes this
 // only for short in-memory work — NEVER across a LittleFS write — so the safety
 // loop can never stall on flash.
@@ -228,21 +173,13 @@ bool g_authConfiguredCache = false;
 // is full so the caller can report back-pressure instead of silently dropping.
 // Returns the assigned command id (0 if the queue is full / unavailable).
 uint32_t enqueueCommand(const AppCommand& in) {
-    if (!g_cmdQueue) return 0;
-    AppCommand c = in;
-    c.id = g_nextCmdId.fetch_add(1);
-    AppCommand* h = new AppCommand(c);
-    if (xQueueSend(g_cmdQueue, &h, 0) != pdTRUE) {
-        delete h->profile;  // transfer failed: don't leak the owned profile
-        delete h;
-        return 0;
-    }
-    setCommandResult(c.id, CommandResultRing::Queued);
-    // High-water of the web->loop queue (diagnostics P2.19). uxQueueMessagesWaiting
-    // is lock-free and safe from the AsyncTCP task.
-    g_diag.observeCmdQueueDepth(uxQueueMessagesWaiting(g_cmdQueue));
-    return c.id;
+    uint32_t id = g_commands.enqueue(in);
+    g_diag.observeCmdQueueDepth(g_commands.depth());
+    return id;
 }
+
+void setCommandResult(uint32_t id, uint8_t state) { g_commands.finish(id, state); }
+std::string commandStateStr(uint32_t id) { return g_commands.commandState(id); }
 
 // RAII guard for the shared-state mutex (used by loop() around reloads and by the
 // read-only web handlers around their reads).
@@ -259,6 +196,7 @@ std::string g_diagJson = "{}";
 void hardStopAll();  // defined below; needed by faultRuntimeAxis
 void faultRuntimeAxis(size_t i, const char* reason, uint32_t nowMs);
 void doPanic();      // defined below; needed by serviceLostPcaBoard
+void bindDinMidi();  // defined below; needed by servicePendingActivation
 
 // Route an ActuatorResult from a scheduler-facing command (audit P1.4): Ok passes
 // through, anything else faults the axis with the reason spelled out and returns
@@ -300,7 +238,7 @@ void buildStepperPins(std::vector<AxisPins>& out, int8_t& enablePin) {
 void applyProfile() {
     g_instrument.load(g_profile);
     g_sysex.rebuild(g_profile);
-    g_sched.assign(g_profile.strings.size(), StringSched{});
+    g_scheduler.configure(g_profile.strings.size());
 
     std::vector<AxisPins> axisPins;
     int8_t enablePin = -1;
@@ -381,311 +319,24 @@ void notifyCapabilitiesChanged() {
     if (!msg.empty()) g_midi.notifyLastSender(msg.data(), msg.size());
 }
 
-// Central runtime axis-fault path (LIMIT, motor/servo error, homing failure).
+// The safety operations (fault path, E-stop polarity, homing, hard stop, panic)
+// now live in platform/esp32/SafetySupervisor.h. These free functions remain as
+// thin delegates so every call site below is unchanged.
 void faultRuntimeAxis(size_t i, const char* reason, uint32_t nowMs) {
-    if (i >= g_instrument.stringCount()) return;
-    g_steppers.emergencyStop(i);
-    g_instrument.faultString(i);
-    // Physically release any servo this axis had engaged BEFORE wiping the sched,
-    // so a single-axis fault never leaves the finger clamped or the strum lift
-    // pressed on the string (finger/strum leads can engage them before arrival).
-    // This mirrors the Note Off / note-replacement release paths.
-    if (i < g_sched.size()) {
-        int fi = g_servos.fingerIndex(static_cast<int>(i));
-        if (fi >= 0) g_servos.release(fi);
-        if (g_sched[i].liftIndex >= 0) g_servos.release(g_sched[i].liftIndex);
-        g_sched[i] = StringSched{};
-    }
-    if (i < g_anchored.size()) g_anchored[i] = false;
-    if (i < g_axisFaulted.size()) g_axisFaulted[i] = true;
-    g_safety.recordFault("axis", std::string(reason) + " on axis " + std::to_string(i),
-                         nowMs);
-    int working = rebuildRuntimeCapabilities();
-    notifyCapabilitiesChanged();  // push block-8 so GMB learns of the change
-    // If the last operational axis just failed, the instrument can no longer play
-    // anything: neutralise and latch a panic rather than sitting "armed" with zero
-    // strings (which would also emit a bogus 0..0 capability range).
-    if (working <= 0) {
-        hardStopAll();
-        g_safety.panic("no operational axes remain", nowMs);
-    }
+    g_supervisor.faultRuntimeAxis(i, reason, nowMs);
 }
-
-// Is the E-stop asserted, given the raw pin level (HIGH = true) and the profile's
-// declared wiring? Two polarities are supported:
-//   normally-OPEN  (legacy): a button shorts the pin to GND -> LOW means stop.
-//   normally-CLOSED (recommended, hardware/POWER_AND_SAFETY.md): a closed loop to
-//     GND holds the pin LOW to AUTHORISE running, so a press, a cut wire or an
-//     unplugged connector all read HIGH (pull-up) = stop. Losing the E-stop chain
-//     then fails safe instead of silently disarming the E-stop.
-bool estopAsserted(bool pinHigh) {
-    return g_profile.estopNormallyClosed ? pinHigh : !pinHigh;
-}
-
-// A PCA9685 stopped ACKing at runtime (unplugged / brown-out). Rather than a global
-// panic, take out ONLY the strings that board actually drives (audit P1.5): the
-// instrument keeps playing degraded on the survivors and re-advertises its real
-// capabilities. A panic is still the right answer when the loss cannot be isolated:
-//   * the board drives no string at all -> it is a shared resource (a shared damper,
-//     an aux actuator) whose failure is not attributable, so fail safe; or
-//   * no working axis remains -> faultRuntimeAxis panics on its own.
+bool estopAsserted(bool pinHigh) { return g_supervisor.estopAsserted(pinHigh); }
+bool estopAssertedNow() { return g_supervisor.estopAssertedNow(); }
 void serviceLostPcaBoard(uint8_t failedBoard, uint32_t nowMs) {
-    std::string where = ServoBank::boardName(failedBoard);
-    int hit = 0;
-    for (size_t i = 0; i < g_instrument.stringCount(); ++i) {
-        if (i < g_axisFaulted.size() && g_axisFaulted[i]) continue;
-        if (!g_servos.stringUsesBoard(static_cast<int>(i), failedBoard)) continue;
-        ++hit;
-        faultRuntimeAxis(i, ("PCA9685 lost on " + where).c_str(), nowMs);
-    }
-    if (hit == 0) {
-        // Not attributable to any string: fail safe.
-        g_safety.recordFault("servo",
-                             "PCA9685 on " + where + " stopped responding (no string "
-                             "mapped to it — failing safe)", nowMs);
-        doPanic();
-    }
+    g_supervisor.serviceLostPcaBoard(failedBoard, nowMs);
 }
-
-bool safetyLocked() {
-    SafetyState s = g_safety.state();
-    return s == SafetyState::Panic || s == SafetyState::EmergencyStop;
-}
-
-// Start homing only when it is safe to move. Refuses if a panic/E-stop is
-// latched, if the profile is invalid, or if a required motor could not attach a
-// hardware step generator (spec §13/§21).
-bool beginHoming(uint32_t nowMs) {
-    if (safetyLocked()) return false;
-    // Never enable drivers while a hardware E-stop is physically asserted, even
-    // if the software state has not caught up yet (closes the power-on window).
-    if (g_estopPin >= 0 && digitalRead(g_estopPin) == LOW) {
-        g_safety.emergencyStop(nowMs);
-        return false;
-    }
-    if (!ProfileValidator::isActivatable(g_profile)) return false;
-    if (g_steppers.attachFault() || g_servos.directAttachFault() ||
-        g_servos.pcaAttachFault()) {
-        g_safety.recordFault("attach",
-                             "a motor/servo/PCA9685 could not attach or respond", nowMs);
-        return false;
-    }
-    // Reconfiguration/homing must start from PowerOnSafe, never from Armed: a
-    // stale Armed state would let /api/test/servo drive a servo mid-homing and
-    // would make the final arming a silent no-op. safetyLocked() (Panic/E-stop)
-    // is already refused above, so this only demotes a lingering Armed state.
-    g_safety.reset();  // -> PowerOnSafe; doHoming arms once the axes are homed
-    g_degraded = false;
-    g_steppers.enableDrivers(true);
-    // Clear every latched PCA channel BEFORE /OE goes low, so enabling the outputs
-    // cannot release a stale pulse on all channels at once (audit P0) — the servos
-    // are then walked to rest progressively by the governed park below.
-    g_servos.neutralizePcaOutputs();
-    g_servos.outputEnable(true);
-
-    for (size_t i = 0; i < g_homing.size(); ++i) {
-        g_anchored[i] = false;
-        if (!g_profile.strings[i].enabled) {
-            g_instrument.string(i).disable();  // never home a disabled axis
-            continue;
-        }
-        g_instrument.string(i).setHoming();
-    }
-
-    // CONTROLLED PARK of every servo (fingers up, strikers home) before any carriage
-    // moves — a still-pressed finger must never drag along the string as the axis
-    // seeks HOME (§16). The park is GOVERNED so arming does not fire every servo
-    // simultaneously; beginGovernedPark returns the upper-bound wait, which becomes
-    // the SafetyManager's release window. The homing controllers start only after it.
-    uint32_t releaseWaitMs = g_servos.beginGovernedPark(
-        nowMs, g_profile.power.maxConcurrentMoves, g_profile.power.maxConcurrentPerBoard,
-        g_profile.power.staggerMs);
-    g_homingStarted = false;
-    if (!g_safety.beginHoming(true, true, releaseWaitMs, nowMs)) {
-        // The safety FSM refused (latched state): leave the machine safe.
-        g_servos.hardStop();
-        g_steppers.enableDrivers(false);
-        return false;
-    }
-    g_phase = AppPhase::Homing;
-    return true;
-}
-
-// Whether any endstop is currently asserted (blocks a reset / re-home).
-bool anyLimitActive() {
-    for (size_t i = 0; i < g_steppers.count(); ++i)
-        if (g_steppers.limitActive(i)) return true;
-    return false;
-}
-
-// Explicit recovery after a panic / E-stop: only proceeds when the E-stop is
-// released, no LIMIT is asserted, the profile is valid and all channels attached.
-bool doReset(uint32_t nowMs) {
-    if (g_estopPin >= 0 && digitalRead(g_estopPin) == LOW) return false;  // still pressed
-    if (anyLimitActive()) return false;
-    if (!ProfileValidator::isActivatable(g_profile)) return false;
-    if (g_steppers.attachFault() || g_servos.directAttachFault() ||
-        g_servos.pcaAttachFault())
-        return false;
-    g_safety.reset();                 // Panic/EStop -> PowerOnSafe
-    g_safety.clearFaults();
-    // Recover runtime-faulted axes so a reset can actually bring them back: clear
-    // the fault flag AND the StringController fault, then re-home (audit P0-3).
-    for (size_t i = 0; i < g_axisFaulted.size(); ++i) {
-        if (g_axisFaulted[i]) {
-            g_axisFaulted[i] = false;
-            g_instrument.recoverString(i);  // Fault -> Idle, un-fault the allocator
-        }
-    }
-    return beginHoming(nowMs);         // mandatory re-home before playing again
-}
-
-void doHoming(uint32_t nowMs) {
-    // Hold every axis still until the fingers have physically lifted, then start
-    // the homing controllers (their internal timers begin here, not before).
-    if (!g_homingStarted) {
-        // Keep issuing the governed park's rest commands as their slots open.
-        ServoBank::ParkResult park = g_servos.serviceGovernedPark(nowMs);
-        if (!park.ok) {
-            // A rest command never reached a servo: the park CANNOT be trusted, so a
-            // finger may still be on the string. Refuse to seek — hard-stop and stay
-            // safely out of Ready rather than dragging a pressed finger (audit P0).
-            hardStopAll();
-            g_safety.recordFault(
-                "park", std::string("servo ") + std::to_string(park.failedServo) +
-                            " refused its rest command (" +
-                            actuatorResultName(park.reason) + ") — homing aborted",
-                nowMs);
-            g_safety.reset();
-            g_phase = AppPhase::Boot;
-            return;
-        }
-        // Both walls must fall: every rest command issued AND travelled (the bank's
-        // own view) and the SafetyManager's release window elapsed.
-        if (!g_servos.governedParkDone(nowMs)) return;
-        if (!g_safety.releaseComplete(nowMs)) return;
-        for (size_t i = 0; i < g_homing.size(); ++i)
-            if (g_profile.strings[i].enabled) g_homing[i].start(nowMs);
-        g_homingStarted = true;
-    }
-
-    bool allDone = true;
-    int active = 0, faulted = 0;
-    for (size_t i = 0; i < g_homing.size(); ++i) {
-        if (!g_profile.strings[i].enabled) continue;  // disabled axes are skipped
-        ++active;
-        // Watch the LIMIT switch during EVERY homing phase: hitting the opposite
-        // endstop means the HOME sensor was missed — hard-stop and fault the axis
-        // instead of grinding on until the timeout / max distance.
-        if (!g_homing[i].ready() && !g_homing[i].failed() &&
-            g_steppers.limitActive(i)) {
-            g_steppers.emergencyStop(i);
-            g_homing[i].abort(HomingFault::LimitTriggered);
-        }
-        if (g_homing[i].failed()) {
-            g_instrument.faultString(i);  // remove from allocator + selection too
-            g_axisFaulted[i] = true;
-            g_steppers.emergencyStop(i);  // HARD stop: a failed axis must not keep
-                                          // decelerating past the arming instant
-            g_diag.addHomingFailure();
-            ++faulted;
-            continue;
-        }
-        if (g_homing[i].ready()) {
-            if (!g_anchored[i]) {
-                // Anchor the coordinate system so the home sensor is 0 mm.
-                g_steppers.setPositionReference(i, g_homing[i].restOffsetMm());
-                g_instrument.string(i).homingDone();
-                g_anchored[i] = true;
-            }
-            continue;
-        }
-        allDone = false;
-        bool rawHigh = g_steppers.homeRawHigh(i);
-        HomingCommand cmd = g_homing[i].update(nowMs, rawHigh, g_steppers.positionMm(i),
-                                               g_steppers.isRunning(i));
-        switch (cmd.kind) {
-            case MoveKind::Stop: g_steppers.stop(i); break;
-            case MoveKind::MoveVelocity: g_steppers.setVelocityMm(i, cmd.velocityMmS); break;
-            case MoveKind::MoveTo: g_steppers.moveToMmRaw(i, cmd.targetMm); break;
-        }
-    }
-    if (!allDone) return;
-
-    // Never arm while a faulted axis is still physically moving (shared ENABLE
-    // stays live for all drivers): wait for every faulted axis to report stopped.
-    for (size_t i = 0; i < g_homing.size(); ++i) {
-        if (g_axisFaulted[i] && g_steppers.isRunning(i)) return;  // still braking
-    }
-
-    // Refuse to arm with zero working axes: hard-stop and stay safely in Boot.
-    if (active - faulted <= 0) {
-        hardStopAll();
-        g_safety.recordFault("homing", "no axis could be homed — not arming", nowMs);
-        g_safety.reset();
-        g_phase = AppPhase::Boot;
-        return;
-    }
-
-    // Homing -> Armed through the safety FSM (the profile was validated before the
-    // seek began). If the FSM refuses (a panic latched mid-homing) stay out of Ready.
-    if (!g_safety.armAfterHoming()) {
-        hardStopAll();
-        g_phase = AppPhase::Boot;
-        return;
-    }
-    g_phase = AppPhase::Ready;
-    // A deferred profile activation only "succeeds" when the NEW profile really
-    // reaches Ready — not when the swap merely started (audit 7).
-    if (uint32_t cid = g_pendingActivationCmd) {
-        setCommandResult(cid, CommandResultRing::Succeeded);
-        g_pendingActivationCmd = 0;
-    }
-    if (faulted > 0) {
-        // Announce only the axes that actually work (spec §13.2).
-        rebuildRuntimeCapabilities();
-        notifyCapabilitiesChanged();
-        g_safety.recordFault("homing",
-                             std::to_string(faulted) + " axis/axes failed homing "
-                             "(degraded run)", nowMs);
-    } else {
-        g_degraded = false;
-    }
-}
-
-// HARD STOP (audit P0.3): E-stop / panic / unrecoverable fault. Everything is cut
-// AT ONCE — no mechanical movement is ever a precondition for stopping. This is
-// deliberately distinct from the CONTROLLED PARK used by a profile change / normal
-// stop (see controlledParkAll), which first drives the fingers up and waits.
-void hardStopAll() {
-    g_instrument.panic();
-    g_steppers.hardStop();   // force-stop every axis where it stands, ENABLE off
-    g_servos.hardStop();     // /OE off + direct PWM off, before any I2C traffic
-    for (auto& s : g_sched) s = StringSched{};
-    g_testOffs.clear();  // drop scheduled test Note Offs so a stale one can't stop
-                         // a future note with the same channel/number (audit P1-4)
-    // A panic / E-stop supersedes any deferred profile activation: report the
-    // waiting command as CANCELLED so a client polling it stops immediately
-    // instead of waiting out a "queued" ghost.
-    if (uint32_t cid = g_activation.commandId())
-        setCommandResult(cid, CommandResultRing::Cancelled);
-    g_activation.cancel();
-    g_phase = AppPhase::Boot;
-}
-
-void doPanic() {
-    hardStopAll();
-    // A hardware E-stop outranks a software panic: never downgrade a latched
-    // EmergencyStop to Panic (audit P1-17). The machine is already neutralised.
-    if (g_safety.state() != SafetyState::EmergencyStop)
-        g_safety.panic("web/CC panic", millis());
-}
-
-// Hardware E-stop: latches the distinct EmergencyStop state (not Panic).
-void doEmergencyStop() {
-    hardStopAll();
-    g_safety.emergencyStop(millis());
-}
+bool safetyLocked() { return g_supervisor.locked(); }
+bool beginHoming(uint32_t nowMs) { return g_supervisor.beginHoming(nowMs); }
+bool doReset(uint32_t nowMs) { return g_supervisor.reset(nowMs); }
+void doHoming(uint32_t nowMs) { g_supervisor.tickHoming(nowMs); }
+void hardStopAll() { g_supervisor.hardStopAll(); }
+void doPanic() { g_supervisor.panic(); }
+void doEmergencyStop() { g_supervisor.emergencyStop(); }
 
 // ---- loop-side command handlers (only ever called from drainCommands) --------
 
@@ -704,7 +355,7 @@ bool doActivateProfile(const Profile& p, uint32_t nowMs, uint32_t commandId) {
     // driven up (audit P0.3: hardStop is for E-stop, controlledPark for a swap).
     g_instrument.panic();
     g_steppers.controlledStopAll();
-    for (auto& s : g_sched) s = StringSched{};
+    g_scheduler.reset();
     g_testOffs.clear();  // a profile change cancels any pending test Note Offs
     // Immediately demote from Armed to PowerOnSafe and enter Reconfiguring so no
     // test servo / test note / MIDI can drive the (about-to-be-torn-down) hardware
@@ -750,6 +401,7 @@ void servicePendingActivation(uint32_t nowMs) {
             g_profile = p;
             g_profile.capabilitiesRevision++;
             applyProfile();  // re-resolves pins incl. ESTOP, reinitialises hardware
+            bindDinMidi();   // the MIDI_RX pin may have moved with the new config
         }))
         return;
     // Carry the awaiting command across the re-home: doHoming marks it succeeded
@@ -835,10 +487,10 @@ bool axisManuallyMovable(int axis, uint32_t nowMs) {
         !g_profile.strings[axis].enabled) return false;         // disabled axis: no-op
     if (axis < static_cast<int>(g_axisFaulted.size()) && g_axisFaulted[axis]) return false;
     if (g_instrument.target(axis).active) return false;         // don't fight a live note
-    if (g_sched[axis].phase != StringSched::Idle) return false;  // axis busy
+    if (!g_scheduler.idle(axis)) return false;                   // axis busy
     if (g_steppers.isRunning(axis)) return false;                // still moving
     // Wait until a just-released finger has fully lifted (§16: no drag).
-    if (static_cast<int32_t>(nowMs - g_sched[axis].jogSafeAtMs) < 0) return false;
+    if (!g_scheduler.jogSafe(axis, nowMs)) return false;
     return true;
 }
 
@@ -864,17 +516,7 @@ bool doMoveTo(int axis, double positionMm, uint32_t nowMs) {
 
 // Discard every queued command without executing it (used after a panic so a
 // stale profile activation / test can't fire once the STOP has latched).
-void purgeCommands() {
-    if (!g_cmdQueue) return;
-    AppCommand* c = nullptr;
-    while (xQueueReceive(g_cmdQueue, &c, 0) == pdTRUE) {
-        // The command never ran: report CANCELLED so a client polling it stops at
-        // once instead of waiting out a "queued" ghost to its timeout (audit 6).
-        setCommandResult(c->id, CommandResultRing::Cancelled);
-        delete c->profile;
-        delete c;
-    }
-}
+void purgeCommands() { g_commands.purge(); }
 
 // Honour a pending STOP before anything else. Returns true if a panic ran, so
 // the caller can skip the rest of this tick's command/motion work.
@@ -886,375 +528,43 @@ bool servicePanic(uint32_t nowMs) {
     return true;
 }
 
-// Drain a BOUNDED number of queued web commands so a long burst (e.g. many
-// profile activations) can never starve the E-stop / panic checks that run each
-// loop. The rest wait for the next tick.
-void drainCommands(uint32_t nowMs) {
-    if (!g_cmdQueue) return;
-    static constexpr int kMaxCommandsPerTick = 2;
-    AppCommand* c = nullptr;
-    for (int n = 0; n < kMaxCommandsPerTick && xQueueReceive(g_cmdQueue, &c, 0) == pdTRUE;
-         ++n) {
-        bool ok = true;
-        switch (c->type) {
-            case CmdType::Panic: doPanic(); purgeCommands(); break;
-            case CmdType::Reset: ok = doReset(nowMs); break;
-            case CmdType::ActivateProfile:
-                ok = c->profile && doActivateProfile(*c->profile, nowMs, c->id);
-                break;
-            case CmdType::TestNote:
-                ok = doTestNote(c->channel, c->note, c->velocity, c->durationMs, nowMs,
-                                c->ccStringValue, c->ccFretValue);
-                break;
-            case CmdType::TestServo:
-                ok = doTestServo(c->servoIndex, c->servoActive);
-                break;
-            case CmdType::Jog:
-                ok = doJog(c->axisIndex, c->jogDeltaMm, nowMs);
-                break;
-            case CmdType::MoveTo:
-                ok = doMoveTo(c->axisIndex, c->targetMm, nowMs);
-                break;
-        }
-        // A profile activation is DEFERRED: doActivateProfile already marked it
-        // Running and doHoming closes it when the new profile reaches Ready — do
-        // not overwrite that with a premature "succeeded" (audit 7).
-        if (!(c->type == CmdType::ActivateProfile && ok))
-            setCommandResult(c->id, ok ? CommandResultRing::Succeeded
-                                       : CommandResultRing::Refused);
-        delete c->profile;  // owned copy (null for non-profile commands)
-        delete c;
+// Run one drained command. A profile activation is DEFERRED: doActivateProfile
+// already marked it Running and the supervisor closes it when the new profile
+// really reaches Ready — reporting "succeeded" here would mean "started" (audit 7).
+CmdOutcome runCommand(const AppCommand& c, uint32_t nowMs) {
+    switch (c.type) {
+        case CmdType::Panic: doPanic(); purgeCommands(); return CmdOutcome::Succeeded;
+        case CmdType::Reset: return doReset(nowMs) ? CmdOutcome::Succeeded : CmdOutcome::Refused;
+        case CmdType::ActivateProfile:
+            return (c.profile && doActivateProfile(*c.profile, nowMs, c.id))
+                       ? CmdOutcome::Deferred : CmdOutcome::Refused;
+        case CmdType::TestNote:
+            return doTestNote(c.channel, c.note, c.velocity, c.durationMs, nowMs,
+                              c.ccStringValue, c.ccFretValue)
+                       ? CmdOutcome::Succeeded : CmdOutcome::Refused;
+        case CmdType::TestServo:
+            return doTestServo(c.servoIndex, c.servoActive) ? CmdOutcome::Succeeded
+                                                            : CmdOutcome::Refused;
+        case CmdType::Jog:
+            return doJog(c.axisIndex, c.jogDeltaMm, nowMs) ? CmdOutcome::Succeeded
+                                                           : CmdOutcome::Refused;
+        case CmdType::MoveTo:
+            return doMoveTo(c.axisIndex, c.targetMm, nowMs) ? CmdOutcome::Succeeded
+                                                            : CmdOutcome::Refused;
     }
+    return CmdOutcome::Refused;
+}
+
+void drainCommands(uint32_t nowMs) {
+    static constexpr int kMaxCommandsPerTick = 2;
+    g_commands.drain(kMaxCommandsPerTick,
+                     [nowMs](const AppCommand& c) { return runCommand(c, nowMs); });
 }
 
 // The per-string striker: the plectrum ('pluck') if present, otherwise the
 // per-string strum servo ('strum'). Both name the same physical per-string
 // striker, so an instrument may wire either one. There is no shared strummer —
 // every string is plucked/strummed on its own.
-int perStringStrikeIndex(size_t i) {
-    int p = g_servos.pluckIndex(static_cast<int>(i));
-    return p >= 0 ? p : g_servos.strumIndex(static_cast<int>(i));
-}
-
-// Per-axis endstop safety scan, run for EVERY axis each tick BEFORE any musical
-// logic and regardless of whether a note is active — so a carriage still
-// decelerating after a Note Off (or drifting while idle) is caught. Returns true
-// if the axis just faulted (caller should skip its musical tick).
-bool tickAxisSafety(size_t i, uint32_t nowMs) {
-    if (i < g_axisFaulted.size() && g_axisFaulted[i]) return false;  // already out
-    // A LIMIT switch tripped removes this axis from service (allocator + selection
-    // + capabilities) without disturbing the others.
-    if (g_steppers.limitActive(i)) {
-        g_diag.addLimitTrip();
-        faultRuntimeAxis(i, "LIMIT tripped", nowMs);
-        return true;
-    }
-    // HOME asserting while the carriage position says it is well away from home is
-    // a position/reference fault (lost steps, drift, stuck/inverted sensor). Home
-    // is anchored to 0 mm, so the ABSOLUTE distance is the mismatch (the axis
-    // coordinate can run negative depending on the homing direction). Positions
-    // legitimately near home (open string / low frets) are not faulted.
-    static constexpr double kHomeMismatchMm = 10.0;
-    if (g_steppers.homeActive(i) && std::fabs(g_steppers.positionMm(i)) > kHomeMismatchMm) {
-        faultRuntimeAxis(i, "HOME asserted away from home (position drift)", nowMs);
-        return true;
-    }
-    return false;
-}
-
-// Drive one string's mechanical sequence toward a plucked note.
-void tickString(size_t i, uint32_t nowMs) {
-    StringController& sc = g_instrument.string(i);
-    const StringTarget& tgt = g_instrument.target(i);
-    StringSched& sch = g_sched[i];
-
-    if (!tgt.active) {
-        if (sch.phase == StringSched::Idle) return;
-        if (sch.phase != StringSched::WaitStopped) {
-            // Note released / cancelled: STOP the carriage (a Note Off during a
-            // move must not let it finish travelling), lift the finger, damp.
-            g_steppers.stop(i);
-            int fi = g_servos.fingerIndex(static_cast<int>(i));
-            if (fi >= 0) g_servos.release(fi);
-            // A manual jog must not move the carriage until the finger has fully
-            // lifted off the string (§16: never drag the finger).
-            sch.jogSafeAtMs = nowMs + g_servos.travelMs(fi);
-            if (sch.liftIndex >= 0) { g_servos.release(sch.liftIndex); sch.liftIndex = -1; }
-            sch.liftStarted = false;
-            int di = g_servos.damperIndex(static_cast<int>(i));
-            if (di >= 0) g_servos.strike(di);
-            sch.phase = StringSched::WaitStopped;
-        }
-        // Only declare the axis idle once the carriage has REALLY stopped, so a
-        // note accepted right after can't issue a moveTo into a still-decelerating
-        // motor (the musical analogue of the homing brake states).
-        if (!g_steppers.isRunning(i)) {
-            sc.dampingDone();
-            sch.phase = StringSched::Idle;
-            sch.commandId = 0;
-        }
-        return;
-    }
-
-    if (sch.commandId != tgt.commandId) {
-        // New note replacing a previous one on this string (e.g. the allocator's
-        // ReplaceOldest): explicitly damp the still-vibrating string AND wait for
-        // the damper's travel/settle before the carriage moves, so a ringing
-        // string is not dragged to a new fret and re-plucked (audit P1-7).
-        sch.dampUntilMs = nowMs;
-        if (sch.phase != StringSched::Idle && sch.phase != StringSched::WaitStopped) {
-            int di = g_servos.damperIndex(static_cast<int>(i));
-            if (di >= 0) {
-                g_servos.strike(di);
-                sch.dampUntilMs = nowMs + g_servos.travelMs(di) + g_servos.settleMs(di);
-            }
-        }
-        // A strum lift engaged for the previous note is raised before anything else.
-        if (sch.liftIndex >= 0) { g_servos.release(sch.liftIndex); sch.liftIndex = -1; }
-        // Fixed reception -> sound delay. A directly-played note is received now,
-        // so anchor the delay here. A merely-PREPARED (anticipated) note is not
-        // "received" until its Note On triggers it, so leave it unanchored and
-        // re-anchor at the trigger instant in the Ready state below.
-        sch.executeAtMs = nowMs + g_profile.midi.noteExecutionDelayMs;
-        sch.executeAnchored = sc.willArmOnSettle();
-        sch.fingerPressStarted = false;
-        sch.liftStarted = false;
-        sch.strikeIndex = -1;
-        // Lift the finger and WAIT for it to travel up before moving the carriage,
-        // so the finger never drags along the string (§16).
-        sch.commandId = tgt.commandId;
-        sch.fingerIndex = g_servos.fingerIndex(static_cast<int>(i));
-        if (sch.fingerIndex >= 0) g_servos.release(sch.fingerIndex);
-        sch.phase = StringSched::ReleasingFinger;
-        sch.phaseStartMs = nowMs;
-    }
-
-    // A prepared (anticipated) note is "received" when its Note On triggers it —
-    // possibly while it is still mechanically moving. Anchor the fixed execution
-    // delay to that trigger instant so it is not over-delayed to settle time.
-    if (!sch.executeAnchored && sc.consumeTriggerEdge()) {
-        sch.executeAtMs = nowMs + g_profile.midi.noteExecutionDelayMs;
-        sch.executeAnchored = true;
-    }
-
-    switch (sch.phase) {
-        case StringSched::ReleasingFinger:
-            // Start moving only once the finger has lifted, the damper (if any) has
-            // acted, AND the carriage has fully stopped (a new note arriving during
-            // a cancel deceleration must not issue a moveTo into a moving motor).
-            if ((sch.fingerIndex < 0 ||
-                 nowMs - sch.phaseStartMs >= g_servos.travelMs(sch.fingerIndex)) &&
-                static_cast<int32_t>(nowMs - sch.dampUntilMs) >= 0 &&
-                g_steppers.atTarget(i)) {
-                // Starting a carriage is the other in-rush event on this machine
-                // (a whole chord accelerating at once), so a REPOSITIONING move is
-                // staggerable like a finger press. It has slack: the note only
-                // sounds at executeAtMs, and a deferred start just eats into that
-                // budget. Steppers are on their own drivers, hence no board bucket.
-                if (!g_actuators.requestMove(MoveClass::Staggerable, nowMs,
-                                             g_steppers.board(i)))
-                    break;  // no permit this tick — retry on the next
-                double dist = tgt.positionMm - g_steppers.positionMm(i);
-                const AxisConfig& ac = g_profile.strings[i];
-                uint32_t est = estimateMoveMs(dist, ac.maxSpeedMmS, ac.maxAccelMmS2);
-                // Generous margin (3x + 500 ms floor) so only a genuine stall/refusal
-                // faults the axis, but a slow-but-valid profile is never mis-flagged.
-                if (!actOk(i, g_steppers.moveToMm(i, tgt.positionMm), "carriage move",
-                           nowMs))
-                    break;
-                sch.phase = StringSched::MovingToFret;
-                sch.phaseStartMs = nowMs;
-                sch.estArriveMs = nowMs + est;
-                sch.moveDeadlineMs = nowMs + 500u + 3u * est;
-            }
-            break;
-        case StringSched::MovingToFret:
-            // Finger lead: begin the finger descent up to fingerLeadMs before the
-            // estimated arrival so the finger reaches the string around arrival,
-            // trimming the post-arrival latency. Opt-in (0 = press only on arrival);
-            // set too large it can drag, so it is the user's to tune.
-            if (!sc.openString() && sch.fingerIndex >= 0 && !sch.fingerPressStarted &&
-                g_profile.midi.fingerLeadMs > 0 &&
-                static_cast<int32_t>(nowMs - sch.estArriveMs) +
-                        static_cast<int32_t>(g_profile.midi.fingerLeadMs) >= 0) {
-                // A finger press is STAGGERABLE (audit P1.6): it draws its peak at
-                // start and has slack, so it waits for a governor permit. Being
-                // deferred a tick only trims the lead, never the note itself.
-                if (g_actuators.requestMove(MoveClass::Staggerable, nowMs,
-                                            g_servos.board(sch.fingerIndex))) {
-                    if (!actOk(i, g_servos.press(sch.fingerIndex), "finger press", nowMs))
-                        break;
-                    sch.fingerPressStarted = true;
-                    sch.phaseStartMs = nowMs;  // finger travel timer starts now
-                }
-            }
-            // Arrived only when the carriage is stopped AND actually at the fret
-            // position (a refused/interrupted move must not be read as "reached").
-            if (g_steppers.reachedTarget(i)) {
-                sc.motionReached();
-                if (sc.openString() || sch.fingerIndex < 0) {
-                    sch.phase = StringSched::Ready;  // no finger press for open string
-                } else if (sch.fingerPressStarted) {
-                    // Finger already descending (lead) — keep its running travel
-                    // timer (phaseStartMs) instead of restarting the press.
-                    sch.phase = StringSched::PressingFinger;
-                } else if (actOk(i, g_servos.press(sch.fingerIndex), "finger press",
-                                 nowMs)) {
-                    // On ARRIVAL the press is on the critical path to the note, so it
-                    // is issued straight away (registered as Deadline). The governor
-                    // already spread the leads; delaying here would delay the sound.
-                    g_actuators.requestMove(MoveClass::Deadline, nowMs,
-                                            g_servos.board(sch.fingerIndex));
-                    sch.phase = StringSched::PressingFinger;
-                    sch.phaseStartMs = nowMs;
-                }
-                // A refused write already faulted the axis (P1.4/P1.5): play no note
-                // with a finger that never pressed.
-            } else if (static_cast<int32_t>(nowMs - sch.moveDeadlineMs) >= 0) {
-                // The move never completed within its estimated budget (command
-                // refused by the step engine, a stall, or a stop far from target):
-                // fault the axis instead of waiting forever in MovingToFret.
-                g_diag.addMoveTimeout();
-                faultRuntimeAxis(i, "move did not reach target (timeout)", nowMs);
-            }
-            break;
-        case StringSched::PressingFinger:
-            if (nowMs - sch.phaseStartMs >= g_servos.travelMs(sch.fingerIndex)) {
-                sc.fingerPressed();
-                sch.phase = StringSched::Settling;
-                sch.phaseStartMs = nowMs;
-            }
-            break;
-        case StringSched::Settling: {
-            // Strum lead: begin lowering the strum lift up to strumLeadMs before the
-            // string is Ready, so the strummer is already engaged when the strike
-            // time comes (overlaps the lift travel with the finger settle). Skip it
-            // for a merely-prepared note — it must not rest on (and mute) the string
-            // through the whole pre-trigger window; its lift lowers after trigger.
-            if (!sch.liftStarted && sc.willArmOnSettle() && g_profile.midi.strumLeadMs > 0) {
-                int pi = perStringStrikeIndex(i);
-                int li = pi >= 0 ? g_servos.strumLiftIndex(static_cast<int>(i)) : -1;
-                uint32_t settle = g_servos.settleMs(sch.fingerIndex);
-                if (li >= 0 &&
-                    (nowMs - sch.phaseStartMs) + g_profile.midi.strumLeadMs >= settle &&
-                    // Anticipated lift: staggerable, it has slack before the strike.
-                    g_actuators.requestMove(MoveClass::Staggerable, nowMs,
-                                            g_servos.board(li))) {
-                    // start lowering the lift early
-                    if (!actOk(i, g_servos.press(li), "strum lift engage", nowMs)) break;
-                    sch.liftIndex = li;
-                    sch.strikeIndex = pi;
-                    sch.liftStartMs = nowMs;
-                    sch.liftStarted = true;
-                }
-            }
-            if (nowMs - sch.phaseStartMs >= g_servos.settleMs(sch.fingerIndex)) {
-                sc.settled();
-                sch.phase = StringSched::Ready;
-            }
-            break;
-        }
-        case StringSched::Ready: {
-            // An anticipated note is "received" when its Note On triggers it: the
-            // fixed delay must run from that instant, not from prepare time. The
-            // arm transitioning true here IS that trigger, so anchor now.
-            if (!sch.executeAnchored && sc.pluckArmed()) {
-                sch.executeAtMs = nowMs + g_profile.midi.noteExecutionDelayMs;
-                sch.executeAnchored = true;
-            }
-            if (!sc.pluckArmed()) break;  // not armed (prepared / already plucked)
-            int pi = perStringStrikeIndex(i);
-            // Pre-lower the strum lift DURING the fixed-delay wait so the strike
-            // lands AT executeAtMs even with a lift — this keeps a chord's lift and
-            // no-lift strings synchronised. It begins travel+engageDelay before
-            // executeAtMs; with a zero/short delay it simply starts as soon as ready.
-            if (pi >= 0 && !sch.liftStarted) {
-                int li = g_servos.strumLiftIndex(static_cast<int>(i));
-                if (li >= 0) {
-                    uint32_t liftMs = g_servos.travelMs(li) + g_servos.engageDelayMs(li);
-                    if (static_cast<int32_t>(nowMs - sch.executeAtMs) +
-                            static_cast<int32_t>(liftMs) >= 0) {
-                        // This lift MUST be down by executeAtMs or the strike misses
-                        // the string, so it is a Deadline move: registered for the
-                        // in-rush picture but never throttled.
-                        g_actuators.requestMove(MoveClass::Deadline, nowMs,
-                                                g_servos.board(li));
-                        if (!actOk(i, g_servos.press(li), "strum lift engage", nowMs))
-                            break;
-                        sch.liftIndex = li;
-                        sch.strikeIndex = pi;
-                        sch.liftStartMs = nowMs;
-                        sch.liftStarted = true;
-                    }
-                }
-            }
-            // Fixed reception -> sound delay: stay ready but silent until the
-            // scheduled execution time. The mechanics have been preparing (and any
-            // anticipated strum lift has been lowering) during this window.
-            if (static_cast<int32_t>(nowMs - sch.executeAtMs) < 0) break;
-            if (!sc.executePluck(tgt.commandId)) break;
-            // Per-string strike: every string is plucked/strummed on its own — there
-            // is no shared strummer. An optional strum-lift lowers the strum servo
-            // onto the string for the stroke, then raises it.
-            if (pi >= 0) {
-                // Use the lift already lowering (strum lead / pre-lower) if any,
-                // otherwise start it now.
-                int li = sch.liftStarted ? sch.liftIndex
-                                         : g_servos.strumLiftIndex(static_cast<int>(i));
-                if (li >= 0) {
-                    if (!sch.liftStarted) {
-                        // Sound is due now: never throttled (Deadline).
-                        g_actuators.requestMove(MoveClass::Deadline, nowMs,
-                                                g_servos.board(li));
-                        // lower / engage the strum servo now
-                        if (!actOk(i, g_servos.press(li), "strum lift engage", nowMs))
-                            break;
-                        sch.liftIndex = li;
-                        sch.strikeIndex = pi;
-                        sch.liftStartMs = nowMs;
-                        sch.liftStarted = true;
-                    }
-                    sch.phase = StringSched::StrumLiftDown;
-                    break;
-                }
-                // The strike IS the sound: Deadline, never governed (audit P1.6).
-                g_actuators.requestMove(MoveClass::Deadline, nowMs, g_servos.board(pi));
-                if (!actOk(i, g_servos.strike(pi, tgt.intensity), "pluck strike", nowMs))
-                    break;
-            }
-            break;
-        }
-        case StringSched::StrumLiftDown:
-            // Strum once the lift has lowered the strum servo onto the string
-            // (travel + engage delay from when the descent STARTED — which may have
-            // been anticipated during the settle via strumLeadMs).
-            if (static_cast<int32_t>(nowMs - (sch.liftStartMs +
-                    g_servos.travelMs(sch.liftIndex) +
-                    g_servos.engageDelayMs(sch.liftIndex))) >= 0) {
-                g_actuators.requestMove(MoveClass::Deadline, nowMs,
-                                        g_servos.board(sch.strikeIndex));
-                if (!actOk(i, g_servos.strike(sch.strikeIndex, tgt.intensity),
-                           "strum strike", nowMs))
-                    break;
-                sch.phase = StringSched::StrumLiftHold;
-                sch.phaseStartMs = nowMs;
-            }
-            break;
-        case StringSched::StrumLiftHold:
-            // Hold the lift down until the strum stroke has completed, then raise it.
-            if (nowMs - sch.phaseStartMs >= g_servos.travelMs(sch.strikeIndex)) {
-                g_servos.release(sch.liftIndex);  // raise / disengage
-                sch.liftIndex = -1;
-                sch.strikeIndex = -1;
-                sch.phase = StringSched::Ready;
-            }
-            break;
-        case StringSched::WaitStopped:
-        case StringSched::Idle:
-            break;
-    }
-}
-
 // Reset reason as a short stable string, so a bench run can tell a clean power-up
 // from a brown-out or a watchdog reset.
 const char* resetReasonStr() {
@@ -1323,6 +633,36 @@ std::string buildDiagnosticsJson() {
 // web "Start hotspot" request. Runs on the main loop (owns Net + WiFi). Switching
 // the radio is independent of the instrument state, so it works in any phase — the
 // point is precisely to stay reachable when the machine will not arm.
+// ---- DIN-5 / TRS MIDI input -----------------------------------------------
+//
+// DIN MIDI is just 31250-baud serial, and MidiDinTransport has always been able
+// to decode it — it was passed a null Stream, so the whole path was dead. What it
+// needed was a device-level pin, which now exists as the `MIDI_RX` signal.
+//
+// UART2 is used because UART0 is the programming/diagnostic console: binding MIDI
+// to it would fight the serial monitor and eat the boot log. RX only — this
+// firmware receives MIDI, it does not send it — so no TX pin is claimed.
+constexpr int8_t kDinMidiUart = 2;
+constexpr uint32_t kDinMidiBaud = 31250;
+bool g_dinMidiBound = false;
+
+void bindDinMidi() {
+    const int8_t rx = pinOf("MIDI_RX");
+    if (rx < 0) {
+        g_dinMidi.begin(nullptr);   // no pin assigned: the transport stays inert
+        g_dinMidiBound = false;
+        return;
+    }
+    static HardwareSerial dinSerial(kDinMidiUart);
+    // -1 for TX: claim only the RX pin, so nothing else is taken from the user.
+    dinSerial.begin(kDinMidiBaud, SERIAL_8N1, rx, -1);
+    g_dinMidi.begin(&dinSerial);
+    g_dinMidiBound = true;
+    Serial.printf("[midi] DIN input on GPIO%d (UART%d, %u baud)\n", rx,
+                  static_cast<int>(kDinMidiUart),
+                  static_cast<unsigned>(kDinMidiBaud));
+}
+
 // ---- device-level network settings (NVS) ---------------------------------
 //
 // The link config belongs to the DEVICE, not to the instrument (P1.13): moving a
@@ -1420,73 +760,11 @@ void refreshDiagnosticsJson() {
 
 }  // namespace
 
-void setup() {
-    Serial.begin(115200);
-    g_safety.boot();  // drivers off, servos neutralised (spec §21.1)
-
-    // Web -> loop() command channel + shared-state mutex, created before the web
-    // server so the first request is already safe.
-    g_cmdQueue = xQueueCreate(16, sizeof(AppCommand*));
-    g_stateMutex = xSemaphoreCreateMutex();
-    g_storageMutex = xSemaphoreCreateMutex();
-    g_resultMutex = xSemaphoreCreateMutex();
-
-    pinMode(kBootButtonPin, INPUT_PULLUP);  // BOOT button -> force hotspot (long press)
-    g_bootHold.configure(kBootHoldMs);
-
-    g_storage.begin();
-    if (g_storage.degraded()) {
-        // A previously-initialised filesystem that won't mount: don't auto-wipe.
-        g_safety.recordFault("storage",
-            "LittleFS unmountable — profiles unavailable; POST /api/storage/format "
-            "to reformat", millis());
-    }
-    // Never configure GPIO (STEP/DIR/HOME/LIMIT/ENABLE/I²C/PCA/LEDC) from a profile
-    // that fails semantic validation — and never FABRICATE one either (audit P0.1).
-    // The firmware used to synthesise a Ukulele profile here and arm it: on a real
-    // machine that drives someone else's pins at someone else's speeds. With no
-    // valid stored profile the runtime now keeps an EMPTY profile (no axes, no
-    // servos, no actuator pins) and latches CONFIG_SAFE: network + web come up so a
-    // profile can be built or loaded, but no actuator can ever move. The Ukulele
-    // template still exists in the web UI — it is just never applied behind the
-    // user's back.
-    bool haveProfile = g_storage.load(g_storage.startupSlot(), g_profile) &&
-                       ProfileValidator::isActivatable(g_profile);
-    if (!haveProfile) {
-        g_profile = Profile{};  // empty: nothing to drive
-        g_safety.configSafe();
-        g_phase = AppPhase::ConfigSafe;
-    }
-    // Stable per-device SysEx identity from the ESP32 MAC, so two instruments on
-    // the same network are distinguishable (set before applyProfile's rebuild).
-    {
-        uint64_t mac = ESP.getEfuseMac();
-        uint8_t id[5];
-        for (int i = 0; i < 5; ++i) id[i] = static_cast<uint8_t>((mac >> (8 * i)) & 0x7F);
-        g_sysex.setDeviceId(id);
-    }
-    { StateGuard lock; applyProfile(); }  // resolves the E-stop pin from the profile
-    // Answer StringConfig discovery with the richer v2 block (CC bounds, offsets,
-    // per-string frets, string mapping/order). The block carries its own version
-    // byte so a v1-only client can still detect and skip it.
-    g_sysex.setUseV2(true);
-
-    // Wi-Fi secrets live in NVS, never in the exportable profile (§20). The link
-    // config lives there too and wins over whatever the profile carries: it
-    // describes this machine, so swapping instruments must not move the device to
-    // another network (P1.13).
-    loadNetworkOverrides(g_profile.network);
-    Preferences prefs;
-    prefs.begin("gmb", true);
-    String staPass = prefs.getString("wifipass", "");
-    String apPass = prefs.getString("appass", "");
-    prefs.end();
-    g_net.begin(g_profile.network, staPass.c_str(), apPass.c_str());
-    g_midi.begin(5006);
-    g_usbMidi.begin();  // P1.7: inert until wired to native USB-MIDI (no-op elsewhere)
-    g_dinMidi.begin(nullptr);  // P1.7: byte->event logic ready; inert until a DIN RX
-                               // UART is bound here (a DeviceConfig pin, see P1.13)
-
+// Wire the REST/WebSocket API to the app. Every callback here is the SAME shape:
+// a read-only getter takes the state mutex, and anything that MOVES the machine
+// only enqueues a command — the web task never owns mechanical state (spec P0).
+// Lifted out of setup() so the boot sequence reads as a sequence again.
+WebContext buildWebContext() {
     WebContext ctx;
     ctx.profile = &g_profile;
     ctx.instrument = &g_instrument;
@@ -1535,6 +813,55 @@ void setup() {
         return udpSourcePolicyName(g_midi.sourcePolicy());
     };
     ctx.midiSourceLocked = []() -> bool { return g_midi.sourceLocked(); };
+    ctx.midiTransports = []() -> std::vector<WebContext::MidiTransportState> {
+        std::vector<WebContext::MidiTransportState> out;
+        WebContext::MidiTransportState udp;
+        udp.name = "wifiUdp";
+        udp.label = "Wi-Fi (UDP)";
+        // Bound means "can actually receive": the socket is only useful with a link.
+        udp.bound = g_net.connected();
+        udp.detail = udp.bound ? ("UDP port " + std::to_string(kMidiUdpPort))
+                               : "no network link";
+        udp.events = g_transportEvents[0].load();
+        out.push_back(udp);
+
+        WebContext::MidiTransportState usb;
+        usb.name = "usb";
+        usb.label = "USB-MIDI";
+        usb.bound = g_usbMidi.bound();
+        usb.detail = usb.bound ? "native USB-MIDI (TinyUSB), host connected"
+#if defined(GMB_USB_MIDI)
+                               : "native USB-MIDI built in — no host connected";
+#else
+                               : "not built in (see the esp32-s3-usbmidi env)";
+#endif
+        usb.events = g_transportEvents[1].load();
+        out.push_back(usb);
+
+        WebContext::MidiTransportState din;
+        din.name = "din";
+        din.label = "DIN-5 / TRS";
+        din.bound = g_dinMidiBound;
+        din.detail = g_dinMidiBound
+                         ? ("GPIO" + std::to_string(pinOf("MIDI_RX")) + ", UART" +
+                            std::to_string(kDinMidiUart) + ", 31250 baud")
+                         : "no MIDI_RX pin assigned";
+        din.events = g_transportEvents[2].load();
+        out.push_back(din);
+        return out;
+    };
+    ctx.onSetMidiSource = [](int policy, bool unlock) -> bool {
+        if (policy >= 0 && policy <= 2) {
+            Preferences p;
+            if (!p.begin("gmb", false)) return false;
+            size_t written = p.putInt("midisrc", policy);
+            p.end();
+            if (written == 0) return false;   // NVS write failed: report, don't apply
+            g_midiSourceRequested.store(policy);  // applied on the main loop
+        }
+        if (unlock) g_midiUnlockRequested.store(true);
+        return true;
+    };
     ctx.onStartHotspot = []() { g_hotspotRequested.store(true); };
     ctx.onWifiScanStart = []() { g_wifiScanRequested.store(true); };
     ctx.wifiScanJson = []() -> std::string { StateGuard lock; return g_wifiScanJson; };
@@ -1600,15 +927,164 @@ void setup() {
             if (g_anchored[i] && !g_homing[i].failed()) ++n;
         return n;
     };
-    ctx.onActivateProfile = [](const Profile& p) -> uint32_t {
+    ctx.onActivateProfile = [](const Profile& p, bool keepDeviceConfig) -> uint32_t {
+        Profile target = p;
+        if (keepDeviceConfig) {
+            // Loading a stored INSTRUMENT: keep this machine's device half. The
+            // whole profile used to be adopted, so a slot saved on (or before) a
+            // different setup silently replaced the network settings, the pin map,
+            // the E-stop polarity and the declared power hardware of the machine
+            // actually running. The radio was not re-initialised, so /api/status
+            // then reported a network the device was not on — and the E-stop
+            // polarity change is worse than cosmetic.
+            StateGuard lock;
+            target = mergeProfile(deviceConfigOf(g_profile), instrumentProfileOf(p), p);
+        }
         // Validate synchronously (pure, safe off the main loop) so an invalid
         // profile is rejected immediately; enqueue the actual apply for loop().
-        if (!ProfileValidator::isActivatable(p)) return 0u;
+        // Validate the MERGED profile: the instrument half must fit THIS device's
+        // pins, which is exactly the combination that will run.
+        if (!ProfileValidator::isActivatable(target)) return 0u;
         AppCommand c{CmdType::ActivateProfile};
-        c.profile = new Profile(p);  // ownership transfers to the queued command
+        c.profile = new Profile(target);  // ownership transfers to the queued command
         return enqueueCommand(c);
     };
     ctx.onReset = []() -> uint32_t { return enqueueCommand(AppCommand{CmdType::Reset}); };
+    return ctx;
+}
+
+void setup() {
+    Serial.begin(115200);
+    g_safety.boot();  // drivers off, servos neutralised (spec §21.1)
+
+    // Web -> loop() command channel + shared-state mutex, created before the web
+    // server so the first request is already safe.
+    g_commands.begin(16);
+    g_stateMutex = xSemaphoreCreateMutex();
+    g_storageMutex = xSemaphoreCreateMutex();
+
+    pinMode(kBootButtonPin, INPUT_PULLUP);  // BOOT button -> force hotspot (long press)
+    g_bootHold.configure(kBootHoldMs);
+
+    // The playback FSM's collaborators never change identity, so bind once. The two
+    // callbacks keep the fault path central: the scheduler reports a bad actuator
+    // write, the app decides what that means for capabilities and arming.
+    PlaybackScheduler::Deps sd;
+    sd.instrument = &g_instrument;
+    sd.steppers = &g_steppers;
+    sd.servos = &g_servos;
+    sd.actuators = &g_actuators;
+    sd.diag = &g_diag;
+    sd.profile = &g_profile;
+    sd.axisFaulted = &g_axisFaulted;
+    sd.fault = [](size_t i, const char* reason, uint32_t nowMs) {
+        faultRuntimeAxis(i, reason, nowMs);
+    };
+    sd.actOk = [](size_t axis, ActuatorResult r, const char* what, uint32_t nowMs) {
+        return actOk(axis, r, what, nowMs);
+    };
+    g_scheduler.bind(sd);
+
+    SafetySupervisor::Deps yd;
+    yd.safety = &g_safety;
+    yd.steppers = &g_steppers;
+    yd.servos = &g_servos;
+    yd.instrument = &g_instrument;
+    yd.scheduler = &g_scheduler;
+    yd.diag = &g_diag;
+    yd.profile = &g_profile;
+    yd.phase = &g_phase;
+    yd.degraded = &g_degraded;
+    yd.homingStarted = &g_homingStarted;
+    yd.homing = &g_homing;
+    yd.anchored = &g_anchored;
+    yd.axisFaulted = &g_axisFaulted;
+    yd.estopPin = &g_estopPin;
+    yd.rebuildCaps = []() { return rebuildRuntimeCapabilities(); };
+    yd.notifyCaps = []() { notifyCapabilitiesChanged(); };
+    yd.hardStopCleanup = []() {
+        g_testOffs.clear();  // drop scheduled test Note Offs so a stale one can't stop
+                             // a future note with the same channel/number (audit P1-4)
+        // A panic / E-stop supersedes any deferred profile activation: report the
+        // waiting command as CANCELLED so a client polling it stops immediately
+        // instead of waiting out a "queued" ghost.
+        if (uint32_t cid = g_activation.commandId())
+            setCommandResult(cid, CommandResultRing::Cancelled);
+        g_activation.cancel();
+    };
+    yd.onReady = []() {
+        if (uint32_t cid = g_pendingActivationCmd) {
+            setCommandResult(cid, CommandResultRing::Succeeded);
+            g_pendingActivationCmd = 0;
+        }
+    };
+    g_supervisor.bind(yd);
+
+    g_storage.begin();
+    if (g_storage.degraded()) {
+        // A previously-initialised filesystem that won't mount: don't auto-wipe.
+        g_safety.recordFault("storage",
+            "LittleFS unmountable — profiles unavailable; POST /api/storage/format "
+            "to reformat", millis());
+    }
+    // Never configure GPIO (STEP/DIR/HOME/LIMIT/ENABLE/I²C/PCA/LEDC) from a profile
+    // that fails semantic validation — and never FABRICATE one either (audit P0.1).
+    // The firmware used to synthesise a Ukulele profile here and arm it: on a real
+    // machine that drives someone else's pins at someone else's speeds. With no
+    // valid stored profile the runtime now keeps an EMPTY profile (no axes, no
+    // servos, no actuator pins) and latches CONFIG_SAFE: network + web come up so a
+    // profile can be built or loaded, but no actuator can ever move. The Ukulele
+    // template still exists in the web UI — it is just never applied behind the
+    // user's back.
+    bool haveProfile = g_storage.load(g_storage.startupSlot(), g_profile) &&
+                       ProfileValidator::isActivatable(g_profile);
+    if (!haveProfile) {
+        g_profile = Profile{};  // empty: nothing to drive
+        g_safety.configSafe();
+        g_phase = AppPhase::ConfigSafe;
+    }
+    // Stable per-device SysEx identity from the ESP32 MAC, so two instruments on
+    // the same network are distinguishable (set before applyProfile's rebuild).
+    {
+        uint64_t mac = ESP.getEfuseMac();
+        uint8_t id[5];
+        for (int i = 0; i < 5; ++i) id[i] = static_cast<uint8_t>((mac >> (8 * i)) & 0x7F);
+        g_sysex.setDeviceId(id);
+    }
+    { StateGuard lock; applyProfile(); }  // resolves the E-stop pin from the profile
+    // Answer StringConfig discovery with the richer v2 block (CC bounds, offsets,
+    // per-string frets, string mapping/order). The block carries its own version
+    // byte so a v1-only client can still detect and skip it.
+    g_sysex.setUseV2(true);
+
+    // Wi-Fi secrets live in NVS, never in the exportable profile (§20). The link
+    // config lives there too and wins over whatever the profile carries: it
+    // describes this machine, so swapping instruments must not move the device to
+    // another network (P1.13).
+    loadNetworkOverrides(g_profile.network);
+    Preferences prefs;
+    prefs.begin("gmb", true);
+    String staPass = prefs.getString("wifipass", "");
+    String apPass = prefs.getString("appass", "");
+    prefs.end();
+    g_net.begin(g_profile.network, staPass.c_str(), apPass.c_str());
+    g_midi.begin(kMidiUdpPort);
+    // Restore the stored UDP MIDI source posture (device state, not part of an
+    // instrument profile): 0 open (default) / 1 lockToFirst / 2 disabled.
+    {
+        Preferences p;
+        p.begin("gmb", true);
+        int midiSrc = p.getInt("midisrc", 0);
+        p.end();
+        if (midiSrc >= 0 && midiSrc <= 2)
+            g_midi.setSourcePolicy(static_cast<UdpSourcePolicy>(midiSrc));
+    }
+    // Native USB-MIDI: real in the esp32-s3-usbmidi build, inert everywhere else.
+    if (g_usbMidi.begin())
+        Serial.println("[midi] native USB-MIDI endpoint up");
+    bindDinMidi();      // DIN-5/TRS MIDI in, when a MIDI_RX pin is assigned
+
+    WebContext ctx = buildWebContext();
     g_web.begin(ctx, 80);
 
     // Home every axis before allowing play; unhomed axes never move for notes.
@@ -1631,6 +1107,14 @@ void loop() {
     uint32_t nowMs = millis();
 
     g_net.tick(nowMs);
+    // MIDI source posture changes from POST /api/midi/source. loop() owns the
+    // transport, so the web task only leaves a request here.
+    {
+        int midiPolicy = g_midiSourceRequested.exchange(-1);
+        if (midiPolicy >= 0 && midiPolicy <= 2)
+            g_midi.setSourcePolicy(static_cast<UdpSourcePolicy>(midiPolicy));
+        if (g_midiUnlockRequested.exchange(false)) g_midi.unlockSource();
+    }
     serviceHotspotRequests(nowMs);  // BOOT long-press / web "Start hotspot"
     serviceNetworkApply();          // POST /api/wifi with apply:true
     serviceWifiRequests();          // network survey for the Settings picker
@@ -1643,7 +1127,7 @@ void loop() {
     //    software safety, not a substitute for a hardware cut of ENABLE / power.)
     if (g_estopPin >= 0) {
         bool level = digitalRead(g_estopPin) == HIGH;
-        bool rawStop = estopAsserted(level);
+        bool rawStop = estopAsserted(level);  // same predicate as the pre-arm checks
         // The debounced level only filters the RELEASE, so contact bounce can never
         // un-latch a stop; the raw read trips immediately (a false trip fails safe).
         bool debouncedStop = estopAsserted(g_estopDeb.update(nowMs, level));
@@ -1693,8 +1177,11 @@ void loop() {
     // Ingest MIDI from every transport into the SAME InstrumentController (P1.7).
     // Each event already carries its transport as MidiEvent.source.
     for (MidiTransport* t : g_transports) t->poll(nowUs);
-    for (MidiTransport* t : g_transports) {
-        g_diag.addMidiEvents(static_cast<uint32_t>(t->events().size()));
+    for (size_t ti = 0; ti < sizeof(g_transports) / sizeof(g_transports[0]); ++ti) {
+        MidiTransport* t = g_transports[ti];
+        const uint32_t n = static_cast<uint32_t>(t->events().size());
+        g_diag.addMidiEvents(n);
+        if (n) g_transportEvents[ti].fetch_add(n);
         for (auto& e : t->events()) {
             g_web.broadcastMidi(e);  // feed the Web MIDI monitor (all phases)
             if (g_phase == AppPhase::Ready) g_instrument.handleEvent(e, nowUs);
@@ -1734,7 +1221,7 @@ void loop() {
         // Endstop safety for EVERY axis first (active or not), then the musical
         // logic for the axes that did not just fault.
         for (size_t i = 0; i < g_instrument.stringCount(); ++i) {
-            if (!tickAxisSafety(i, nowMs)) tickString(i, nowMs);
+            if (!g_scheduler.tickAxisSafety(i, nowMs)) g_scheduler.tick(i, nowMs);
         }
         g_steppers.tick(nowUs);
     }

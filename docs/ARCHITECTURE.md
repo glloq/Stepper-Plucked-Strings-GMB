@@ -128,9 +128,17 @@ firmware/src/platform/esp32/     the hardware glue — Arduino-gated
 ├── ServoBank.{h,cpp}            PCA9685 on two I²C buses + direct-GPIO (LEDC);
 │                                hardStop, controlled and governed parks
 ├── MidiWifi.{h,cpp}             UDP MIDI transport (+ the UDP source gate)
-├── MidiDinTransport.h           DIN-5/TRS over UART — complete, inert until a
-│                                RX pin is bound
-├── MidiUsbTransport.h           native USB-MIDI skeleton (awaits TinyUSB)
+├── MidiDinTransport.h           DIN-5/TRS over UART — bound to UART2 when a
+│                                MIDI_RX pin is assigned
+├── MidiUsbTransport.h           native USB-MIDI (TinyUSB) — built only by the
+│                                opt-in esp32-s3-usbmidi env, not yet
+│                                hardware-validated
+├── PlaybackScheduler.h          per-string mechanical FSM (release → move →
+│                                press → settle → strike) + the per-axis
+│                                endstop scan that runs ahead of it
+├── SafetySupervisor.h           arming, homing, hard stop, panic, the runtime
+│                                axis-fault path, E-stop polarity
+├── CommandDispatcher.h          the web→loop queue, ids and outcome ring
 ├── Net.{h,cpp}                  Wi-Fi station/AP, forced hotspot, captive
 │                                portal, async network survey
 ├── WebApi.{h,cpp}               REST + WebSocket
@@ -138,10 +146,39 @@ firmware/src/platform/esp32/     the hardware glue — Arduino-gated
                                  atomic temp+bak writes) + NVS for secrets
 ```
 
-`main.cpp` is what remains: it owns the mechanical state, drains the web→loop
-command queue, runs the safety checks first on every tick, and drives the
-per-string playback sequence. Every mutating web request only *enqueues*; the
-async web task never touches an actuator.
+`main.cpp` is what remains: it owns the mechanical state and wires the pieces
+together — `setup()` builds and binds, `loop()` runs safety first, then commands,
+then the playback tick. Every mutating web request only *enqueues*; the async web
+task never touches an actuator.
+
+### The three platform components lifted out of `main.cpp`
+
+`main.cpp` was 1900 lines with the playback FSM, the arming sequence and the
+command plumbing inlined in the middle of it. Those three are now named units:
+
+| | Owns | Gets injected |
+| --- | --- | --- |
+| `PlaybackScheduler` | the per-string `StringSched` state | instrument, steppers, servos, actuator governor, diagnostics, profile; a fault callback and an `actOk` callback |
+| `SafetySupervisor` | nothing | every collaborator by pointer, plus `rebuildCaps` / `notifyCaps` / `hardStopCleanup` / `onReady` callbacks |
+| `CommandDispatcher` | the FreeRTOS queue, id counter, result ring | one handler callback that runs a drained command |
+
+Two properties of that split are deliberate:
+
+* **The bodies moved verbatim.** Each method aliases its injected collaborators
+  back to the historical `g_*` names on its first lines, so the sequencing code
+  is byte-identical to what it replaced. This is a mechanical path on a machine
+  with 24 V steppers; a refactor is not the place to also "improve" the order in
+  which a finger lifts and a carriage moves.
+* **The components own no policy.** A refused actuator write goes back to the
+  app's central fault path rather than being decided locally, so "what does a
+  fault mean for capabilities and arming" still has exactly one answer.
+
+They are Arduino-gated, so they are covered by the host *compile* check, not by
+host unit tests. The logic that IS unit-tested is the part that could be got
+silently wrong without hardware: `estopAssertedFor()` lives in the pure core
+(`core/safety/EstopPolarity.h`) precisely because inverting it makes a healthy
+machine refuse to home while a pressed button goes unseen. Everything else here
+is to be **re-validated on the bench**, not assumed correct because it builds.
 
 Correspondence notes vs the §23 target tree:
 
@@ -149,13 +186,13 @@ Correspondence notes vs the §23 target tree:
   into `SafetyManager` — in both cases the two halves need the same state.
 * `gmb/` does not appear in the §23 tree: it realises the
   [`SYSEX_CAPABILITIES.md`](SPEC_INDEX.md) specification.
-* The `application/` layer (`Application` / `Scheduler` / `EventBus`) is still
-  the one genuinely outstanding item: the host-testable kernels have been pulled
-  out of `main.cpp` (`AppPhase`, `Readiness`, `CommandResultRing`, `HoldButton`,
-  `ProfileActivation`, `Diagnostics`, `ActuatorManager`), but the per-string
-  playback FSM and the arming sequence still live there. See
-  [`../AUDIT_REPORT.md`](../AUDIT_REPORT.md) §5 for why that extraction was
-  deliberately not forced.
+* The `application/` layer (`Application` / `Scheduler` / `EventBus`) is
+  realised, but split by *testability* rather than by name. The host-testable
+  kernels live in the pure core (`AppPhase`, `Readiness`, `CommandResultRing`,
+  `HoldButton`, `ProfileActivation`, `Diagnostics`, `ActuatorManager`); the parts
+  that can only be exercised against real hardware are the three platform
+  components above. There is no `EventBus`: with one producer (the loop) and one
+  consumer per concern, a bus would be indirection without a subscriber.
 
 ---
 

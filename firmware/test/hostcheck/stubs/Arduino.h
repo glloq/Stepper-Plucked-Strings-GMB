@@ -85,6 +85,22 @@ struct SerialStub {
 };
 static SerialStub Serial;
 
+// Extra UARTs. The DIN-MIDI input binds one of these at 31250 baud with an
+// explicit RX pin and no TX, so the stub must accept that exact signature —
+// otherwise the host check cannot see a typo on the one line that matters.
+static const uint32_t SERIAL_8N1 = 0x800001c;
+class HardwareSerial : public Stream {
+public:
+  explicit HardwareSerial(int uartNr) : uart_(uartNr) {}
+  void begin(unsigned long baud, uint32_t config = SERIAL_8N1, int8_t rxPin = -1,
+             int8_t txPin = -1) {
+    (void)baud; (void)config; (void)rxPin; (void)txPin;
+  }
+  void end() {}
+private:
+  int uart_ = 0;
+};
+
 // Minimal ESP object (chip identity + heap telemetry for diagnostics).
 struct EspClass {
   uint64_t getEfuseMac() { return 0; }

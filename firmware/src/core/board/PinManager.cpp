@@ -21,6 +21,7 @@ SignalKind signalKindFromName(const std::string& signal) {
     if (signal == "SCL" || signal == "SCL2") return SignalKind::I2cScl;   // SCL2 = 2nd I2C bus
     if (startsWith(signal, "SERVO_OE") || signal == "OE") return SignalKind::ServoOe;
     if (startsWith(signal, "ESTOP")) return SignalKind::SafetyInput;  // hardware E-stop input
+    if (signal == "MIDI_RX") return SignalKind::UartRx;               // DIN-5/TRS MIDI in
     return SignalKind::Generic;
 }
 

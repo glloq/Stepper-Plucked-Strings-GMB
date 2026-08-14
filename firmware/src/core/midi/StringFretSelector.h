@@ -90,6 +90,15 @@ struct PendingStringSelection {
     // and mis-pair it), but the Note On resolves it through the invalid-value
     // policy instead of playing it.
     bool invalid = false;
+    // The LOGICAL values behind the CCs (offset applied, no range check), kept as
+    // signed and out of range on purpose. The Clamp policy needs the value it is
+    // supposed to clamp: storing only `invalid` and leaving stringValue/fretValue
+    // at their 0 default turns "fret 127, clamp to the top" into "fret 0" — the
+    // wrong end of the fretboard, on a carriage that then really goes there.
+    // -32768 = "no CC of this kind was received".
+    static constexpr int16_t kNoValue = -32768;
+    int16_t logicalString = kNoValue;
+    int16_t logicalFret = kNoValue;
     uint8_t midiChannel = 0;
     bool hasString = false;
     bool hasFret = false;
@@ -209,6 +218,12 @@ private:
     }
     // Record a newly-complete selection for anticipated pre-positioning, if the
     // feature is on and the selection is in range.
+    // The string CC pipeline in two halves, so the Clamp policy can re-enter it
+    // with a corrected index instead of duplicating the numbering/order/mapping
+    // rules: logicalStringIndex() applies the offset and the one-based bias;
+    // physicalAxisFor() range-checks, reverses and applies the mapping table.
+    int logicalStringIndex(uint8_t rawValue) const;
+    int physicalAxisFor(int index) const;
     void noteMaybePrepare(const PendingStringSelection& s);
     NoteResolution automaticResolution() const;
     bool coherent(uint8_t note, uint8_t stringIndex, uint8_t fret, std::string* warn) const;

@@ -1,0 +1,8 @@
+# Playwright is installed on demand to run web-interface/test/smoke.js and
+# web-interface/tools/screenshots.js; nothing in this repo is an npm package.
+node_modules/
+
+# PlatformIO / build output
+.pio/
+firmware/test/run_tests
+firmware/test/*.o

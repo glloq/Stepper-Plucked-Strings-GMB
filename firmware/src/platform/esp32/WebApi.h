@@ -37,7 +37,14 @@ struct WebContext {
     std::function<uint32_t()> onReset;                     // recover from panic/E-stop
     std::function<std::string()> appState;                 // "boot"/"homing"/"ready"
     std::function<int()> readyStrings;                     // axes homed & not faulted
-    std::function<uint32_t(const Profile&)> onActivateProfile;  // validate + enqueue
+    // Validate + enqueue an activation. `keepDeviceConfig` distinguishes the two
+    // operations that reach here, which are NOT the same thing:
+    //   false — PUT /api/profile: publish the draft the user just edited FOR THIS
+    //           machine. Everything in it is intended, pins and network included.
+    //   true  — POST /api/profiles/load: load a stored INSTRUMENT onto this
+    //           machine. The device half (board, pins, network, E-stop polarity,
+    //           fitted hardware) belongs to the machine and must survive.
+    std::function<uint32_t(const Profile&, bool)> onActivateProfile;
     // ch, note, vel, ms, then the two optional SELECTION CC values (-1 = none).
     // They are emitted before the Note On through the same path a controller's
     // CCs take, so the test really exercises the string/fret selector.
@@ -59,6 +66,24 @@ struct WebContext {
     // Live UDP source posture (audit P1.11) so the Settings UI shows the real state.
     std::function<std::string()> midiSourcePolicy;
     std::function<bool()> midiSourceLocked;  // queued/succeeded/refused/unknown
+    // Live state of every MIDI transport. `/api/status` used to answer a hard-coded
+    // "wifiUdp", which was a lie the moment a second transport existed: with a DIN
+    // cable plugged in and the Wi-Fi link down, the page still claimed Wi-Fi UDP.
+    // The firmware knows which transports are bound and which one last delivered a
+    // byte, so it reports that instead of a constant.
+    struct MidiTransportState {
+        std::string name;          // "wifiUdp" | "usb" | "din"
+        std::string label;         // human-readable, for the UI
+        bool bound = false;        // has real hardware behind it (pin / socket / stack)
+        std::string detail;        // why it is or is not bound (port, GPIO, "no MIDI_RX pin")
+        uint32_t events = 0;       // messages decoded since boot
+    };
+    std::function<std::vector<MidiTransportState>()> midiTransports;
+    // POST /api/midi/source. policy: -1 leave unchanged, 0 open, 1 lockToFirst,
+    // 2 disabled; `unlock` forgets the currently locked sender. Returns false when
+    // the setting could not be persisted (the caller then reports a real failure
+    // rather than claiming success).
+    std::function<bool(int, bool)> onSetMidiSource;
     std::function<bool()> onFormatStorage;       // deliberate LittleFS reformat
     // Guard shared state during read-only handlers so a reload in loop() is never
     // observed half-applied. Both may be null (host build / no locking).

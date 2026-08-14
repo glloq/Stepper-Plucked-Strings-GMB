@@ -429,6 +429,43 @@ opened so it can latch, log and refuse arming. The actual muscle is K1/K2 (§2),
 the `/OE` chain (§3) and the ENABLE gate (§3.1), which all work with the
 firmware dead.
 
+## 4.1 The `MIDI_RX` input — isolation is not optional
+
+The DIN-5 / TRS MIDI input is the one signal that leaves the instrument's own
+ground and lands on someone else's gear. The MIDI standard says it is a **current
+loop into an optocoupler**, and that is not a formality here: this machine runs a
+24 V motor rail and a separate servo rail through a shared star ground. Wiring a
+DIN shell straight to the ESP32's ground ties the controller's chassis into that
+star and gives motor return current a second path — through the MIDI cable, into
+a laptop or a synth. That is how a ground loop turns a stepper current spike into
+damage at the other end of the cable.
+
+Standard, unchanged, receiver side:
+
+```text
+DIN-5 pin 4 ──[220 Ω]── opto anode  (6N138 / H11L1 / PC900V)
+DIN-5 pin 5 ─────────── opto cathode, with a reverse-protection diode (1N4148)
+DIN-5 pin 2 ── shield, connected at the SENDER only — never bonded here
+                                   │
+                    opto output ───┴── pull-up to 3V3 ── MIDI_RX GPIO
+```
+
+* Powered from **3V3 logic**, never from the motor or servo rail.
+* The opto output side shares the ESP32 ground; the DIN side shares nothing.
+* A **TRS type-A** jack is the same circuit with tip/ring replacing pins 5/4.
+* Prefer a fast opto (H11L1, PC900V) — a slow 6N138 without an adequate pull-up
+  smears the 32 µs bit cell and drops bytes at 31250 baud.
+
+Firmware side: the pin is the `MIDI_RX` signal in the GPIO editor, opened on
+UART2 at 31250 baud, RX only. Any readable non-strapping pin qualifies —
+including the classic ESP32's input-only 34/35/36/39, which cannot carry any
+output signal and are otherwise hard to spend. It is deliberately *not* held to
+the `ESTOP` pin's rules: no internal pull-up is needed, because the opto's
+external pull-up defines the idle level.
+
+No `MIDI_RX` pin assigned means no DIN input, and the interface says so
+(Settings → Security → MIDI inputs) rather than presenting a dead socket.
+
 ## 5. BOM deltas
 
 The safety/power items and their status live in the bill of materials —
