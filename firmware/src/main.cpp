@@ -370,11 +370,14 @@ int rebuildRuntimeCapabilities() {
     return r.ready;
 }
 
-// Push a spontaneous "capabilities changed" SysEx (block 8) to the last host that
-// queried us, so General-MIDI-Boop learns of a runtime change without polling.
+// Push a spontaneous "capabilities changed" SysEx to the last host that queried
+// us, so General-Midi-Boop learns of a runtime change without polling. GMB v2
+// block 0x11 change flags: bit 1 = INSTRUMENTS_CHANGED (the capability set /
+// string config moved). GMB uses it only as a cue to re-read the handshake and
+// compare the revision, so an approximate flag is fine.
 void notifyCapabilitiesChanged() {
     if (!g_midi.hasLastSender()) return;
-    std::vector<uint8_t> msg = g_sysex.notification(0x01);  // bit0 = caps changed
+    std::vector<uint8_t> msg = g_sysex.notification(0x02);
     if (!msg.empty()) g_midi.notifyLastSender(msg.data(), msg.size());
 }
 

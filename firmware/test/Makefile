@@ -24,6 +24,7 @@ CORE_SRC := \
   $(CORE)/configuration/ProfileValidator.cpp \
   $(CORE)/gmb/Capabilities.cpp \
   $(CORE)/gmb/GmbSysEx.cpp \
+  $(CORE)/gmb/GmbDescriptor.cpp \
   $(CORE)/safety/SafetyManager.cpp \
   $(ROOT)/src/platform/esp32/ServoBank.cpp
 

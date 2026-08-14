@@ -350,7 +350,14 @@ TEST(sysex_service_notification_after_change) {
     svc.rebuild(p);
     p.capabilitiesRevision = 2;  // config edited & saved
     svc.rebuild(p);
-    auto note = svc.notification(kStringConfigChanged);
-    CHECK_EQ((int)note[3], 0x08);
+    // GMB v2 moved the spontaneous change notification from the fixed block 8 to
+    // block 0x11, with the revision as a 5-byte little-endian 7-bit field.
+    auto note = svc.notification(0x02);  // INSTRUMENTS_CHANGED
     CHECK(GmbSysEx::isWellFormed(note.data(), note.size()));
+    CHECK_EQ((int)note.size(), 12);
+    CHECK_EQ((int)note[3], 0x11);  // v2 change-notification block
+    CHECK_EQ((int)note[4], 0x02);  // spontaneous notification
+    uint32_t rev = note[5] | (note[6] << 7) | (note[7] << 14) |
+                   ((uint32_t)note[8] << 21) | ((uint32_t)(note[9] & 0x0F) << 28);
+    CHECK_EQ((int)rev, 2);
 }

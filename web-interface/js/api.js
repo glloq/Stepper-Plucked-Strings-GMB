@@ -359,10 +359,25 @@
     var allContinuous = true;
     for (var n2 = min; n2 <= max; n2++) if (!notesSet[n2]) { allContinuous = false; break; }
     var sfs = p.stringFretSelection;
-    var tuning = strings.map(function (s) { return s.openNote; });
+    // PHYSICAL string order, index-aligned with fretsPerString, and folding the
+    // transposes into the announced open pitch so tuning + capo reproduces the
+    // announced range. Mirrors buildSnapshot() in the firmware; the GMB v2
+    // descriptor pairs tuning[i] with fretsPerString[i] to describe voice i, so a
+    // sorted tuning would misdescribe every voice of a re-entrant instrument.
+    var openShift = (p.instrument.transpose || 0) + ((p.midi && p.midi.transpose) || 0);
+    var tuning = strings.map(function (s) {
+      return Math.max(0, Math.min(127, s.openNote + openShift));
+    });
+    var fretsPerString = strings.map(function (s) { return s.maxFret || 0; });
+    var discreteNotes = [];
+    if (!allContinuous) {
+      for (var d = min; d <= max; d++) if (notesSet[d]) discreteNotes.push(d);
+    }
     return {
       strings: p.instrument.stringCount,
       frets: Math.max.apply(null, strings.map(function (s) { return s.maxFret; }).concat([0])),
+      fretsPerString: fretsPerString,
+      discreteNotes: discreteNotes,
       noteMin: min, noteMax: max, noteMode: allContinuous ? 0 : 1,
       // Aliases used by the Instrument page / tests; same values, clearer names.
       lowestNote: min, highestNote: max,
@@ -607,8 +622,11 @@
   function hex(bytes) { return bytes.map(function (b) { return ('0' + b.toString(16)).slice(-2).toUpperCase(); }).join(' '); }
   GMB.hex = hex;
 
-  // Block ids (SysEx spec). dir 0x00 = request (host->device).
-  var BLOCK = { identity: 0x01, descriptor: 0x05, capabilities: 0x06, stringConfig: 0x07, notify: 0x08 };
+  // Block ids. dir 0x00 = request (host->device). Identity (0x01) now answers with
+  // the GMB v2 handshake; the change notification is the v2 block 0x11. Blocks
+  // 5/6/7 remain for the deprecated fixed-block path the firmware still serves.
+  var BLOCK = { identity: 0x01, descriptor: 0x05, capabilities: 0x06, stringConfig: 0x07,
+                notify: 0x11, descriptorTransfer: 0x10 };
 
   // Build the raw request bytes for a block. Channel-bearing blocks
   // (capabilities 0x06, stringConfig 0x07) carry the MIDI channel byte.
@@ -625,12 +643,66 @@
   }
   GMB.buildSysexRequest = buildSysexRequest;
 
-  // Build the block-8 change-notification message (device-emitted).
+  // Build the GMB v2 block-0x11 change-notification (device-emitted):
+  // F0 7D 00 11 02 <revision[5]> <flags> F7. Flags bit 1 = INSTRUMENTS_CHANGED.
   function buildNotifyMessage(p) {
     var caps = GMB.computeCapabilities(p);
-    return HEADER.concat([BLOCK.notify, 0x02, 0x01, p.midi.globalChannel])
-      .concat(encodeRevision(caps.revision)).concat([0x0C, 0xF7]);
+    return HEADER.concat([BLOCK.notify, 0x02])
+      .concat(encodeRevision(caps.revision)).concat([0x02, 0xF7]);
   }
+
+  // The GMB v2 descriptor object for a profile — the JS mirror of the firmware's
+  // GmbDescriptor::toJson. Used by the offline mock of GET /gmb/descriptor.json,
+  // and to size the handshake's descriptor_size field.
+  GMB.mockDescriptor = function (p) {
+    var caps = GMB.computeCapabilities(p);
+    var enabled = (p.strings || []).filter(function (s) { return s.enabled !== false; });
+    var sfs = p.stringFretSelection;
+    var notes = caps.noteMode === 0
+      ? { mode: 'range', min: caps.noteMin, max: caps.noteMax }
+      : { mode: 'discrete', list: caps.discreteNotes };
+    // One voice per physical carriage. On this machine that IS the polyphony
+    // limit: a carriage plays one note at a time, wherever it happens to be.
+    var voices = caps.tuning.map(function (t, i) {
+      var lo = Math.max(0, Math.min(127, t + caps.capo));
+      var reach = caps.fretsPerString[i] != null ? caps.fretsPerString[i] : caps.frets;
+      return { id: 's' + (i + 1),
+               notes: { mode: 'range', min: lo, max: Math.max(0, Math.min(127, lo + reach)) } };
+    });
+    var physical = {
+      family: 'strings', string_count: enabled.length, fret_count: caps.frets,
+      frets_per_string: caps.fretsPerString, fretless: false, capo: caps.capo,
+      tuning: caps.tuning,
+      string_order: (sfs.string && sfs.string.reverseOrder) ? 'reversed'
+        : ((sfs.string && sfs.string.mapping && sfs.string.mapping.length) ? 'custom' : 'normal')
+    };
+    // Announce the selection CCs only when selection is actually active: an
+    // absent block means "unknown" and the controller keeps its own, whereas
+    // announcing them would falsely enable CCs the firmware ignores.
+    if (sfs.enabled) {
+      physical.selection = {
+        mode: sfs.mode,
+        cc_string: sfs.string.ccNumber, cc_string_min: sfs.string.minimum,
+        cc_string_max: sfs.string.maximum, cc_string_offset: sfs.string.offset || 0,
+        cc_fret: sfs.fret.ccNumber, cc_fret_min: sfs.fret.minimum,
+        cc_fret_max: sfs.fret.maximum, cc_fret_offset: sfs.fret.offset || 0
+      };
+    }
+    var inst = {
+      channel: p.midi.omni ? 0 : p.midi.globalChannel, configured: true,
+      name: p.instrument.name || '', gm_program: p.instrument.gmProgram,
+      notes: notes,
+      polyphony: { max: caps.polyphony, constraints: [{ type: 'one_note_per_voice' }] },
+      expression: { cc: caps.supportedCc }, voices: voices, physical: physical
+    };
+    if (p.instrument.type) inst.type = p.instrument.type;
+    return {
+      gmb_descriptor: 2, revision: caps.revision,
+      device: { name: p.instrument.name || '',
+                model: p.project || 'Stepper-Plucked-Strings-GMB' },
+      instruments: [inst]
+    };
+  };
 
   // MOCK backend for POST /api/sysex/request: accepts { bytes:[...] } and
   // returns { ok:true, response:[...] } — the raw response bytes for the block
@@ -647,12 +719,17 @@
     var p = MOCK.profile, caps = GMB.computeCapabilities(p);
     var name = p.instrument.name || '';
     switch (block) {
-      case BLOCK.identity:
-        return HEADER.concat([BLOCK.identity, 0x01, 0x01])   // dir=response, version
-          .concat([0x01, 0x02, 0x03, 0x04, 0x05])            // device id[5]
-          .concat(strBytes(name, 32))
+      case BLOCK.identity: {
+        // GMB v2 24-byte handshake: F0 7D 00 01 01 <proto=02> <instance_id[5]>
+        // <fw[3]> <descriptor_size[3] LE> <revision[5] LE> <flags> F7.
+        var dsz = JSON.stringify(GMB.mockDescriptor(p)).length;
+        return HEADER.concat([BLOCK.identity, 0x01, 0x02])   // dir=response, proto_ver=2
+          .concat([0x01, 0x02, 0x03, 0x04, 0x05])            // instance_id[5]
           .concat([0x01, 0x00, 0x00])                        // firmware 1.0.0
-          .concat([0x38, 0xF7]);                             // features (blocks 5/6/7)
+          .concat([dsz & 0x7F, (dsz >> 7) & 0x7F, (dsz >> 14) & 0x7F])  // descriptor_size[3]
+          .concat(encodeRevision(caps.revision))             // revision[5]
+          .concat([0x03, 0xF7]);                             // flags (HTTP+push), end
+      }
       case BLOCK.descriptor:
         return HEADER.concat([BLOCK.descriptor, 0x01, 0x01, 0x01,
           p.midi.globalChannel, p.instrument.gmProgram, p.instrument.typeId, 0xF7]);
@@ -682,10 +759,15 @@
     try {
       switch (kind) {
         case 'identity': {
-          var name = readStr(resp, 11, 32);
-          return { Version: resp[5], 'Device id': hex(resp.slice(6, 11)),
-            Name: name, Firmware: resp[43] + '.' + resp[44] + '.' + resp[45],
-            Features: '0x' + (resp[46] || 0).toString(16) };
+          // GMB v2 handshake (24 bytes). `Level` is what a controller acts on:
+          // a non-zero descriptor size means the rich JSON descriptor is there.
+          var dsz = (resp[14] || 0) | ((resp[15] || 0) << 7) | ((resp[16] || 0) << 14);
+          var flg = resp[22] || 0;
+          return { 'Proto ver': resp[5], 'Instance id': hex(resp.slice(6, 11)),
+            Firmware: resp[11] + '.' + resp[12] + '.' + resp[13],
+            'Descriptor size': dsz + ' B', Level: dsz > 0 ? '1 (descriptor)' : '0 (basic)',
+            Revision: decodeRevision(resp.slice(17, 22)),
+            HTTP: (flg & 1) ? 'yes' : 'no', Push: (flg & 2) ? 'yes' : 'no' };
         }
         case 'descriptor':
           return { Channel: resp[7] + 1, 'GM program': resp[8],
@@ -707,8 +789,11 @@
             Tuning: tuning.map(GMB.noteName).join(' ') };
         }
         case 'notify':
-          return { Channel: resp[6] + 1, Revision: decodeRevision(resp.slice(7, 12)),
-            Flags: '0x' + (resp[12] || 0).toString(16) };
+          // v2 block 0x11: F0 7D 00 11 02 <revision[5]> <flags> F7 — no channel
+          // byte any more, so reading one would report the revision's first byte.
+          return { Revision: decodeRevision(resp.slice(5, 10)),
+            Flags: '0x' + (resp[10] || 0).toString(16),
+            Meaning: ((resp[10] || 0) & 0x02) ? 'instruments changed' : 'other' };
         default:
           return {};
       }
@@ -732,11 +817,6 @@
     var out = [];
     for (var i = 0; i < len; i++) out.push(i < s.length ? (s.charCodeAt(i) & 0x7F) : 0x00);
     return out;
-  }
-  function readStr(bytes, off, len) {
-    var s = '';
-    for (var i = 0; i < len; i++) { var b = bytes[off + i]; if (!b) break; s += String.fromCharCode(b); }
-    return s;
   }
   function encodeRevision(r) {
     // 5 x 7-bit bytes, LSB first.
@@ -955,6 +1035,13 @@
     getBoard: function (id) {
       return this._call('/api/board/' + id, null, function () {
         return deepCopy(boardById(id) || currentBoard());
+      });
+    },
+    // GET /gmb/descriptor.json -> the GMB v2 descriptor the firmware serves. This
+    // is the authoritative view of what a General-Midi-Boop controller receives.
+    getDescriptor: function () {
+      return this._call('/gmb/descriptor.json', null, function () {
+        return GMB.mockDescriptor((global.GMB.state && global.GMB.state.profile) || MOCK.profile);
       });
     },
     // GET /api/boards -> { boards:[{identifier,displayName}] }. The board picker is

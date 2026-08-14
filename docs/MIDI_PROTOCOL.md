@@ -282,7 +282,7 @@ F0 7D 00 <bloc> <direction> ... F7
 | `F0` | SysEx start (`kStart`) |
 | `7D` | experimental/educational SysEx identifier (`kManufacturer`) |
 | `00` | General-Midi-Boop identifier (`kGmbId`) |
-| `<bloc>` | information type (1/5/6/7/8) |
+| `<bloc>` | information type (1 / 0x10 / 0x11 for v2; 5/6/7/8 deprecated) |
 | `<direction>` | `00` request, `01` response, `02` spontaneous notification |
 | `F7` | SysEx end (`kEnd`) |
 
@@ -290,29 +290,70 @@ Maximum message size: `kMaxMessage = 512` bytes.
 
 ### 3.2 Implemented blocks
 
-| Block | `SysExBlock` | Mandatory | Role |
-| ----- | ------------ | --------- | ---- |
-| 1 | `Identity` | yes | device identity |
-| 5 | `Descriptor` | recommended | instrument description |
-| 6 | `Capabilities` | yes | capabilities (playable range, polyphony, CCs…) |
-| 7 | `StringConfig` | yes | string configuration (v1 + v2) |
-| 8 | `Notification` | extension | change notification (Capabilities Changed) |
+The current General-Midi-Boop controller speaks **protocol v2**: it asks for the
+handshake and then reads one JSON **descriptor**, rather than parsing a set of
+fixed binary blocks. The v1 blocks are still served for older hosts.
 
-### 3.3 Block 1 — Identity
+| Block | `SysExBlock` | Role |
+| ----- | ------------ | ---- |
+| 1 | `Identity` | **v2 handshake** (24 bytes) — the reply to a block-1 request |
+| 0x10 | `DescriptorTransfer` | **v2 JSON descriptor**, segmented (200 payload bytes per chunk) |
+| 0x11 | `ChangeNotification` | **v2** spontaneous "something changed" notice |
+| 5 | `Descriptor` | deprecated fixed instrument description |
+| 6 | `Capabilities` | deprecated fixed capabilities |
+| 7 | `StringConfig` | deprecated fixed string configuration (v1 + v2 layouts) |
+| 8 | `Notification` | deprecated v1 change notification |
 
-Request: `F0 7D 00 01 00 F7`. Response:
+### 3.3 Block 1 — v2 handshake
+
+Request: `F0 7D 00 01 00 F7`. Response (exactly 24 bytes):
 
 ```text
-F0 7D 00 01 01 <version> <device_id[5]> <device_name[32]> <firmware[3]> <features[5]> F7
+F0 7D 00 01 01 <proto_ver=02> <instance_id[5]> <firmware[3]>
+               <descriptor_size[3] LE> <revision[5] LE> <flags> F7
 ```
 
-* Name truncated/padded to 32 bytes, 7-bit.
-* `firmware` = {major, minor, patch}.
-* `features` (flags): `INSTRUMENT_CAPABILITIES 0x10 | STRING_CONFIG 0x20`
-  → `0x30`; with block 5, add `INSTRUMENT_DESCRIPTOR 0x08` → `0x38`
-  (value used by `buildSnapshot`).
-* Identifier stable across restarts (ESP32 hardware ID and/or a saved random
-  value). An advanced button allows regenerating it.
+* `descriptor_size` is the byte length of the JSON descriptor. **Zero means
+  level 0** (no descriptor, fall back to the fixed blocks); non-zero means level
+  1 and tells the host how much to expect.
+* `revision` is the capabilities revision — the host re-reads the descriptor only
+  when this changes.
+* `flags`: bit 0 = the descriptor is also available over HTTP
+  (`GET /gmb/descriptor.json`), bit 1 = the device pushes block 0x11 on change.
+  This firmware announces `0x03`.
+* `instance_id` is stable across restarts (derived from the ESP32 MAC).
+
+### 3.3b Blocks 0x10 / 0x11 — descriptor and change notice
+
+A descriptor request (`F0 7D 00 10 00 <index[2]> F7`) returns one segment:
+
+```text
+F0 7D 00 10 01 <total_chunks[2] LE> <chunk_index[2] LE> <payload…> F7
+```
+
+The payload is 7-bit ASCII, up to 200 bytes per chunk; concatenating the chunks
+in index order reproduces the JSON byte for byte. The whole document is also
+served over HTTP at `GET /gmb/descriptor.json`, which is one request instead of a
+segmented transfer.
+
+The descriptor is built by `core/gmb/GmbDescriptor.{h,cpp}` from the same
+`CapabilitySnapshot` as the SysEx path, so the two can never disagree. It carries
+the device name/model, the playable notes (range or discrete list), polyphony
+with a `one_note_per_voice` constraint, the announced CCs, **one voice per
+physical carriage** (each with its own open note and reach), and a `physical`
+block with the string count, per-string frets, capo, tuning and — only when
+selection is actually enabled — the selection CC configuration.
+
+The change notice is 12 bytes: `F0 7D 00 11 02 <revision[5] LE> <flags> F7`,
+with flag bit 1 = *instruments changed*. The host uses it purely as a cue to
+re-read the handshake and compare revisions.
+
+> **Announced tuning.** `tuning[i]` and `frets_per_string[i]` describe the **same
+> physical string** — the tuning is in physical order, never sorted, because the
+> descriptor pairs them to build voice *i*. It also folds the global transposes
+> into the announced open pitch, so `tuning + capo` reproduces the announced
+> playable range. A re-entrant instrument (ukulele G4 C4 E4 A4, 5-string banjo)
+> is exactly the case where sorting would misdescribe every voice.
 
 ### 3.4 Block 5 — Descriptor (single instrument)
 

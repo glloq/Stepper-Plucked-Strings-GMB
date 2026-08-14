@@ -90,16 +90,36 @@
     var out = h('div#sysex-out.sysex-out', h('p.muted', 'Run a request to see the sent + received bytes and decoded fields.'));
     host.appendChild(h('div.card', [
       h('h2', 'SysEx tester'),
+      h('p.muted', 'A GMB v2 controller does exactly two things: it asks for the ' +
+        'handshake, then reads the JSON descriptor. The v1 fixed blocks below are ' +
+        'still served for older hosts.'),
       h('div.toolbar.wrap', [
-        GMB.button('Request identity', function () { runSysEx('identity'); }),
-        GMB.button('Request descriptor', function () { runSysEx('descriptor'); }),
-        GMB.button('Request capabilities', function () { runSysEx('capabilities'); }),
-        GMB.button('Request string config', function () { runSysEx('stringConfig'); }),
+        GMB.button('Request handshake (v2)', function () { runSysEx('identity'); }, 'primary'),
+        GMB.button('Show descriptor JSON', showDescriptor, 'primary'),
         GMB.button('Notify change', function () { runSysEx('notify'); }),
-        GMB.button('Full discovery', fullDiscovery, 'primary')
+        GMB.button('Request descriptor (v1)', function () { runSysEx('descriptor'); }, 'ghost'),
+        GMB.button('Request capabilities (v1)', function () { runSysEx('capabilities'); }, 'ghost'),
+        GMB.button('Request string config (v1)', function () { runSysEx('stringConfig'); }, 'ghost'),
+        GMB.button('Full discovery', fullDiscovery, 'ghost')
       ]),
       out
     ]));
+  }
+
+  // Fetch and pretty-print the GMB v2 descriptor the firmware serves — the
+  // authoritative view of what a General-Midi-Boop controller receives.
+  function showDescriptor() {
+    var out = document.getElementById('sysex-out');
+    out.innerHTML = '';
+    GMB.api.getDescriptor().then(function (d) {
+      var json = JSON.stringify(d, null, 2);
+      out.appendChild(h('div.sysex-block', [
+        h('div.sysex-title', [h('strong', 'GMB descriptor (v2)'),
+          h('span.pill.mini.ok', 'gmb_descriptor ' + (d.gmb_descriptor || '?')),
+          h('span.muted', json.length + ' bytes · GET /gmb/descriptor.json')]),
+        h('pre.sysex-json', json)
+      ]));
+    }).catch(function (e) { GMB.toast('Descriptor fetch failed: ' + sysexErr(e), 'error'); });
   }
 
   function capItem(label, value) {

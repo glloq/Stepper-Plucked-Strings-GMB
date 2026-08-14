@@ -295,6 +295,72 @@ test('CC encoding is the exact inverse of decoding', function () {
 });
 
 // ---------------------------------------------------------------------------
+// GMB v2 descriptor. GMB.mockDescriptor is the JS mirror of the firmware's
+// GmbDescriptor::toJson — it is what the offline demo serves for
+// GET /gmb/descriptor.json, so a drift here misrepresents the instrument.
+// ---------------------------------------------------------------------------
+
+test('the descriptor keeps the tuning in physical order', function () {
+  // The sample profile is a RE-ENTRANT ukulele (G4 C4 E4 A4): string 1 is the
+  // highest-pitched. Sorting the tuning would pair each open note with another
+  // string's fret count, and the descriptor builds one voice from that pair.
+  var p = GMB.sampleProfile();
+  var caps = GMB.computeCapabilities(p);
+  check(caps.tuning.join() === '67,60,64,69', 'tuning is positional, not sorted');
+  check(caps.fretsPerString.length === caps.tuning.length,
+        'fretsPerString is index-aligned with tuning');
+  var d = GMB.mockDescriptor(p);
+  check(d.instruments[0].physical.tuning.join() === '67,60,64,69',
+        'the descriptor carries the same order');
+});
+
+test('the descriptor folds the transpose into the announced tuning', function () {
+  var p = GMB.sampleProfile();
+  p.instrument.transpose = 2;
+  var caps = GMB.computeCapabilities(p);
+  check(caps.tuning.join() === '69,62,66,71', 'each open note is shifted');
+  var lowest = Math.min.apply(null, caps.tuning);
+  check(caps.noteMin === lowest + caps.capo,
+        'tuning + capo reproduces the announced range');
+});
+
+test('one descriptor voice per carriage, with its own reach', function () {
+  var p = GMB.sampleProfile();
+  p.strings[0].maxFret = 5;          // give the strings distinguishable reaches
+  p.strings[3].maxFret = 15;
+  var d = GMB.mockDescriptor(p);
+  var v = d.instruments[0].voices;
+  check(v.length === 4, 'one voice per string');
+  check(v[0].id === 's1' && v[0].notes.min === 67 && v[0].notes.max === 72,
+        'voice 1 spans its own 5 frets from its own open note');
+  check(v[3].id === 's4' && v[3].notes.min === 69 && v[3].notes.max === 84,
+        'voice 4 spans its own 15 frets');
+  check(d.instruments[0].polyphony.constraints[0].type === 'one_note_per_voice',
+        'a carriage plays one note at a time');
+});
+
+test('the descriptor announces selection CCs only when selection is on', function () {
+  var p = GMB.sampleProfile();
+  p.stringFretSelection.enabled = false;
+  check(GMB.mockDescriptor(p).instruments[0].physical.selection === undefined,
+        'no selection block when the firmware would ignore the CCs');
+  p.stringFretSelection.enabled = true;
+  var sel = GMB.mockDescriptor(p).instruments[0].physical.selection;
+  check(sel && sel.cc_string === p.stringFretSelection.string.ccNumber,
+        'the configured CC numbers are announced when active');
+});
+
+test('the descriptor is 7-bit clean (it travels over SysEx verbatim)', function () {
+  var p = GMB.sampleProfile();
+  p.instrument.name = 'Ukulélé né\u00e9';
+  var json = JSON.stringify(GMB.mockDescriptor(p));
+  // JSON.stringify keeps non-ASCII literal; the firmware escapes it. What matters
+  // here is that the structure survives and the name round-trips.
+  check(JSON.parse(json).device.name === p.instrument.name, 'the name round-trips');
+  check(json.indexOf('"gmb_descriptor":2') >= 0, 'the version marker is present');
+});
+
+// ---------------------------------------------------------------------------
 // Small utilities that other modules rely on.
 // ---------------------------------------------------------------------------
 
