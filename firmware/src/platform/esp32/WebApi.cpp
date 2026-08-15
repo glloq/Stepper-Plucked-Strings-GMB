@@ -13,6 +13,30 @@
 
 namespace gmb {
 
+// The two context locks. OUTSIDE the ARDUINO guard because publishProfile() is
+// outside it too — the transaction is the piece worth driving on a host, and it
+// takes the storage lock like every other route.
+namespace {
+
+// RAII guard for the shared-state lock supplied by the main loop. Held only while
+// a read-only handler samples g_profile / instrument / steppers / sysex so a
+// reload in loop() is never observed half-applied.
+struct WebStateLock {
+    const WebContext& ctx;
+    explicit WebStateLock(const WebContext& c) : ctx(c) { if (ctx.lockState) ctx.lockState(); }
+    ~WebStateLock() { if (ctx.unlockState) ctx.unlockState(); }
+};
+
+// RAII guard for the LittleFS lock (distinct from the state lock: loop() never
+// waits on it, so a flash write here can't stall the safety loop).
+struct WebStorageLock {
+    const WebContext& ctx;
+    explicit WebStorageLock(const WebContext& c) : ctx(c) { if (ctx.lockStorage) ctx.lockStorage(); }
+    ~WebStorageLock() { if (ctx.unlockStorage) ctx.unlockStorage(); }
+};
+
+}  // namespace
+
 #if defined(ARDUINO)
 
 namespace {
@@ -31,23 +55,6 @@ void sendJson(AsyncWebServerRequest* req, JsonDocument& doc, int code = 200) {
     serializeJson(doc, out);
     req->send(code, "application/json", out);
 }
-
-// RAII guard for the shared-state lock supplied by the main loop. Held only while
-// a read-only handler samples g_profile / instrument / steppers / sysex so a
-// reload in loop() is never observed half-applied.
-struct WebStateLock {
-    const WebContext& ctx;
-    explicit WebStateLock(const WebContext& c) : ctx(c) { if (ctx.lockState) ctx.lockState(); }
-    ~WebStateLock() { if (ctx.unlockState) ctx.unlockState(); }
-};
-
-// RAII guard for the LittleFS lock (distinct from the state lock: loop() never
-// waits on it, so a flash write here can't stall the safety loop).
-struct WebStorageLock {
-    const WebContext& ctx;
-    explicit WebStorageLock(const WebContext& c) : ctx(c) { if (ctx.lockStorage) ctx.lockStorage(); }
-    ~WebStorageLock() { if (ctx.unlockStorage) ctx.unlockStorage(); }
-};
 
 const char* stringStateName(StringState s) {
     switch (s) {
@@ -622,67 +629,19 @@ void WebApi::registerRoutes() {
                 sendJson(req, doc, 422);  // real error, not masked as success
                 return;
             }
-            // PERSIST AND ACTIVATE, or neither. "Save & publish" has to mean saved,
-            // and a request that FAILS must not change what boots next. Those are
-            // the same requirement seen from two sides, and doing the two steps in
-            // sequence satisfies neither:
-            //
-            //   persist then enqueue  — a full queue returns 503 while the flash
-            //                           already holds the new configuration: the
-            //                           request failed and the next boot changed.
-            //   enqueue then persist  — a flash failure leaves the machine running
-            //                           something it will not come back as, and the
-            //                           UI has already said "published and ACTIVE".
-            //
-            // So the write is split at its commit point: prepare (write + verify a
-            // temp file, nothing visible has changed), enqueue, and only then commit
-            // with a single rename. If the queue refuses, the temp file is discarded
-            // and the stored snapshot is untouched.
-            if (!ctx_.storage) {
-                doc["ok"] = false;
-                doc["persisted"] = false;
-                doc["error"] = "no storage";
-                sendJson(req, doc, 507);
-                return;
-            }
-            bool prepared;
-            { WebStorageLock sl(ctx_); prepared = ctx_.storage->prepareActive(p); }
-            if (!prepared) {
-                // Refuse the activation too. Running a configuration that could not
-                // be written is the ambiguity this whole model exists to remove.
-                doc["ok"] = false;
-                doc["persisted"] = false;
-                doc["accepted"] = false;
-                doc["error"] = "could not write the configuration to storage — "
-                               "not activating it";
-                sendJson(req, doc, 507);   // Insufficient Storage
-                return;
-            }
-            // Validated above; the actual activation runs in loop() (motor stop,
-            // reconfigure, re-home). Report ACCEPTED, not "done".
-            // This is the draft the user edited FOR THIS MACHINE — pins, board and
-            // network included — so it is taken whole.
-            uint32_t cmdId = ctx_.onActivateProfile
-                                 ? ctx_.onActivateProfile(p, /*keepDeviceConfig=*/false) : 0;
-            bool queued = cmdId != 0;
-            bool persisted = false;
-            { WebStorageLock sl(ctx_);
-              if (queued) persisted = ctx_.storage->commitActive();
-              else ctx_.storage->discardActive(); }
-            if (queued && !persisted) {
-                // The rename failed after the activation was accepted. Say so rather
-                // than report a clean success: the machine will run this profile and
-                // boot the previous one.
-                doc["warning"] = "activation accepted but the configuration could "
-                                 "not be committed to storage — it will not survive "
-                                 "a reboot";
-            }
-            doc["ok"] = queued;
-            doc["accepted"] = queued;
-            doc["persisted"] = persisted;
-            doc["commandId"] = cmdId;
-            doc["note"] = queued ? "activation queued" : "command queue full";
-            sendJson(req, doc, queued ? 202 : 503);
+            // PERSIST AND ACTIVATE, or neither — see publishProfile().
+            // This is the draft the user edited FOR THIS MACHINE (pins, board and
+            // network included), so it is taken whole: keepDeviceConfig = false.
+            // The activation itself runs in loop() (motor stop, reconfigure,
+            // re-home), so the answer is ACCEPTED, not "done".
+            PublishResult pr = publishProfile(p, /*keepDeviceConfig=*/false);
+            doc["ok"] = pr.accepted;
+            doc["accepted"] = pr.accepted;
+            doc["persisted"] = pr.persisted;
+            doc["commandId"] = pr.commandId;
+            if (pr.error) doc["error"] = pr.error;
+            doc["note"] = pr.accepted ? "activation queued and stored" : "not published";
+            sendJson(req, doc, pr.httpStatus);
         });
     putProfile->setMethod(HTTP_PUT);
     server_->addHandler(putProfile);
@@ -807,45 +766,21 @@ void WebApi::registerRoutes() {
             // own device half would reintroduce, on disk, the very swap this route
             // exists to prevent.
             //
-            // Same prepare/commit transaction as PUT /api/profile: a slot load that
-            // is refused by a full queue must not change the next boot either.
-            if (!ctx_.storage) {
-                doc["ok"] = false;
-                doc["persisted"] = false;
-                doc["error"] = "no storage";
-                sendJson(req, doc, 507);
-                return;
-            }
-            Profile toStore = p;
-            { WebStateLock lk(ctx_);
-              if (ctx_.profile)
-                  toStore = mergeProfile(deviceConfigOf(*ctx_.profile),
-                                         instrumentProfileOf(p), p); }
-            bool prepared;
-            { WebStorageLock sl(ctx_); prepared = ctx_.storage->prepareActive(toStore); }
-            if (!prepared) {
-                doc["ok"] = false;
-                doc["persisted"] = false;
-                doc["accepted"] = false;
-                doc["error"] = "could not write the configuration to storage — "
-                               "not activating it";
-                sendJson(req, doc, 507);
-                return;
-            }
-            uint32_t cmdId = ctx_.onActivateProfile
-                                 ? ctx_.onActivateProfile(p, /*keepDeviceConfig=*/true) : 0;
-            bool queued = cmdId != 0;
-            bool persisted = false;
-            { WebStorageLock sl(ctx_);
-              if (queued) persisted = ctx_.storage->commitActive();
-              else ctx_.storage->discardActive(); }
-            doc["ok"] = queued;
-            doc["accepted"] = queued;
-            doc["persisted"] = persisted;
-            doc["commandId"] = cmdId;
-            doc["note"] = queued ? "instrument activation queued (device config kept)"
-                                 : "invalid profile or queue full";
-            sendJson(req, doc, queued ? 202 : 422);
+            // Same transaction as PUT /api/profile, and the merge is done ONCE:
+            // publishProfile stores whatever the reservation resolved, which
+            // is the profile that will run. This route used to redo the merge here
+            // to build its own `toStore`, so "what runs" and "what is stored" were
+            // two computations that had to agree.
+            PublishResult pr = publishProfile(p, /*keepDeviceConfig=*/true);
+            doc["ok"] = pr.accepted;
+            doc["accepted"] = pr.accepted;
+            doc["persisted"] = pr.persisted;
+            doc["commandId"] = pr.commandId;
+            if (pr.error) doc["error"] = pr.error;
+            doc["note"] = pr.accepted
+                              ? "instrument activation queued and stored (device config kept)"
+                              : "not published";
+            sendJson(req, doc, pr.httpStatus);
         });
     loadProfile->setMethod(HTTP_POST);
     server_->addHandler(loadProfile);
@@ -1253,5 +1188,92 @@ void WebApi::refreshStatus() {}
 void WebApi::broadcastStatus() {}
 
 #endif
+
+// ---- the publish transaction ------------------------------------------------
+//
+// Outside the ARDUINO guard on purpose: it touches nothing but the context
+// callbacks and ProfileStorage, both of which exist in either build, and it is the
+// piece worth exercising on a host.
+//
+// The ordering is the whole content of this function:
+//
+//     reserve   validate + merge + claim a queue slot, NOT yet runnable
+//     prepare   write and verify /active.json.tmp — nothing visible has changed
+//     commit    one rename — the point of no return
+//     publish   only now can loop() see the command
+//
+// Every early return releases the reservation, so the two observable outcomes are
+// "persisted and accepted" or "nothing happened". The previous order — reserve,
+// prepare, ENQUEUE, commit — could reach a third: the activation was already
+// running when the rename failed, leaving the machine on the new profile and the
+// flash on the old one. That was reported as a warning, which is honest but is
+// still a machine that comes back as something other than what it is running.
+//
+// INVARIANT to preserve when editing: exactly one of onPublishActivation /
+// onCancelActivation is called on every path after a successful reserve. The
+// reservation is what excludes a second concurrent publish, so leaking one wedges
+// every later publish until reboot.
+WebApi::PublishResult WebApi::publishProfile(const Profile& p,
+                                              bool keepDeviceConfig) {
+    PublishResult r;
+    if (!ctx_.storage) {
+        r.error = "no storage";
+        r.httpStatus = 507;
+        return r;
+    }
+    if (!ctx_.onReserveActivation || !ctx_.onPublishActivation || !ctx_.onCancelActivation) {
+        r.error = "activation unavailable";
+        r.httpStatus = 503;
+        return r;
+    }
+
+    // The merged profile comes back from the reservation: it is what will run, so
+    // it is what gets stored. Building it separately here — as the load route used
+    // to — is two merges that have to agree.
+    Profile merged;
+    uint32_t token = ctx_.onReserveActivation(p, keepDeviceConfig, merged);
+    if (token == 0) {
+        // Invalid profile, no queue capacity, or another publish in flight. All
+        // three mean the same thing to the caller: nothing was changed, try again.
+        r.error = "invalid profile, command queue full, or another publish in progress";
+        r.httpStatus = 503;
+        return r;
+    }
+
+    bool prepared;
+    { WebStorageLock sl(ctx_); prepared = ctx_.storage->prepareActive(merged); }
+    if (!prepared) {
+        ctx_.onCancelActivation(token);
+        r.error = "could not write the configuration to storage — not activating it";
+        r.httpStatus = 507;  // Insufficient Storage
+        return r;
+    }
+
+    bool committed;
+    { WebStorageLock sl(ctx_);
+      committed = ctx_.storage->commitActive();
+      if (!committed) ctx_.storage->discardActive(); }
+    if (!committed) {
+        ctx_.onCancelActivation(token);
+        r.error = "could not commit the configuration to storage — not activating it";
+        r.httpStatus = 507;
+        return r;
+    }
+
+    // Past the rename. The stored snapshot IS this profile now, so the activation
+    // must go through; the reservation guaranteed the queue has room for it.
+    if (!ctx_.onPublishActivation(token)) {
+        r.persisted = true;
+        r.error = "the configuration was stored but the activation could not be "
+                  "published — it will be active after a reboot";
+        r.httpStatus = 500;
+        return r;
+    }
+    r.accepted = true;
+    r.persisted = true;
+    r.commandId = token;
+    r.httpStatus = 202;
+    return r;
+}
 
 }  // namespace gmb

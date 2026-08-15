@@ -141,20 +141,58 @@ irreprésentable.
 | persister → activer | file pleine ⇒ HTTP 503 alors que le flash contient déjà la nouvelle configuration : la requête a échoué et le prochain boot a changé |
 | activer → persister | échec flash ⇒ la machine tourne sur une configuration qu'elle ne retrouvera pas, et l'UI a déjà annoncé « publié et ACTIF » |
 
-L'écriture est donc coupée à son point de commit :
+L'écriture est donc coupée à son point de commit — **et la file d'attente aussi**,
+au même endroit. Couper seulement l'écriture laissait encore un troisième état
+atteignable :
 
 ```text
-prepareActive()   écrit + relit un fichier temporaire — rien de visible n'a changé
-   ↓
-enqueue()         l'activation est acceptée, ou refusée
-   ↓
-commitActive()    un seul rename       │   discardActive()   le temporaire disparaît
-(accepté)                              │   (refusé : le stockage est intact)
+prepare  OK      la nouvelle configuration est en attente
+enqueue  OK      loop() peut déjà la prendre        ← trop tôt
+commit   ÉCHEC   le rename n'a pas eu lieu
+                 → la machine tourne sur B, le flash contient A
 ```
+
+La réponse le disait honnêtement, ce qui n'est pas la même chose que ne pas le
+faire. La séquence complète est donc une **transaction** :
+
+```text
+reserve()         valide, fusionne, réserve une place dans la file
+   ↓              — la commande n'est PAS encore visible par loop()
+prepareActive()   écrit + relit un fichier temporaire
+   ↓
+commitActive()    un seul rename — le point de non-retour
+   ↓
+publish()         maintenant seulement loop() voit la commande
+```
+
+Chaque échec avant la dernière étape annule la réservation : ni le flash, ni la
+file, ni la configuration en cours n'ont changé. Les deux seuls résultats
+observables sont donc **persisté ET accepté**, ou **rien**.
 
 Si l'écriture est impossible, `PUT /api/profile` répond **507** et **n'active
 rien** : faire tourner une configuration qui n'a pas pu être écrite est
 exactement l'ambiguïté que ce modèle existe pour supprimer.
+
+### Une transaction à la fois
+
+Deux publications simultanées partageraient l'unique `/active.json.tmp` : le
+`prepare` de B écraserait les octets préparés par A, et le `commit` de A
+renommerait le fichier de B — activant A tout en stockant B, c'est-à-dire
+exactement la panne que ce modèle existe pour supprimer. Rien n'empêche deux
+callbacks AsyncTCP de se chevaucher, donc plutôt que de laisser l'invariant à la
+convention (ou de créer un fichier temporaire par transaction sur un flash
+minuscule), **une seconde publication est refusée tant qu'une autre est en
+cours** ; l'appelant la traite comme une file pleine.
+
+L'invariant à préserver en relisant `WebApi::publishProfile` : après un `reserve`
+réussi, chaque chemin se termine par exactement un `publish` **ou** un `cancel`.
+En perdre un bloquerait toute publication ultérieure jusqu'au redémarrage.
+
+Le tout est vérifié par `firmware/test/runtimecheck` — vrai `publishProfile`, vrai
+`ActivationCoordinator`, vrai `CommandDispatcher`, avec une file qui se remplit
+vraiment et un stockage dont le `prepare` et le `commit` échouent sur commande.
+Les trois garde-fous (ordre, exclusion, restitution de la place réservée) ont été
+mutés un par un pour vérifier que les tests échouent bien sans eux.
 
 ### Absent n'est pas corrompu
 

@@ -37,14 +37,31 @@ struct WebContext {
     std::function<uint32_t()> onReset;                     // recover from panic/E-stop
     std::function<std::string()> appState;                 // "boot"/"homing"/"ready"
     std::function<int()> readyStrings;                     // axes homed & not faulted
-    // Validate + enqueue an activation. `keepDeviceConfig` distinguishes the two
-    // operations that reach here, which are NOT the same thing:
+    // ---- the publish transaction -------------------------------------------
+    //
+    // Activating a profile and persisting it must both happen or neither must, so
+    // the enqueue is split at the same point the storage write already was. See
+    // publishProfile() below, and ActivationCoordinator.h.
+    //
+    // reserve : validate, merge, and claim a queue slot WITHOUT making the command
+    //           runnable. Returns the future command id, or 0 — invalid profile, no
+    //           queue capacity, or another publish already in flight. `mergedOut`
+    //           receives the exact profile that will run, which is the profile the
+    //           caller must write: deriving those bytes separately means two merges
+    //           that have to agree.
+    // publish : make it runnable. Called only after the commit succeeded.
+    // cancel  : drop the reservation. Nothing changes anywhere.
+    //
+    // `keepDeviceConfig` distinguishes the two operations that reach here, which
+    // are NOT the same thing:
     //   false — PUT /api/profile: publish the draft the user just edited FOR THIS
     //           machine. Everything in it is intended, pins and network included.
     //   true  — POST /api/profiles/load: load a stored INSTRUMENT onto this
     //           machine. The device half (board, pins, network, E-stop polarity,
     //           fitted hardware) belongs to the machine and must survive.
-    std::function<uint32_t(const Profile&, bool)> onActivateProfile;
+    std::function<uint32_t(const Profile&, bool, Profile&)> onReserveActivation;
+    std::function<bool(uint32_t)> onPublishActivation;
+    std::function<void(uint32_t)> onCancelActivation;
     // ch, note, vel, ms, then the two optional SELECTION CC values (-1 = none).
     // They are emitted before the Note On through the same path a controller's
     // CCs take, so the test really exercises the string/fret selector.
@@ -141,7 +158,32 @@ public:
     void broadcastMidi(const MidiEvent&) {}
 #endif
 
+    // What one publish transaction did. `error` is null on success.
+    //
+    // The whole point is that only two of the possible field combinations can ever
+    // be observed: everything true, or `accepted` and `persisted` both false. There
+    // is no longer a state where the machine runs one configuration and boots
+    // another, so callers no longer have to warn about one.
+    struct PublishResult {
+        bool accepted = false;    // the activation is queued for loop()
+        bool persisted = false;   // /active.json now holds it
+        uint32_t commandId = 0;
+        const char* error = nullptr;
+        int httpStatus = 202;
+    };
+
+    // Validate + merge + reserve, write, commit, publish — in that order, with
+    // every failure path releasing the reservation. Shared by PUT /api/profile and
+    // POST /api/profiles/load, which differ only in `keepDeviceConfig` and in what
+    // they say afterwards; they used to carry a copy of this sequence each.
+    //
+    // Public because the ordering IS the guarantee, and a guarantee nothing can
+    // call is a guarantee nothing can test — runtimecheck drives this directly,
+    // off-Arduino, with a storage that fails where it is told to.
+    PublishResult publishProfile(const Profile& p, bool keepDeviceConfig);
+
 private:
+
     WebContext ctx_;
 #if defined(ARDUINO)
     // AsyncWebServer is non-copyable, so it is allocated in begin() to honour the

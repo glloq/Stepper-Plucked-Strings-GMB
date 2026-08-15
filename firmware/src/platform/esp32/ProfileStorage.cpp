@@ -1014,6 +1014,44 @@ ProfileStorage::LoadResult ProfileStorage::loadLegacyDevice(Profile& inout) cons
     return LoadResult::Ok;
 }
 
+// ---- library slots: delete, and the legacy startup pointer -------------------
+//
+// These three lost their Arduino bodies when the active snapshot landed and only
+// the non-Arduino stubs below were left, so every ESP32 build stopped linking
+// while every host check stayed green — see hostcheck/run.sh, which now links.
+//
+// `remove()` is live: DELETE /api/profiles/<slot> deletes a library entry.
+//
+// `startupSlot()` / `setStartupSlot()` are the LEGACY boot pointer. Boot no longer
+// reads it to decide what runs — /active.json does — and the UI no longer offers to
+// set it. It survives for exactly one job: an install predating the active snapshot
+// has its instrument in a slot and nothing else, and the one-time migration in
+// setup() needs to know which slot that was. Removing the write side is a separate
+// change from making the firmware link again, and mixing the two is how a fix
+// becomes a second bug.
+bool ProfileStorage::remove(int slot) {
+    if (slot < 0 || slot >= kMaxProfiles) return false;
+    return LittleFS.remove(slotPath(slot).c_str());
+}
+
+int ProfileStorage::startupSlot() const {
+    File f = LittleFS.open("/startup.txt", "r");
+    if (!f) return 0;
+    int slot = f.parseInt();
+    f.close();
+    if (slot < 0 || slot >= kMaxProfiles) return 0;  // bound the stored value
+    return slot;
+}
+
+void ProfileStorage::setStartupSlot(int slot) {
+    if (slot < 0 || slot >= kMaxProfiles) return;  // never store out of range
+    File f = LittleFS.open("/startup.txt", "w");
+    if (f) {
+        f.print(slot);
+        f.close();
+    }
+}
+
 #else
 // Non-Arduino stubs so the file is analysable off-target.
 bool ProfileStorage::begin() { return false; }

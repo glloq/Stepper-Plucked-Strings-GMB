@@ -41,6 +41,7 @@
 #include "platform/esp32/MidiUsbTransport.h"
 #include "platform/esp32/MidiWifi.h"
 #include "platform/esp32/Net.h"
+#include "platform/esp32/ActivationCoordinator.h"
 #include "platform/esp32/CommandDispatcher.h"
 #include "platform/esp32/PlaybackScheduler.h"
 #include "platform/esp32/ProfileStorage.h"
@@ -174,6 +175,14 @@ std::atomic<bool> g_panicRequested{false};
 // RAM cache of "an admin token is configured" so the 100 ms status rebuild never
 // opens NVS (audit P1-10). Seeded at setup, updated on /api/auth.
 bool g_authConfiguredCache = false;
+
+// The publish transaction's queue half. Reserve a slot, let the caller commit its
+// write, and only then make the command runnable — so persisting and activating
+// happen together or not at all. See ActivationCoordinator.h for why.
+//
+// Distinct from g_activation above, which tracks an activation that is already
+// RUNNING (park -> swap -> re-home). This one is about whether it may start.
+ActivationCoordinator g_publishTx;
 
 // Enqueue a command (called from the AsyncTCP task). Returns false if the queue
 // is full so the caller can report back-pressure instead of silently dropping.
@@ -1014,28 +1023,16 @@ WebContext buildWebContext() {
             if (g_anchored[i] && !g_homing[i].failed()) ++n;
         return n;
     };
-    ctx.onActivateProfile = [](const Profile& p, bool keepDeviceConfig) -> uint32_t {
-        Profile target = p;
-        if (keepDeviceConfig) {
-            // Loading a stored INSTRUMENT: keep this machine's device half. The
-            // whole profile used to be adopted, so a slot saved on (or before) a
-            // different setup silently replaced the network settings, the pin map,
-            // the E-stop polarity and the declared power hardware of the machine
-            // actually running. The radio was not re-initialised, so /api/status
-            // then reported a network the device was not on — and the E-stop
-            // polarity change is worse than cosmetic.
-            StateGuard lock;
-            target = mergeProfile(deviceConfigOf(g_profile), instrumentProfileOf(p), p);
-        }
-        // Validate synchronously (pure, safe off the main loop) so an invalid
-        // profile is rejected immediately; enqueue the actual apply for loop().
-        // Validate the MERGED profile: the instrument half must fit THIS device's
-        // pins, which is exactly the combination that will run.
-        if (!ProfileValidator::isActivatable(target)) return 0u;
-        AppCommand c{CmdType::ActivateProfile};
-        c.profile = new Profile(target);  // ownership transfers to the queued command
-        return enqueueCommand(c);
+    ctx.onReserveActivation = [](const Profile& p, bool keepDeviceConfig,
+                                 Profile& mergedOut) -> uint32_t {
+        return g_publishTx.reserve(p, keepDeviceConfig, mergedOut);
     };
+    ctx.onPublishActivation = [](uint32_t token) -> bool {
+        bool ok = g_publishTx.publish(token);
+        g_diag.observeCmdQueueDepth(g_commands.depth());
+        return ok;
+    };
+    ctx.onCancelActivation = [](uint32_t token) { g_publishTx.cancel(token); };
     ctx.onReset = []() -> uint32_t { return enqueueCommand(AppCommand{CmdType::Reset}); };
     return ctx;
 }
@@ -1047,6 +1044,17 @@ void setup() {
     // Web -> loop() command channel + shared-state mutex, created before the web
     // server so the first request is already safe.
     g_commands.begin(16);
+    // The device half belongs to the machine, so loading a stored INSTRUMENT keeps
+    // it. The whole profile used to be adopted, and a slot saved on (or before) a
+    // different setup then silently replaced the network settings, the pin map, the
+    // E-stop polarity and the declared power hardware of the machine actually
+    // running — the radio was not re-initialised, so /api/status reported a network
+    // the device was not on, and the E-stop polarity change is worse than cosmetic.
+    g_publishTx.begin(&g_commands, [](const Profile& p, bool keepDeviceConfig) {
+        if (!keepDeviceConfig) return p;   // a draft edited FOR THIS MACHINE, taken whole
+        StateGuard lock;
+        return mergeProfile(deviceConfigOf(g_profile), instrumentProfileOf(p), p);
+    });
     g_stateMutex = xSemaphoreCreateMutex();
     g_storageMutex = xSemaphoreCreateMutex();
 

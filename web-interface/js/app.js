@@ -377,15 +377,13 @@
           if (r === 'timeout') {
             GMB.toast('Activation still in progress — the draft stays marked ' +
                       'unsaved until it is confirmed.', 'warn');
-          } else if (res.persisted === false) {
-            // Activated but NOT written. The button says "Save", so saying
-            // "published and ACTIVE" here would be the exact ambiguity the
-            // persistence model exists to remove: it runs now and comes back as the
-            // previous configuration. Keep the draft dirty and say what happened.
-            GMB.toast('Active now, but NOT saved: the device could not write it to ' +
-                      'storage, so a reboot will restore the previous configuration.',
-                      'error');
           } else {
+            // No "active but not saved" case to handle any more. The device now
+            // commits the write BEFORE the activation becomes runnable, so an
+            // accepted publish is a persisted one: `accepted` and `persisted` are
+            // true together or the request failed outright and this is the catch
+            // block's problem. There used to be a branch here for the third state,
+            // and a branch for a state that cannot occur is a claim that it can.
             markSaved();
             GMB.toast('Profile published and ACTIVE (revision ' +
                       state.profile.capabilitiesRevision + ').', 'ok');

@@ -46,16 +46,17 @@ cd firmware/test && make        # compile the core + the tests, then run them
 ```
 
 Some code cannot be reached by a native unit test because it is Arduino-gated.
-Rather than leave it merely *compiled*, four harnesses exercise it with real
+Rather than leave it merely *compiled*, these harnesses exercise it with real
 implementations against instrumented stubs:
 
 | Harness | What it proves |
 | ------- | -------------- |
-| `test/hostcheck/` | `main.cpp` and every ESP32 adapter still compile (types, signatures, ArduinoJson) |
+| `test/hostcheck/` | `main.cpp` and every ESP32 adapter still compile **and link** — a declared-but-undefined method is a link error, invisible to a per-file compile check |
 | `test/servobankcheck/` | dual-I²C-bus routing, the controlled and governed parks, `ActuatorResult`, the board→string map |
 | `test/stepperbankcheck/` | `hardStop()` force-stops and drops ENABLE while `controlledStopAll()` decelerates and keeps it; refused moves; soft-limit clamping; an axis with no step generator |
 | `test/profilecheck/` | every shipped profile through the real parser, the v1→v2 migration, the split-slot round trip |
 | `test/boardcheck/` | the JSON board profiles still match `BoardProfile.cpp` |
+| `test/runtimecheck/` | `SafetySupervisor` and `PlaybackScheduler` driven for real, plus the **publish transaction**: a failed write or a full queue activates nothing, and two overlapping publishes cannot interleave |
 
 This separation guarantees that a new MIDI transport or a new board does not
 affect the string controller, the allocator, the motion management, or the
@@ -138,7 +139,12 @@ firmware/src/platform/esp32/     the hardware glue — Arduino-gated
 │                                endstop scan that runs ahead of it
 ├── SafetySupervisor.h           arming, homing, hard stop, panic, the runtime
 │                                axis-fault path, E-stop polarity
-├── CommandDispatcher.h          the web→loop queue, ids and outcome ring
+├── CommandDispatcher.h          the web→loop queue, ids and outcome ring,
+│                                with the two-phase reserve/publish a
+│                                transactional publish needs
+├── ActivationCoordinator.h      one publish transaction at a time: reserve a
+│                                queue slot, let the caller commit its write,
+│                                then make the command runnable
 ├── Net.{h,cpp}                  Wi-Fi station/AP, forced hotspot, captive
 │                                portal, async network survey
 ├── WebApi.{h,cpp}               REST + WebSocket
