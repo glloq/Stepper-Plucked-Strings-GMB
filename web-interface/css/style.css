@@ -67,6 +67,8 @@
   --wire-oe2: #ea580c;
   --wire-esp: #26324f;
   --wire-psu: #5a2f34;
+  --wire-psu-motor: #2f3f5a;
+  --wire-vmot: #7c3aed;
   --wire-board: #e7f1ea;
   --wire-board-stroke: #a3c2b1;
   --wire-pad-free: #eef1f6;
@@ -126,6 +128,8 @@
     --wire-oe2: #fb923c;
     --wire-esp: #1c2740;
     --wire-psu: #40242a;
+    --wire-psu-motor: #22304a;
+    --wire-vmot: #a78bfa;
     --wire-board: #14251d;
     --wire-board-stroke: #2f5a45;
     --wire-pad-free: #1e2733;
@@ -797,6 +801,26 @@ label.inline.builder-opt { display: flex; align-items: flex-start; }
 .wire-rail.oe,    .wire-lead.oe    { stroke: var(--wire-oe); }    .wire-dot.oe    { fill: var(--wire-oe); }
 .wire-rail.oe2,   .wire-lead.oe2   { stroke: var(--wire-oe2); }   .wire-dot.oe2   { fill: var(--wire-oe2); }
 
+/* Motor deck. VM is deliberately NOT the servo V+ colour: the one wiring mistake
+   this diagram exists to prevent is 24 V reaching the 5–6 V servo rail, and two
+   rails drawn in the same red is how that mistake gets made. GND is shared, so the
+   motor-side ground keeps the same colour as the logic one — it IS the same net. */
+.wire-rail.vmot,  .wire-lead.vmot  { stroke: var(--wire-vmot); }  .wire-dot.vmot  { fill: var(--wire-vmot); }
+.wire-rail.mgnd,  .wire-lead.mgnd  { stroke: var(--wire-gnd); }   .wire-dot.mgnd  { fill: var(--wire-gnd); }
+.wire-lead.sv3 { stroke: var(--wire-v3); }
+.wire-psu.motor { fill: var(--wire-psu-motor); }
+.wire-board.driver { fill: var(--surface-2); stroke: var(--wire-vmot); }
+/* Ties between the two decks: the only nets they share, so they are drawn as
+   links rather than as rails anything taps. */
+.wire-tie { fill: none; stroke-width: 1.5; stroke-dasharray: 4 3; }
+.wire-tie.gnd { stroke: var(--wire-gnd); }
+.wire-tie.v3 { stroke: var(--wire-v3); }
+.wire-tielabel { fill: var(--muted); font-size: 9px; font-family: var(--mono); }
+.wire-motor { fill: var(--surface); stroke: var(--wire-vmot); stroke-width: 1.6; }
+.wire-motorlbl { fill: var(--text); font-size: 10px; font-weight: 700; font-family: var(--mono); }
+.wire-endstop-box { fill: none; stroke: var(--border); stroke-width: 1.2; stroke-dasharray: 3 2; }
+.wire-directlbl.optical { fill: var(--wire-v3); font-weight: 700; }
+
 /* Channel pads. */
 .wire-pad.free { fill: var(--wire-pad-free); stroke: var(--wire-pad-free-stroke); stroke-width: 1; }
 .wire-pad.used { stroke: rgba(0, 0, 0, .22); stroke-width: 1; }
@@ -836,6 +860,7 @@ label.inline.builder-opt { display: flex; align-items: flex-start; }
 .wire-lg-rail.scl { background: var(--wire-scl); } .wire-lg-rail.oe { background: var(--wire-oe); }
 .wire-lg-rail.sda2 { background: var(--wire-sda2); } .wire-lg-rail.scl2 { background: var(--wire-scl2); }
 .wire-lg-rail.oe2 { background: var(--wire-oe2); }
+.wire-lg-rail.vmot { background: var(--wire-vmot); }
 .err-item.warn { background: var(--warn-bg); border-color: var(--warn); }
 
 /* ---- Câblage & GPIO page (sub-tab switch) -------------------------------- */

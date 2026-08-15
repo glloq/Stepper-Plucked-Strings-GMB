@@ -35,9 +35,15 @@ public:
         if (raw != candidate_) {
             candidate_ = raw;
             candidateSinceMs_ = nowMs;
-        } else if (candidate_ != stable_ &&
-                   static_cast<int32_t>(nowMs - candidateSinceMs_) >=
-                       static_cast<int32_t>(stableMs_)) {
+        }
+        // NOT an `else if`. With a window of 0 — which is what an optical endstop
+        // asks for, having no contact to bounce — the acceptance test must be
+        // reachable on the very sample the level changes, or "no debounce" would
+        // still cost one loop() of lag. For any window above zero the test fails on
+        // that first sample anyway (0 >= stableMs_ is false), so nothing else moves.
+        if (candidate_ != stable_ &&
+            static_cast<int32_t>(nowMs - candidateSinceMs_) >=
+                static_cast<int32_t>(stableMs_)) {
             stable_ = candidate_;  // held long enough: accept it
         }
         return stable_;

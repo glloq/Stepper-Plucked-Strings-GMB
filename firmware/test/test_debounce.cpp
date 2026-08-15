@@ -33,6 +33,30 @@ TEST(debounce_ignores_single_spike) {
     }
 }
 
+// A window of zero means zero — the level is taken on the sample it changes, not
+// on the one after. That is what an optical endstop configures (no contact, so
+// nothing to settle), and a one-sample carry-over would be a whole loop() of lag
+// on the seek that latches the axis zero.
+TEST(debounce_zero_window_accepts_immediately) {
+    Debouncer d;
+    d.configure(0, false);
+    CHECK(!d.update(0, false));   // seeding sample
+    CHECK(d.update(1, true));     // the change itself, believed at once
+    CHECK(!d.update(2, false));   // and back again, just as promptly
+}
+
+// The zero case must not have loosened any window above it: a 3 ms contact
+// debounce still refuses the level until 3 ms have actually passed.
+TEST(debounce_nonzero_window_still_waits) {
+    Debouncer d;
+    d.configure(3, false);
+    CHECK(!d.update(0, false));
+    CHECK(!d.update(1, true));    // the change: not believed yet
+    CHECK(!d.update(2, true));
+    CHECK(!d.update(3, true));
+    CHECK(d.update(4, true));     // held from t=1, so accepted at t=4
+}
+
 // --- selector: expiredSelectionPolicy applied distinctly ---
 static MidiEvent cc(uint8_t ch, uint8_t n, uint8_t v, uint32_t t) {
     MidiEvent e; e.type = (uint8_t)MidiType::ControlChange;

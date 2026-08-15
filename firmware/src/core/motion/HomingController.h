@@ -34,6 +34,39 @@ enum class HomingFault : uint8_t {
     LimitTriggered,  // opposite LIMIT switch hit during the homing seek
 };
 
+// What kind of device the endstop physically is.
+//
+// This is NOT a cosmetic label. A mechanical contact bounces — the moving blade
+// makes and breaks several times over a few milliseconds — so its level has to
+// settle before it can be believed. An optical gate has no contact to bounce: its
+// output is a comparator edge, and the settling time that protects a switch is
+// pure lag on a slotted sensor.
+//
+// That lag is not harmless here. The zero is latched when the sensor trips during
+// the SLOW seek, so a debounce of d milliseconds at a slow-seek speed of v mm/s
+// places the zero `v·d/1000` mm past where the sensor actually tripped. At the
+// default 5 mm/s and 3 ms that is 15 µm — small, but it is a systematic offset
+// that MOVES when the slow-seek speed is retuned, which is the confusing kind of
+// error: change a speed, and every fret shifts. Fitting an optical endstop for
+// precision and then filtering its edge for 3 ms throws away most of what was
+// bought, so the type selects the filter.
+enum class EndstopType : uint8_t { Mechanical = 0, Optical = 1 };
+
+// A mechanical contact settles in ~1–2 ms on a good microswitch; 3 ms is the
+// conservative value this firmware has always used. An optical gate is taken at
+// face value: the sampling loop already runs at loop() rate, and the ESP32 input
+// is Schmitt-triggered, so a clean comparator output needs no extra filter.
+constexpr uint8_t endstopDebounceMs(EndstopType t) {
+    return t == EndstopType::Optical ? 0 : 3;
+}
+
+// The canonical on-disk / on-wire name. Lives here rather than in the JSON layer
+// because the endstop test endpoint reports it too, and one spelling shared by the
+// profile and the API is one fewer thing to keep in step.
+constexpr const char* endstopTypeName(EndstopType t) {
+    return t == EndstopType::Optical ? "optical" : "mechanical";
+}
+
 struct HomingConfig {
     int8_t direction = -1;      // +1 or -1: travel direction toward the sensor
     double fastSpeedMmS = 40.0;
@@ -44,7 +77,21 @@ struct HomingConfig {
     double maxSearchMm = 500.0;
     bool sensorActiveHigh = true;   // HOME sensor polarity
     bool limitActiveHigh = false;   // LIMIT switch polarity (independent of HOME)
+    // Sensor technology, per endstop. They are independent on purpose: the most
+    // common upgrade is an optical HOME (it sets the zero, so its repeatability is
+    // the axis's repeatability) kept alongside a cheap mechanical LIMIT, which only
+    // ever has to say "you have gone too far".
+    EndstopType homeSensor = EndstopType::Mechanical;
+    EndstopType limitSensor = EndstopType::Mechanical;
 };
+
+// How far past the true trigger point the zero lands, purely because the HOME level
+// had to settle first. Reported by the UI so the cost of the filter is a number the
+// operator can see rather than a claim.
+inline double homingSensorLagMm(const HomingConfig& c) {
+    double v = c.slowSpeedMmS < 0 ? -c.slowSpeedMmS : c.slowSpeedMmS;
+    return v * endstopDebounceMs(c.homeSensor) / 1000.0;
+}
 
 enum class MoveKind : uint8_t { Stop, MoveVelocity, MoveTo };
 

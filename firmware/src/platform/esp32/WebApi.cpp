@@ -1011,6 +1011,18 @@ void WebApi::registerRoutes() {
             doc["ok"] = true;
             doc["home"] = ctx_.steppers->homeActive(axis);
             doc["limit"] = ctx_.steppers->limitActive(axis);
+            // The RAW level and the declared sensor type alongside the normalised
+            // reading, because "not triggered" is the same answer as "polarity is
+            // backwards" until you can see both. That distinction matters most on an
+            // optical gate, whose output usually idles the opposite way round from
+            // the switch it replaced.
+            doc["homeRaw"] = ctx_.steppers->homeRawHigh(axis) ? "high" : "low";
+            if (ctx_.profile && axis < ctx_.profile->homing.size()) {
+                const HomingConfig& hc = ctx_.profile->homing[axis];
+                doc["homeSensor"] = endstopTypeName(hc.homeSensor);
+                doc["limitSensor"] = endstopTypeName(hc.limitSensor);
+                doc["homeDebounceMs"] = endstopDebounceMs(hc.homeSensor);
+            }
             sendJson(req, doc);
         });
     testEndstop->setMethod(HTTP_POST);

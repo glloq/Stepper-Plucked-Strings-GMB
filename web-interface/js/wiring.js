@@ -145,13 +145,22 @@
     // plus one shared ENABLE for every driver.
     var axes = (p.strings || []).map(function (st, i) {
       var n = String(i + 1);
+      var hm = st.homing || {};
       return {
         index: i,
         enabled: st.enabled !== false,
         step: signalGpio(p, 'STEP' + n),
         dir: signalGpio(p, 'DIR' + n),
         home: signalGpio(p, 'HOME' + n),
-        limit: signalGpio(p, 'LIMIT' + n)
+        limit: signalGpio(p, 'LIMIT' + n),
+        // The endstops are part of the harness, not just of the homing settings:
+        // an optical gate is a three-wire device that needs power, a switch is two
+        // wires to GND, and the person at the bench is wiring one or the other.
+        homeSensor: hm.homeSensor === 'optical' ? 'optical' : 'mechanical',
+        limitSensor: hm.limitSensor === 'optical' ? 'optical' : 'mechanical',
+        homeActiveHigh: hm.sensorActiveHigh !== false,
+        limitActiveHigh: hm.limitActiveHigh === true,
+        homing: hm
       };
     });
     axes.forEach(function (a) {
@@ -181,7 +190,13 @@
       useBus0: boards.some(function (b) { return b.bus === 0; }),
       useBus1: useBus1,
       // A separate /OE per bus is active when a second-bus /OE (OE2) is configured.
-      splitOe: useBus1 && hasOe2
+      splitOe: useBus1 && hasOe2,
+      // Any optical endstop anywhere means the sensor deck needs a logic supply
+      // brought down to it, which changes what the diagram has to show.
+      anyOptical: axes.some(function (a) {
+        return a.enabled && (a.homeSensor === 'optical' ||
+                             (a.limit >= 0 && a.limitSensor === 'optical'));
+      })
     };
   }
 
@@ -255,7 +270,12 @@
   // ---- geometry -------------------------------------------------------------
   var BOARD_W = 200, BOARD_GAP = 26;
   var BOARD_H = 250;
-  var ESP_X = 24, TOP_Y = 14, PSU_W = 132;
+  // A left gutter wide enough for the inter-deck ties AND their labels. Without
+  // it the two dashed ties, the two rotated labels and the left edge of the first
+  // board all competed for the same 24 px, and the labels came out struck through
+  // by the line they belonged to.
+  var RAIL_X0 = 42;
+  var ESP_X = 48, TOP_Y = 14, PSU_W = 132;
   // Uniform vertical-tap pitch. The ESP/PSU (sources) tap on the grid; every board
   // (load) taps a HALF-PITCH off it, so an ESP lead and a board lead never share an
   // x — they interleave — while the whole thing stays compact (boards under the ESP).
@@ -282,6 +302,45 @@
   // The shared /OE line is drawn/exposed when a board relies on it: any bus-0 board,
   // or a bus-1 board with no split /OE2.
   function needSharedOe(m) { return m.useBus0 || (m.useBus1 && !m.splitOe); }
+
+  // ---- the motor deck -------------------------------------------------------
+  //
+  // The stepper side is drawn as a SECOND deck below the servo one, with its own
+  // PSU and its own rails, because that is what it is: an independent power domain
+  // at 12–24 V that shares nothing with the 5–6 V servo rail except ground. Drawing
+  // it as more boxes hanging off the servo buses would say the opposite, and a
+  // 24 V rail mistaken for the servo rail destroys every servo on the instrument at
+  // once.
+  //
+  // It used to exist only as a table of GPIO numbers further down the page. The
+  // table is still there — point-to-point pin assignments read better as a table —
+  // but "which supply feeds what, and where do the endstops get their power" is a
+  // picture, and it was missing from the picture.
+  var DRV_W = 200, DRV_GAP = 22, DRV_H = 252;
+  var DECK_GAP = 40;          // clear space between the servo deck and the motor one
+  var MOTOR_PSU_H = 56;
+  var MOTOR_BUSES = [
+    { key: 'vmot', label: 'VM 12–24V', cls: 'vmot' },
+    { key: 'mgnd', label: 'GND', cls: 'gnd' },
+    { key: 'sv3', label: '3V3 sensors', cls: 'v3' }
+  ];
+  // The sensor rail is only drawn when something actually taps it: an endstop is
+  // powered only if it is an optical gate (a switch is a dry contact to GND).
+  function motorRails(m) {
+    return MOTOR_BUSES.filter(function (b) { return b.key !== 'sv3' || m.anyOptical; });
+  }
+  function motorRailY(m, key) {
+    return m.motorRailY && m.motorRailY[key] != null ? m.motorRailY[key] : 0;
+  }
+  function computeMotorLayout(m) {
+    if (!m.activeAxes.length) { m.motorRailY = {}; m.driverTop = 0; return; }
+    var psuTop = m.boardTop + BOARD_H + DECK_GAP;
+    m.motorPsuTop = psuTop;
+    var band = psuTop + MOTOR_PSU_H + 30;
+    m.motorRailY = {};
+    motorRails(m).forEach(function (b, i) { m.motorRailY[b.key] = band + i * BUS_STEP; });
+    m.driverTop = band + motorRails(m).length * BUS_STEP + BAND_GAP;
+  }
 
   // The ESP pins that drop onto buses (GND-only for a direct-only rig). Only the
   // buses actually carrying a board appear, so an empty bus adds no pins/rails.
@@ -356,6 +415,7 @@
   function buildDiagram(p, m) {
     m.railY = computeRailY(m);        // rail Y positions for THIS model (skips unused buses)
     m.boardTop = boardTopFor(m);      // boards start below the whole bus band
+    computeMotorLayout(m);            // the stepper deck below it (empty if no axis)
 
     // Row items left→right: a Direct-GPIO group (if any) then one box per chip.
     var items = [];
@@ -370,9 +430,11 @@
     var topZoneRight = ESP_X + espWidth(m) + 16 + PSU_W;
     var boardX0 = ESP_X;
     var boardsRight = items.length ? boardX0 + items.length * (BOARD_W + BOARD_GAP) - BOARD_GAP : boardX0;
-    var contentRight = Math.max(boardsRight, topZoneRight);
+    var driversRight = m.activeAxes.length
+      ? ESP_X + m.activeAxes.length * (DRV_W + DRV_GAP) - DRV_GAP : 0;
+    var contentRight = Math.max(boardsRight, topZoneRight, driversRight);
     var VB_W = contentRight + LABEL_GUTTER;
-    var VB_H = m.boardTop + BOARD_H + 30;
+    var VB_H = (m.activeAxes.length ? m.driverTop + DRV_H : m.boardTop + BOARD_H) + 30;
     var busRight = contentRight + 4;
 
     var root = svg('svg', {
@@ -387,7 +449,7 @@
     // Horizontal buses spanning the whole width (drawn first, under everything).
     activeRails(m).forEach(function (b) {
       var y = railY(m, b.key);
-      root.appendChild(svg('line', { class: 'wire-rail ' + b.cls, x1: 18, y1: y, x2: busRight, y2: y }));
+      root.appendChild(svg('line', { class: 'wire-rail ' + b.cls, x1: RAIL_X0, y1: y, x2: busRight, y2: y }));
       root.appendChild(svg('text', { class: 'wire-raillabel' + (railMissing(m, b.key) ? ' missing' : ''),
         x: busRight + 8, y: y + 3, 'text-anchor': 'start', text: railLabel(m, b) }));
     });
@@ -401,7 +463,163 @@
       else root.appendChild(buildBoard(p, m, it.b, x));
     });
 
+    // ---- the motor deck ----------------------------------------------------
+    if (m.activeAxes.length) {
+      motorRails(m).forEach(function (b) {
+        var y = motorRailY(m, b.key);
+        root.appendChild(svg('line', { class: 'wire-rail ' + b.cls, x1: RAIL_X0, y1: y, x2: busRight, y2: y }));
+        root.appendChild(svg('text', { class: 'wire-raillabel', x: busRight + 8, y: y + 3,
+          'text-anchor': 'start', text: b.label }));
+      });
+      root.appendChild(buildDeckTies(m));
+      root.appendChild(buildMotorPsu(p, m));
+      m.activeAxes.forEach(function (a, i) {
+        root.appendChild(buildDriver(p, m, a, ESP_X + i * (DRV_W + DRV_GAP)));
+      });
+    }
+
     return root;
+  }
+
+  // The two links between the decks, drawn in the left gutter because they are the
+  // only electrical contact between a 5–6 V domain and a 12–24 V one:
+  //   GND  — mandatory. Without a common return the STEP pulses have no reference
+  //          and the drivers see noise instead of a signal.
+  //   3V3  — only when an optical endstop is fitted; a switch is a dry contact and
+  //          needs no supply of its own.
+  // Dashed, because they are ties between decks rather than a rail anything taps.
+  function buildDeckTies(m) {
+    var g = svg('g', { class: 'wire-mod' });
+    var x = 30;
+    // Each tie gets its own x and its own share of the run for its label. Sharing
+    // either put both dashed lines on top of each other and both labels in the same
+    // few pixels, which rendered as one unreadable smear.
+    function tie(tx, fromKey, toKey, cls, label, at, labelDx) {
+      var y1 = railY(m, fromKey), y2 = motorRailY(m, toKey);
+      g.appendChild(svg('line', { class: 'wire-tie ' + cls, x1: tx, y1: y1, x2: tx, y2: y2 }));
+      g.appendChild(junction(cls, tx, y1));
+      g.appendChild(junction(cls, tx, y2));
+      // Rotated to run ALONG the tie. Horizontal, the label sat in the middle of
+      // the board row and read as a caption on the PCA9685 it was overlapping;
+      // vertical it takes no horizontal room at all, which is what the left gutter
+      // has to spare.
+      var my = y1 + (y2 - y1) * at;
+      var lx = tx - labelDx;
+      g.appendChild(svg('text', { class: 'wire-tielabel', x: lx, y: my,
+        'text-anchor': 'middle', transform: 'rotate(-90 ' + lx + ' ' + my + ')', text: label }));
+    }
+    tie(x, 'gnd', 'mgnd', 'gnd', 'common GND', 0.62, 18);
+    if (m.anyOptical) tie(x + 6, 'v3', 'sv3', 'v3', '3V3 from the ESP32', 0.34, 14);
+    return g;
+  }
+
+  // The motor supply: its own PSU, at its own voltage, feeding its own rails.
+  function buildMotorPsu(p, m) {
+    var g = svg('g', { class: 'wire-mod' });
+    var x = ESP_X + 40, y = m.motorPsuTop, w = PSU_W + 30, hh = MOTOR_PSU_H;
+    g.appendChild(svg('rect', { class: 'wire-psu motor', x: x, y: y, width: w, height: hh, rx: 9 }));
+    g.appendChild(svg('text', { class: 'wire-title light', x: x + 12, y: y + 22, text: 'Motor PSU' }));
+    g.appendChild(svg('text', { class: 'wire-sub light', x: x + 12, y: y + 38,
+      text: '12–24 V · steppers only' }));
+    [{ key: 'vmot', label: 'VM' }, { key: 'mgnd', label: 'GND' }].forEach(function (pin, i) {
+      var px = snapTapX(x + w * (i ? 0.72 : 0.28));
+      var by = motorRailY(m, pin.key);
+      g.appendChild(svg('line', { class: 'wire-lead ' + pin.key, x1: px, y1: y + hh, x2: px, y2: by }));
+      g.appendChild(junction(pin.key, px, by));
+      g.appendChild(svg('text', { class: 'wire-pinlabel light', x: px, y: y + hh - 5,
+        'text-anchor': 'middle', text: pin.label }));
+    });
+    return g;
+  }
+
+  // One STEP/DIR driver, its motor and its endstops.
+  //
+  // The logic lines (STEP / DIR / ENABLE) are drawn as labelled stubs on the box
+  // rather than as routed wires back to the ESP32: with six axes that is eighteen
+  // point-to-point lines crossing the whole diagram, and the answer they would give
+  // — "which GPIO goes to which terminal" — is exactly what the table below the
+  // diagram already gives, legibly. What the picture is for is what the table
+  // cannot show: which supply feeds this box, and where the endstops get power.
+  function buildDriver(p, m, a, x) {
+    var g = svg('g', { class: 'wire-mod' });
+    var top = m.driverTop, n = a.index + 1;
+
+    ['vmot', 'mgnd'].forEach(function (key, i) {
+      var px = boardTapX(x, i);
+      var by = motorRailY(m, key);
+      g.appendChild(svg('line', { class: 'wire-lead ' + key, x1: px, y1: top, x2: px, y2: by }));
+      g.appendChild(junction(key, px, by));
+    });
+
+    g.appendChild(svg('rect', { class: 'wire-board driver', x: x, y: top, width: DRV_W, height: DRV_H, rx: 9 }));
+    g.appendChild(svg('text', { class: 'wire-title', x: x + 12, y: top + 22, text: 'Driver ' + n }));
+    g.appendChild(svg('text', { class: 'wire-sub', x: x + DRV_W - 12, y: top + 22,
+      'text-anchor': 'end', text: 'String ' + n }));
+    g.appendChild(svg('text', { class: 'wire-sub host', x: x + 12, y: top + 39,
+      text: 'A4988 / DRV8825 / TMC2209' }));
+
+    // Logic inputs, from the ESP32.
+    var y = top + 60;
+    function sigRow(label, gpio, note) {
+      var missing = gpio < 0;
+      g.appendChild(svg('text', { class: 'wire-directpin' + (missing ? ' dup' : ''),
+        x: x + 12, y: y, text: label }));
+      g.appendChild(svg('text', { class: 'wire-directlbl', x: x + DRV_W - 12, y: y,
+        'text-anchor': 'end', text: (missing ? (note || '—') : 'GPIO' + gpio) }));
+      y += 19;
+    }
+    sigRow('STEP', a.step);
+    sigRow('DIR', a.dir);
+    sigRow('ENABLE', m.enable, 'shared');
+
+    // The motor itself: four leads, in two coil pairs. Mixing the pairs is the
+    // classic first-build fault (the motor buzzes and does not turn), so the pairing
+    // is named rather than left as "4 wires".
+    y += 4;
+    g.appendChild(svg('line', { class: 'wire-lead vmot', x1: x + 12, y1: y, x2: x + DRV_W - 46, y2: y }));
+    g.appendChild(svg('circle', { class: 'wire-motor', cx: x + DRV_W - 30, cy: y, r: 13 }));
+    g.appendChild(svg('text', { class: 'wire-motorlbl', x: x + DRV_W - 30, y: y + 4,
+      'text-anchor': 'middle', text: 'M' + n }));
+    g.appendChild(svg('text', { class: 'wire-sub', x: x + 12, y: y - 6, text: '1A 1B · 2A 2B' }));
+    y += 22;
+
+    // Endstops: the part that was missing from the picture entirely.
+    //
+    // Two lines per sensor rather than one. A single line with the pin left-anchored
+    // and the technology right-anchored fits nothing: "HOME GPIO12" and
+    // "switch · act.H" run into each other in a box this narrow, and the collision
+    // lands exactly on the two facts the bench needs.
+    var esTop = y;
+    var esH = 20 + (a.limit >= 0 ? 2 : 1) * 30 + 14;
+    g.appendChild(svg('rect', { class: 'wire-endstop-box', x: x + 8, y: esTop,
+      width: DRV_W - 16, height: esH, rx: 6 }));
+    g.appendChild(svg('text', { class: 'wire-sub host', x: x + 16, y: esTop + 15, text: 'Endstops' }));
+    var ey = esTop + 32;
+    function endstopRow(label, gpio, sensor, activeHigh, required) {
+      var missing = gpio < 0;
+      g.appendChild(svg('text', { class: 'wire-directpin' + (missing && required ? ' dup' : ''),
+        x: x + 16, y: ey, text: label + (missing ? (required ? ' — unassigned' : ' — none') : ' · GPIO' + gpio) }));
+      if (!missing) {
+        g.appendChild(svg('text', { class: 'wire-directlbl' + (sensor === 'optical' ? ' optical' : ''),
+          x: x + 16, y: ey + 13,
+          text: (sensor === 'optical' ? 'optical gate' : 'mech. switch') + ' · active ' +
+                (activeHigh ? 'HIGH' : 'LOW') }));
+      }
+      ey += 30;
+    }
+    endstopRow('HOME', a.home, a.homeSensor, a.homeActiveHigh, true);
+    if (a.limit >= 0) endstopRow('LIMIT', a.limit, a.limitSensor, a.limitActiveHigh, false);
+    // How each endstop is fed. A switch is two wires to GND; an optical gate is
+    // three and taps the sensor rail — which is why that rail is drawn at all.
+    var optical = a.homeSensor === 'optical' || (a.limit >= 0 && a.limitSensor === 'optical');
+    g.appendChild(svg('text', { class: 'wire-sub', x: x + 16, y: esTop + esH - 6,
+      text: optical ? '3V3 · GND · OUT (3 wires)' : 'contact to GND (2 wires)' }));
+    if (optical) {
+      var px = boardTapX(x, 2);
+      g.appendChild(svg('line', { class: 'wire-lead sv3', x1: px, y1: top, x2: px, y2: motorRailY(m, 'sv3') }));
+      g.appendChild(junction('v3', px, motorRailY(m, 'sv3')));
+    }
+    return g;
   }
 
   // ESP32-S3 module (top-left), dropping its signal pins onto the buses. With a
@@ -551,11 +769,20 @@
         h('span.wire-lg', [h('span.wire-lg-sw.free'), h('span', 'Free channel')])
       ]),
       h('div.wire-legend', [
-        rail('vplus', 'V+ 5–6 V servo rail'), rail('gnd', 'GND (common)'), rail('v3', '3V3 logic'),
+        rail('vplus', 'V+ 5–6 V servo rail'), rail('vmot', 'VM 12–24 V motor rail'),
+        rail('gnd', 'GND (common)'), rail('v3', '3V3 logic'),
         rail('sda', 'I²C bus 0 SDA'), rail('scl', 'I²C bus 0 SCL'),
         rail('sda2', 'I²C bus 1 SDA (SDA2)'), rail('scl2', 'I²C bus 1 SCL (SCL2)'),
         rail('oe', '/OE safety (bus 0)'), rail('oe2', '/OE bus 1 (OE2)')
       ]),
+      h('p.muted', ['The diagram is two decks. The upper one is the ', h('strong', '5–6 V servo domain'),
+        ' (ESP32, PCA9685 boards, direct-GPIO servos); the lower one is the ',
+        h('strong', '12–24 V motor domain'), ' (its own PSU, one STEP/DIR driver per ' +
+        'string, and that string’s endstops). They are separate on the page because they are ' +
+        'separate on the bench: the only nets crossing between them are the ', h('strong', 'common GND'),
+        ' — mandatory, or the STEP pulses have no reference — and the 3V3 that powers optical ' +
+        'endstops, drawn as dashed ties down the left. A 24 V rail mistaken for the servo rail ' +
+        'destroys every servo on the instrument at once, which is why VM is never drawn in the V+ colour.']),
       h('p.muted', 'Each labelled channel is where one servo plugs in (signal + V+ + GND). On a pad the left is the ' +
         'PCA pin/channel and the right is its string·role: a fret (S1·f3), or Pluck / Strum / Lift (strum-lift) / ' +
         'Damp (damper) / Aux (GLB = global auxiliary). A single PCA9685 can host several strings — each pin carries ' +
@@ -572,9 +799,13 @@
         .map(function (b) { return hex2(0x40 + b.board); }).join(', ') || '—';
     };
     var nBus = function (bus) { return m.boards.filter(function (b) { return b.bus === bus; }).length; };
+    var optHome = m.activeAxes.filter(function (a) { return a.homeSensor === 'optical'; }).length;
     var cells = [
       stat('Instrument', (p.instrument && p.instrument.name) || '—'),
       stat('Strings', String((p.instrument && p.instrument.stringCount) || (p.strings || []).length)),
+      stat('Stepper drivers', String(m.activeAxes.length)),
+      stat('Motor rail', m.activeAxes.length ? '12–24 V · separate PSU' : '—'),
+      stat('Optical HOME', m.activeAxes.length ? (optHome + ' / ' + m.activeAxes.length) : '—'),
       stat('I²C buses', m.useBus1 ? '2' : '1'),
       stat('PCA9685 boards', m.useBus1 ? (m.boards.length + ' (b0:' + nBus(0) + ' · b1:' + nBus(1) + ')') : String(m.boards.length)),
       stat('Servos on PCA', String(onPca)),
@@ -695,14 +926,28 @@
       if (gpio >= 0) return h('td', h('code', 'GPIO' + gpio));
       return h('td', h('span.pill' + (optional ? '' : '.warn'), optional ? 'none' : 'unassigned'));
     }
+    // The sensor technology, and what its settling time costs on the slow seek.
+    // The lag is a real displacement of the zero, so it is shown as a distance
+    // rather than as a millisecond figure nobody can act on.
+    function sensorCell(type, homing, isHome) {
+      var optical = type === 'optical';
+      var pill = h('span.pill.mini' + (optical ? '.ok' : ''), optical ? 'optical' : 'switch');
+      if (!isHome) return h('td', pill);
+      var lag = GMB.homingLagMm(homing);
+      return h('td', [pill, ' ',
+        h('span.muted', optical ? 'no filter' : '3 ms → +' + lag.toFixed(3) + ' mm')]);
+    }
     var rows = m.axes.map(function (a) {
       if (!a.enabled) {
         return h('tr.muted', [h('td', 'Axis ' + (a.index + 1)),
-          h('td', { colspan: 4 }, 'disabled in the profile — no driver, no pins')]);
+          h('td', { colspan: 6 }, 'disabled in the profile — no driver, no pins')]);
       }
       return h('tr', [
         h('td', h('strong', 'Axis ' + (a.index + 1))),
-        pinCell(a.step), pinCell(a.dir), pinCell(a.home), pinCell(a.limit, true)
+        pinCell(a.step), pinCell(a.dir), pinCell(a.home),
+        sensorCell(a.homeSensor, a.homing, true),
+        pinCell(a.limit, true),
+        a.limit >= 0 ? sensorCell(a.limitSensor, a.homing, false) : h('td', h('span.muted', '—'))
       ]);
     });
     return h('div.card', [
@@ -714,7 +959,7 @@
         'drivers share one ENABLE line, so de-energising is all-or-nothing.'),
       h('table.cap-table', [
         h('thead', h('tr', [h('th', 'Axis'), h('th', 'STEP'), h('th', 'DIR'),
-          h('th', 'HOME'), h('th', 'LIMIT')])),
+          h('th', 'HOME'), h('th', 'HOME sensor'), h('th', 'LIMIT'), h('th', 'LIMIT sensor')])),
         h('tbody', rows)
       ]),
       h('ul.advice-list', [
@@ -739,7 +984,22 @@
         h('li', ['Put a ', h('strong', 'bulk capacitor (≥100 µF, rated well above the rail)'),
           ' across each driver’s motor supply, close to the driver: an axis accelerating draws its ' +
           'peak in the first milliseconds, and the whole chord accelerates together. The firmware’s ' +
-          'start governor spreads those starts, but it cannot invent supply headroom.'])
+          'start governor spreads those starts, but it cannot invent supply headroom.']),
+        h('li', ['A ', h('strong', 'mechanical endstop'), ' is a dry contact: two wires, one to the ' +
+          'GPIO and one to GND, wired ', h('strong', 'normally-closed to the common'),
+          ' where the switch allows it, so a broken wire reads "triggered" rather than "clear". ' +
+          'The input already has its pull-up enabled in firmware — no external resistor needed.']),
+        h('li', ['An ', h('strong', 'optical endstop'), ' is three wires: 3V3, GND and OUT. Take the ' +
+          '3V3 from the ESP32 (the dashed tie on the diagram) — never from the motor rail — and ',
+          h('strong', 'check the module is a 3.3 V part'), ': a 5 V push-pull output on an ESP32 ' +
+          'input is over its absolute maximum, and needs a divider or a level shifter. Its output ' +
+          'usually idles the OPPOSITE way from the switch it replaces, so set the active level from ' +
+          'a real reading (Setup ▸ Homing ▸ Test endstop), not from the switch it replaced.']),
+        h('li', ['Route the endstop wires ', h('strong', 'away from the motor leads'),
+          ' — a chopping driver puts fast edges on those four wires, and a sensor line running ' +
+          'beside them all the way down a moving cable chain is the usual source of a homing that ' +
+          'works on the bench and trips at random once the machine is closed up. Shielded or ' +
+          'twisted pairs if they must share the chain.'])
       ])
     ]);
   }
@@ -782,26 +1042,27 @@
     host.appendChild(h('div.card', [
       h('div.card-head', [h('h2', 'Wiring'),
         h('span.muted', 'graphical harness — ESP32-S3 + PCA9685(s), adapts to the configuration')]),
-      h('p.muted', 'A schematic of how the current instrument is wired: the ESP32-S3, one STEP/DIR ' +
-        'driver per carriage axis with its HOME/LIMIT endstops and the shared ENABLE, a separate ' +
-        '5–6 V servo supply, one PCA9685 per board actually used (at its I²C address), the shared ' +
-        'power + /OE buses, and any direct-GPIO servos. Boards can be split across the ESP32-S3’s two ' +
-        'I²C buses (SDA/SCL and SDA2/SCL2). Each occupied channel is labelled with its string and role, so a ' +
-        'PCA9685 shared across several strings stays unambiguous. It updates with each change made on the ' +
+      h('p.muted', 'A schematic of how the current instrument is wired, in two power decks. ' +
+        'Upper: the ESP32-S3, a separate 5–6 V servo supply, one PCA9685 per board actually used ' +
+        '(at its I²C address), the shared power + /OE buses, and any direct-GPIO servos — boards can ' +
+        'be split across the ESP32-S3’s two I²C buses (SDA/SCL and SDA2/SCL2), and each occupied ' +
+        'channel is labelled with its string and role. Lower: the 12–24 V motor supply, one STEP/DIR ' +
+        'driver per carriage axis with its motor, and that axis’s HOME/LIMIT endstops — mechanical or ' +
+        'optical, drawn with the wires each actually needs. It updates with each change made on the ' +
         'Setup page and the GPIO sub-tab.')
     ]));
 
-    if (!servos.length) {
-      host.appendChild(h('div.card', [h('div.pill.warn', 'No servos configured yet.'),
+    var m = buildModel(p);
+
+    if (!servos.length && !m.activeAxes.length) {
+      host.appendChild(h('div.card', [h('div.pill.warn', 'Nothing configured yet.'),
         h('p.muted', 'Set the instrument up first (Setup page) — the wiring map is built from its axes and servos.'),
         h('div.row', [GMB.button('Go to setup', function () { GMB.navigate('wizard'); }, 'primary')])]));
       return;
     }
-
-    var m = buildModel(p);
     var issues = findIssues(p, m);
 
-    if (!m.usePca && !m.direct.length) {
+    if (servos.length && !m.usePca && !m.direct.length) {
       host.appendChild(h('div.note-box', 'The servos are configured but none has a signal source yet.'));
     }
 

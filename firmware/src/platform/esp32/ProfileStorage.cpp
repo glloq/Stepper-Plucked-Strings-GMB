@@ -74,6 +74,22 @@ Transmission transmissionFrom(JsonVariantConst v, bool* ok) {
                        return static_cast<Transmission>(i < 0 ? 0 : i > 2 ? 0 : i); }
     return Transmission::BeltGt2;  // absent: default allowed
 }
+// Endstop technology (name spelling: endstopTypeName, in HomingController.h).
+// Absent is allowed and means mechanical: every profile written before this field
+// existed describes a machine wired with contacts, and silently upgrading those to
+// "optical" would drop their contact debounce.
+EndstopType endstopTypeFrom(JsonVariantConst v, bool* ok) {
+    if (v.is<const char*>()) {
+        std::string s = v.as<const char*>();
+        if (s == "mechanical") return EndstopType::Mechanical;
+        if (s == "optical") return EndstopType::Optical;
+        *ok = false; return EndstopType::Mechanical;
+    }
+    if (v.is<int>()) { int i = v.as<int>(); if (i < 0 || i > 1) *ok = false;
+                       return static_cast<EndstopType>(i == 1 ? 1 : 0); }
+    return EndstopType::Mechanical;  // absent: default allowed
+}
+
 const char* modeName(SelectionMode m) {
     switch (m) {
         case SelectionMode::Automatic: return "automatic";
@@ -387,6 +403,8 @@ void ProfileStorage::toJson(const Profile& p, JsonDocument& doc) {
             ho["maxSearchMm"] = h.maxSearchMm;
             ho["sensorActiveHigh"] = h.sensorActiveHigh;
             ho["limitActiveHigh"] = h.limitActiveHigh;
+            ho["homeSensor"] = endstopTypeName(h.homeSensor);
+            ho["limitSensor"] = endstopTypeName(h.limitSensor);
         }
     }
 
@@ -663,6 +681,11 @@ bool ProfileStorage::fromJson(JsonVariantConst doc, Profile& out) {
         h.maxSearchMm = ho["maxSearchMm"] | 500.0;
         h.sensorActiveHigh = ho["sensorActiveHigh"] | true;
         h.limitActiveHigh = ho["limitActiveHigh"] | false;
+        // Absent (every profile written before endstop types existed) reads as
+        // mechanical, which is what those machines are wired with. An unknown name
+        // rejects the profile rather than quietly picking a debounce.
+        h.homeSensor = endstopTypeFrom(ho["homeSensor"], &enumsOk);
+        h.limitSensor = endstopTypeFrom(ho["limitSensor"], &enumsOk);
         out.homing.push_back(h);
     }
 

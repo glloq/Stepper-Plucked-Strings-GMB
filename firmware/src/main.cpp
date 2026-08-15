@@ -249,15 +249,23 @@ void applyProfile() {
     std::vector<AxisPins> axisPins;
     int8_t enablePin = -1;
     buildStepperPins(axisPins, enablePin);
-    std::vector<bool> homeActiveHigh, limitActiveHigh;
+    // Per-axis endstop electrics: polarity and the settling time the sensor
+    // technology implies. An axis with no homing entry falls back to the struct's
+    // defaults (active-low, mechanical debounce) rather than to whatever the
+    // previous axis had.
+    std::vector<AxisEndstops> endstops;
     for (size_t i = 0; i < g_profile.strings.size(); ++i) {
-        bool hah = i < g_profile.homing.size() ? g_profile.homing[i].sensorActiveHigh : false;
-        bool lah = i < g_profile.homing.size() ? g_profile.homing[i].limitActiveHigh : false;
-        homeActiveHigh.push_back(hah);
-        limitActiveHigh.push_back(lah);
+        AxisEndstops es;
+        if (i < g_profile.homing.size()) {
+            const HomingConfig& hc = g_profile.homing[i];
+            es.homeActiveHigh = hc.sensorActiveHigh;
+            es.limitActiveHigh = hc.limitActiveHigh;
+            es.homeDebounceMs = endstopDebounceMs(hc.homeSensor);
+            es.limitDebounceMs = endstopDebounceMs(hc.limitSensor);
+        }
+        endstops.push_back(es);
     }
-    g_steppers.begin(g_profile.strings, axisPins, enablePin, homeActiveHigh,
-                     limitActiveHigh);
+    g_steppers.begin(g_profile.strings, axisPins, enablePin, endstops);
     // Bus 0 = Wire (SDA/SCL, /OE on SERVO_OE); bus 1 = Wire1 (SDA2/SCL2), with its
     // own /OE when SERVO_OE2 is assigned, otherwise sharing the single /OE line.
     g_servos.begin(g_profile.servos, pinOf("SDA"), pinOf("SCL"), pinOf("SERVO_OE"),

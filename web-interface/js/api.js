@@ -83,6 +83,21 @@
   //   INSTRUMENT  the tune: strings, homing geometry, servos, MIDI, plucking.
   //               Portable from one machine to another.
   // ---------------------------------------------------------------------------
+  // ---- endstop technology ----------------------------------------------------
+  // Mirrors endstopDebounceMs() / homingSensorLagMm() in the firmware
+  // (core/motion/HomingController.h). The UI needs the same two numbers to say what
+  // a sensor choice costs, and a plain "optical is more precise" claim with no
+  // figure behind it is the kind of advice nobody can check.
+  GMB.endstopDebounceMs = function (type) { return type === 'optical' ? 0 : 3; };
+
+  // How far past the true trigger the zero lands, because the HOME level had to
+  // settle while the carriage was still moving at the slow-seek speed.
+  GMB.homingLagMm = function (hm) {
+    if (!hm) return 0;
+    var v = Math.abs(Number(hm.slowSpeedMmS) || 0);
+    return v * GMB.endstopDebounceMs(hm.homeSensor) / 1000;
+  };
+
   GMB.DEVICE_KEYS = ['board', 'pins', 'network', 'hardware'];
   GMB.INSTRUMENT_KEYS = ['instrument', 'midi', 'stringFretSelection', 'power',
                          'pluck', 'strings', 'servos'];
@@ -179,6 +194,11 @@
     // Per-string blocks the views bind to directly.
     p.strings.forEach(function (st) {
       if (!st.homing || typeof st.homing !== 'object') st.homing = d.strings[0].homing;
+      // A profile written before endstop types existed has the homing block but
+      // not these two fields. Fill them per FIELD, not by replacing the block:
+      // that profile's tuned seek speeds and polarities are still its own.
+      if (st.homing.homeSensor !== 'optical') st.homing.homeSensor = 'mechanical';
+      if (st.homing.limitSensor !== 'optical') st.homing.limitSensor = 'mechanical';
       if (!Array.isArray(st.calibratedFretMm)) st.calibratedFretMm = [];
       if (st.enabled === undefined) st.enabled = true;
     });
@@ -272,7 +292,11 @@
       maxSpeedMmS: 200, maxAccelMmS2: 2000, calibratedFretMm: [],
       homing: {
         direction: -1, fastSpeedMmS: 40, slowSpeedMmS: 5, backoffMm: 3, offsetMm: 0,
-        timeoutMs: 8000, maxSearchMm: 500, sensorActiveHigh: true, limitActiveHigh: false
+        timeoutMs: 8000, maxSearchMm: 500, sensorActiveHigh: true, limitActiveHigh: false,
+        // Endstop technology, per sensor. Mechanical is the default because it is
+        // what a first build is wired with, and because assuming optical would
+        // drop the contact debounce on a machine that needs it.
+        homeSensor: 'mechanical', limitSensor: 'mechanical'
       }
     };
   }
@@ -1403,7 +1427,19 @@
   // Mock endstop test (/api/test/endstop): matches the firmware contract
   // { ok:true, home:Bool, limit:Bool } for an { axis } request.
   function mockTestEndstop(payload) {
-    return { ok: true, home: Math.random() < 0.25, limit: Math.random() < 0.1 };
+    var st = (GMB.state.profile.strings || [])[payload.axis | 0];
+    var hm = (st && st.homing) || {};
+    var home = Math.random() < 0.25;
+    return {
+      ok: true, home: home, limit: Math.random() < 0.1,
+      // The raw level is what the pin reads, so it follows the declared polarity —
+      // a mock that always answered "high" would make the polarity check on the
+      // commissioning bench look like it passed offline when it proves nothing.
+      homeRaw: (home === (hm.sensorActiveHigh !== false)) ? 'high' : 'low',
+      homeSensor: hm.homeSensor || 'mechanical',
+      limitSensor: hm.limitSensor || 'mechanical',
+      homeDebounceMs: GMB.endstopDebounceMs(hm.homeSensor)
+    };
   }
 
   // Mock /api/wifi. It mirrors the firmware's validation rather than always

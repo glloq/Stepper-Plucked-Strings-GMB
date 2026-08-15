@@ -95,7 +95,7 @@ time** through a string-tab strip, so a 6-string instrument stays navigable.
 | 2 **Board** | ESP32 model → available / reserved / recommended GPIOs; four board profiles are built in |
 | 3 **Pins** | automatic assignment, or manual with per-signal capability filtering |
 | 4 **Mechanics** | per string: axis enabled, scale length, transmission, motor polarity, max speed & acceleration, and a **jog ±1/±5 mm** to check the direction live; *Copy mechanics to all strings* |
-| 5 **Homing** | per axis: HOME pin & active level, search direction, zero offset, speeds, back-off, timeout, LIMIT pin & level; *Home all axes now*, *Copy homing to all* |
+| 5 **Homing** | per axis: HOME pin, **sensor type (mechanical switch / optical gate)** & active level, search direction, zero offset, speeds, back-off, timeout, LIMIT pin, type & level; *Test endstop* (raw level + declared level, so a backwards polarity is visible), *Home all axes now*, *Copy homing to all* |
 | 6 **Servos** | per servo: source (PCA bus/board/channel or direct GPIO), rest / active / mute pulses, travel & settle, disable-at-rest, stroke shaping, engage delay, and a **Test strike** |
 | 7 **Notes** | per string a **fret offset from the HOME endstop** that shifts the whole fretboard, automatic fret computation, then a **sequential calibration assistant** (§3.2) |
 | 8 **MIDI & playback** | channel, omni, transpose, sustain, chord window and saturation strategy; the note/finger/strum timing; the string/fret CC selection with its preset and full configuration |
@@ -176,16 +176,41 @@ pictures change with every choice made on the Setup page.
 
 ![Wiring harness](../img/screenshots/wiring.png)
 
-The electrical harness of the *current* instrument: the ESP32, one STEP/DIR
-driver per axis, a separate 5–6 V servo supply, one PCA9685 per board actually
-used at its real I²C address with every occupied channel labelled by string and
-role, the shared power + `/OE` buses, and any direct-GPIO servos. Boards can be
-split across the ESP32-S3's two I²C buses.
+The electrical harness of the *current* instrument, drawn as the **two power
+decks** the machine actually has:
 
-The **Stepper drivers** card below the diagram is a point-to-point table (STEP /
-DIR / HOME / LIMIT per axis, plus the shared ENABLE) with the driver-specific
-advice: ENABLE is active-low, the E-stop must *also* force it inactive, set Vref
-before the first motion, give the motors their own supply.
+* **Upper — the 5–6 V servo domain.** The ESP32, its own servo PSU, one PCA9685
+  per board actually used at its real I²C address with every occupied channel
+  labelled by string and role, the shared power + `/OE` buses, and any
+  direct-GPIO servos. Boards can be split across the ESP32-S3's two I²C buses.
+* **Lower — the 12–24 V motor domain.** Its own PSU, one STEP/DIR driver per
+  carriage axis with its motor, and that axis's **HOME/LIMIT endstops** — each
+  showing its GPIO, its technology (mechanical switch or optical gate), its
+  active level, and how many wires it needs (2 to GND, or 3 with a supply).
+
+The only nets crossing between them are drawn as dashed ties down the left
+gutter: the **common GND**, which is mandatory or the STEP pulses have no
+reference, and the 3V3 that powers optical endstops. The motor rail is
+deliberately never drawn in the servo rail's colour — a 24 V rail mistaken for
+the 5–6 V one destroys every servo on the instrument at once.
+
+The motor deck used to exist only as a table of GPIO numbers further down the
+page. The table is still there, because point-to-point pin assignments read
+better as a table than as eighteen crossing lines — but "which supply feeds
+what, and where do the endstops get their power" is a picture, and it was
+missing from the picture.
+
+The **Stepper drivers** card below the diagram is that point-to-point table
+(STEP / DIR / HOME / LIMIT per axis, plus each endstop's sensor type and the
+shared ENABLE) with the driver- and endstop-specific advice: ENABLE is
+active-low, the E-stop must *also* force it inactive, set Vref before the first
+motion, give the motors their own supply, wire a mechanical endstop
+normally-closed, check an optical module is a 3.3 V part, keep sensor wires away
+from the motor leads. For each HOME it also states what the sensor choice costs:
+a mechanical contact needs 3 ms to settle, and since the zero is latched during
+the *slow* seek, that is a real displacement of the zero — 15 µm at the default
+5 mm/s, and it moves whenever the slow-seek speed is retuned. An optical gate
+needs no filter and so has none.
 
 It flags real faults live: a duplicated board+channel, two servos on one GPIO, a
 missing SDA/SCL for a bus in use, a missing `/OE` or `ENABLE`, a missing
