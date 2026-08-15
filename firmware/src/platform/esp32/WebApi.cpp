@@ -115,7 +115,7 @@ const char* midiSourceName(MidiSource s) {
         case MidiSource::Ble:           return "ble";
         case MidiSource::Usb:           return "usb";
         case MidiSource::Din:           return "din";
-        case MidiSource::Serial:        return "serial";
+        case MidiSource::SerialPort:    return "serial";
         default:                        return "other";
     }
 }
