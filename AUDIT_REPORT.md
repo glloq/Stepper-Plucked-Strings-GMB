@@ -23,22 +23,25 @@ frette est choisie par un **chariot**, pas par un servo dédié.
 | P1.4 | API homogène `ActuatorResult` | **DONE** | étendu à `StepperBank::moveToMm/moveToMmRaw/setVelocityMm` |
 | P1.5 | Perte PCA locale (faute des cordes concernées, pas de panic global) | **DONE** | identique |
 | P1.6 | PowerGovernor sur tous les mouvements | **DONE** | le **repositionnement de chariot** est *staggerable* (2ᵉ source d'appel de courant) |
-| P1.7 | Abstraction des transports MIDI | **PARTIAL** | identique au dépôt servo (UDP + DIN fonctionnels, USB squelette) |
+| P1.7 | Abstraction des transports MIDI | **DONE** | UDP + DIN branchés (UART2, broche `MIDI_RX`) ; USB-MIDI implémenté dans l'env optionnel `esp32-s3-usbmidi`, **non validé sur matériel** |
 | P1.9 | `staticIp` : retiré (option fantôme) | **DONE** | identique |
 | P1.10 | `WifiLossBehavior` : retiré (jamais câblé) | **DONE** | identique |
-| P1.11 | Postures réseau + gate UDP | **PARTIAL** | `UdpSourceGate` host-testé, inerte (`Open`) — comme le dépôt servo |
+| P1.11 | Postures réseau + gate UDP | **DONE** | `UdpSourceGate` host-testé + `POST /api/midi/source` (politique persistée en NVS, appliquée par la boucle) |
 | P1.12 | Migration de profils v1→v2 + fixture | **DONE** | identique |
-| P1.13 | Split `DeviceConfig`/`InstrumentProfile` + slots disque | **PARTIAL** | le **homing** voyage côté *instrument* (voir §3) |
+| P1.13 | Split `DeviceConfig`/`InstrumentProfile` + slots disque | **DONE** | le **homing** voyage côté *instrument* (§3) ; persistance fermée : `/device.json` (la machine) + `/current.json` (l'instrument qui tourne), le boot ne dépend plus du slot |
 | P1.14 | Builds PlatformIO multi-cartes | **DONE** | 3 cartes + note sur les unités RMT/MCPWM |
 | P1.15 | Réserver GPIO0 (BOOT-hotspot) | **DONE** | identique, testé sur les 4 profils de carte |
 | P1.16 | CI GitHub Actions complète | **DONE** | + `stepperbankcheck` + `boardcheck` |
-| P2.17 | Réduire `main.cpp` (kernels extraits) | **PARTIAL** | kernels extraits ; `PlaybackScheduler`/`SafetySupervisor` **non** extraits (voir §5) |
+| P2.17 | Réduire `main.cpp` (kernels extraits) | **DONE** | 1903 → ~1250 lignes ; `PlaybackScheduler` / `SafetySupervisor` / `CommandDispatcher` extraits (corps déplacés à l'identique) et couverts par `runtimecheck` |
 | P2.18 | Documenter les hypothèses du modèle | **DONE** | + la loi de **géométrie** propre à ce build |
 | P2.19 | Télémétrie / `GET /api/diagnostics` | **DONE** | + compteurs mouvement (axes, homing, LIMIT, timeouts) |
 
-**14 DONE · 4 PARTIAL** — les PARTIAL héritent du périmètre du dépôt servo (leur
-abstraction est en place et testée ; il reste du câblage), sauf P2.17 dont
-l'écart est propre à ce dépôt et assumé (§5).
+**18 DONE** — les quatre PARTIAL de la première reprise ont été fermés depuis
+(transports MIDI, gate UDP, split Device/Instrument, découpe de `main.cpp`).
+
+Une réserve subsiste et n'est pas un PARTIAL déguisé : **USB-MIDI compile et n'a
+jamais énuméré face à un hôte**. Il est derrière un env dédié pour cette raison,
+et l'image S3 par défaut ne change pas.
 
 ---
 
@@ -46,17 +49,23 @@ l'écart est propre à ce dépôt et assumé (§5).
 
 | Vérification | Résultat |
 | ------------ | -------- |
-| Tests natifs cœur (`-Wall -Wextra -Werror`) | **225 tests, 3804 checks, 0 failures** |
-| Idem sous **AddressSanitizer + UBSan** | **225 tests, 0 failures** |
+| Tests natifs cœur (`-Wall -Wextra -Werror`, désormais le défaut local) | **256 tests, 5484 checks, 0 failures** |
+| Idem sous **AddressSanitizer + UBSan** | **256 tests, 0 failures** |
 | `hostcheck` (compile `main.cpp` + adaptateurs ESP32) | 7/7 unités OK |
 | `servobankcheck` (2 bus, park contrôlé + gouverné, `ActuatorResult`, mapping P1.5) | OK |
 | `stepperbankcheck` (**nouveau** : hardStop vs stop contrôlé, moves refusés, butées logicielles, générateur de pas absent) | OK |
-| `boardcheck` (**nouveau** : les JSON de cartes correspondent à `BoardProfile.cpp`) | OK |
+| `boardcheck` (les JSON de cartes correspondent à `BoardProfile.cpp`) | OK |
+| `runtimecheck` (**nouveau** : `SafetySupervisor` 11 cas + `PlaybackScheduler` 6 cas, contre les vraies banques) | OK |
+| `apicheck` (**contrat** : 32 endpoints — méthodes, champs de requête lus, champs de réponse écrits) | OK |
 | `profilecheck` (5 profils + migration v1→v2 + slots split/hérités) | OK |
-| Tests JS web (géométrie de frettes, filtre de broches, capacités, profil v2, diagnostics) | **158 checks, 0 failures** |
+| Tests JS web + rendu navigateur (Playwright) | OK — toutes les vues rendues |
 | Builds ESP32 (S3 / WROOM-32 / DevKit v1) | en CI (le toolchain xtensa n'est pas téléchargeable dans le bac à sable) |
 
-Tests natifs : 147 → **225** (+78), plus les harnais runtime et les tests JS.
+Tests natifs : 147 → **256**, plus six harnais runtime, le contrat REST et le
+test navigateur.
+
+> Ce tableau est daté par nature. La CI est la source de vérité : si un chiffre
+> ici diverge d'elle, c'est ce fichier qui a vieilli.
 
 ---
 
@@ -150,22 +159,34 @@ un autre device.
 
 ## 5. Écarts assumés
 
-* **P2.17 (`main.cpp`)** — les kernels host-testables sont extraits (`AppPhase`,
-  `Readiness`, `CommandResultRing`, `HoldButton`, `ProfileActivation`,
-  `Diagnostics`, `ActuatorManager`), mais **`PlaybackScheduler` et
-  `SafetySupervisor` ne sont pas extraits**. Dans le dépôt servo, ces deux
-  extractions sont *verbatim* et garanties « par construction ». Ici la FSM par
-  corde est différente (elle intègre le mouvement du chariot, les deadlines de
-  déplacement, la faute d'axe) : la déplacer serait une réécriture, pas un
-  déplacement — donc sans la garantie d'équivalence qui rend l'opération sûre
-  sur du code Arduino-gaté non testé nativement. Reporté volontairement.
-* **P1.7 / P1.11 / P1.13** — même périmètre que le dépôt servo : l'abstraction
-  est en place et testée, le câblage runtime (UART DIN réel, USB natif, posture
-  Performance, portabilité comportementale du split) reste à faire.
+> Cette section listait quatre écarts. Trois ont été fermés depuis et la raison
+> qui les justifiait mérite d'être conservée, parce qu'elle était bonne au moment
+> où elle a été écrite et que c'est ce qui a changé, pas le raisonnement.
+
+* **P2.17 (`main.cpp`)** — *fermé*. L'écart tenait à un argument juste : dans le
+  dépôt servo les extractions sont *verbatim*, donc sûres par construction, alors
+  qu'ici la FSM par corde est différente (mouvement du chariot, deadlines de
+  déplacement, faute d'axe) et la déplacer ressemblait à une réécriture. La sortie
+  a été de rendre l'extraction verbatim quand même : chaque méthode ré-alias ses
+  collaborateurs vers les anciens noms `g_*`, et l'équivalence a été **vérifiée
+  par diff** contre la révision précédente (`tickString` identique sur ses 284
+  lignes significatives). Puis `runtimecheck` a remplacé la garantie « par
+  construction » par des tests qui échouent quand on retire une garde.
+* **P1.7 / P1.11 / P1.13** — *fermés*. Le câblage manquant a été fait : DIN sur
+  UART2 avec une broche `MIDI_RX` configurable, `POST /api/midi/source` pour la
+  posture UDP, et une persistance Device/Instrument qui tient aussi au boot.
+  USB-MIDI reste la seule réserve, et elle est explicite (env dédié, non validé
+  sur matériel).
 * **`test_scheduler.cpp`, `test_pluck.cpp`, `test_fretservo.cpp`,
   `test_geared.cpp`** du dépôt servo ne sont **pas** repris : ils testent le
   modèle servo-par-frette (doigts engrenés, `PluckPlan`, `PlaybackScheduler`)
-  qui n'a pas d'équivalent ici.
+  qui n'a pas d'équivalent ici. L'équivalent pas-à-pas est
+  `test/runtimecheck/main_playback.cpp`.
+* **USB-MIDI non validé sur matériel** — le seul écart qui reste ouvert. Il
+  compile et il est construit en CI ; personne ne l'a énuméré face à un hôte, et
+  le tracker Adafruit TinyUSB porte des soucis spécifiques au S3. Voir
+  [`docs/MIDI_PROTOCOL.md`](docs/MIDI_PROTOCOL.md) §1.2 pour ce que coûte
+  l'activation (la console série du S3).
 
 ---
 

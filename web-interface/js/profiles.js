@@ -2,17 +2,22 @@
  * profiles.js — profiles page (spec section 20).
  *
  * Saved profiles live in numbered storage slots on the device
- * (GET /api/profiles -> { profiles:[{slot,name,used}], startupSlot }). Because
- * the firmware exposes no "read one slot" endpoint, copy / rename / set-startup
- * are composed client-side by loading the slot (which returns it as the active
- * profile), editing it and re-saving via POST /api/profiles.
+ * (GET /api/profiles -> { profiles:[{slot,name,used}], startupSlot }). Copy /
+ * rename / set-startup read a slot through POST /api/profiles/read, which returns
+ * it WITHOUT activating it, and re-save via POST /api/profiles — so an
+ * administrative action never moves a motor.
+ *
+ * The slots are a LIBRARY, not what boots: the running instrument lives in
+ * /current.json and this machine's own config in /device.json (see
+ * docs/DEVICE_INSTRUMENT.md). Loading a slot swaps the instrument and keeps the
+ * device half.
  *
  * This page is the instrument LIBRARY and nothing else. Network settings belong
  * to the device and live in Settings > Network — there is exactly one editor for
  * them. Exports never include a Wi-Fi password (they are not part of the schema,
  * and the export strips the field defensively anyway).
  *
- * An import is normalised (GMB.ensureProfileDefaults) and then validated BY THE
+ * An import is normalised BY THE DEVICE (POST /api/profile/normalize) and validated BY THE
  * DEVICE before it is adopted: the firmware owns the schema, the migration and
  * the cross-field rules, so a second, weaker validator here would only disagree
  * with it.
@@ -221,24 +226,29 @@
         if (errs.length) { alert('Invalid profile:\n- ' + errs.join('\n- ')); return; }
         if (!confirm('Load imported profile "' + (obj.instrument && obj.instrument.name) +
                      '" as the working profile?')) return;
-        // Then hand it to the DEVICE's validator before adopting it. The firmware
-        // owns the schema, the migration and the cross-field rules; the check
-        // above only knows four keys, so a file missing board / midi /
-        // stringFretSelection / hardware used to land in the UI unnoticed and
-        // surface later as a mystery. The backend answers 422 with the reasons.
-        GMB.api.validatePins(obj).then(function (res) {
-          adoptImported(obj, (res && res.issues) || []);
+        // Then ask the DEVICE what this file means. The firmware owns the schema,
+        // the version migrations and the cross-field rules; the shape check above
+        // only knows four keys. It answers with the CANONICAL profile — migrated
+        // and fully defaulted — and its issues, and we adopt exactly that.
+        //
+        // Adopting the raw file instead is what used to bite: a file carrying
+        // `"stringFretSelection": {"enabled": true}` parses into a complete profile
+        // on the device while the browser keeps an object with no `.string`, and
+        // the MIDI panel later reads `.string.ccNumber` off undefined.
+        GMB.api.normalizeProfile(obj).then(function (res) {
+          adoptImported((res && res.profile) || obj, (res && res.issues) || []);
         }).catch(function (e) {
           var body = e && e.body;
-          if (body && body.issues) { adoptImported(obj, body.issues); return; }
+          if (body && body.issues) { adoptImported(body.profile || obj, body.issues); return; }
           // The device is unreachable (offline demo): fall back to the local
-          // validator rather than refusing to import at all, and say so.
-          var local = GMB.validateProfile ? GMB.validateProfile(GMB.ensureProfileDefaults(obj)) : [];
+          // approximation rather than refusing to import at all.
+          var normalized = GMB.ensureProfileDefaults(GMB.deepCopy(obj));
+          var local = GMB.validateProfile ? GMB.validateProfile(normalized) : [];
           if (local.length) {
             alert('Invalid profile:\n- ' + local.join('\n- '));
             return;
           }
-          adoptImported(obj, []);
+          adoptImported(normalized, []);
         });
       };
       reader.readAsText(file);
@@ -258,6 +268,9 @@
             }).join('\n- '));
       return;
     }
+    // `obj` is already canonical when it came from the device; ensureProfileDefaults
+    // is idempotent and covers the offline path, so it stays as a belt-and-braces
+    // pass rather than the primary normaliser it used to be.
     GMB.state.profile = GMB.ensureProfileDefaults(obj);
     GMB.markDirty();
     if (issues.length) GMB.reportIssues('Imported with warnings', issues);

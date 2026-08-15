@@ -59,11 +59,34 @@ public:
 };
 inline String operator+(const char* a, const String& b) { return String(std::string(a) + b.s_); }
 
+// ---- controllable pin levels and clock ------------------------------------
+//
+// digitalRead() used to be a constant HIGH and millis() a constant 0, which is
+// enough to COMPILE the platform layer but makes whole behaviours untestable: a
+// homing sequence is "watch a sensor change while time passes", and with a frozen
+// sensor and a frozen clock there is nothing to watch. Both now read from a table
+// a harness can drive, defaulting to exactly the old values so every existing
+// harness behaves identically unless it opts in.
+inline int* gmbPinLevels() {
+    static int levels[64];
+    static bool init = false;
+    if (!init) { for (int& v : levels) v = HIGH; init = true; }
+    return levels;
+}
+inline void gmbSetPinLevel(int pin, int level) {
+    if (pin >= 0 && pin < 64) gmbPinLevels()[pin] = level;
+}
+inline unsigned long& gmbClockMs() { static unsigned long ms = 0; return ms; }
+inline void gmbSetMillis(unsigned long ms) { gmbClockMs() = ms; }
+inline void gmbAdvanceMs(unsigned long d) { gmbClockMs() += d; }
+
 inline void pinMode(int, int) {}
-inline void digitalWrite(int, int) {}
-inline int digitalRead(int) { return HIGH; }
-inline unsigned long millis() { return 0; }
-inline unsigned long micros() { return 0; }
+inline void digitalWrite(int pin, int level) { gmbSetPinLevel(pin, level); }
+inline int digitalRead(int pin) {
+    return (pin >= 0 && pin < 64) ? gmbPinLevels()[pin] : HIGH;
+}
+inline unsigned long millis() { return gmbClockMs(); }
+inline unsigned long micros() { return gmbClockMs() * 1000UL; }
 inline void delay(unsigned long) {}
 inline void delayMicroseconds(unsigned long) {}
 
@@ -83,7 +106,7 @@ struct SerialStub {
   template <typename T> void print(T) {}
   template <typename... Args> void printf(const char*, Args...) {}
 };
-static SerialStub Serial;
+[[maybe_unused]] static SerialStub Serial;
 
 // Extra UARTs. The DIN-MIDI input binds one of these at 31250 baud with an
 // explicit RX pin and no TX, so the stub must accept that exact signature —
@@ -107,4 +130,4 @@ struct EspClass {
   uint32_t getFreeHeap() { return 0; }
   uint32_t getMinFreeHeap() { return 0; }
 };
-static EspClass ESP;
+[[maybe_unused]] static EspClass ESP;

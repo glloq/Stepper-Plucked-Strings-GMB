@@ -1,9 +1,9 @@
 /*
  * wizard.js — first-configuration assistant (spec section 10).
  *
- * Nine steps: Identification -> Board choice -> Automatic pin assignment ->
+ * Ten steps: Identification -> Board choice -> Automatic pin assignment ->
  * Mechanics per string -> Homing -> Servo calibration -> Note calibration ->
- * Test -> Validation.
+ * MIDI & playback -> Test -> Validation.
  *
  * Disclosure is LOCAL, not a global mode (9.2). Each step shows the few decisions
  * you have to make and parks the fine tuning in a GMB.details block you open on
@@ -403,7 +403,6 @@
     boardField.classList.add('wide');
     body.appendChild(h('div.form-grid', [
       boardField,
-      GMB.field('Reserve GPIO19/20 for future USB', GMB.input(p.board, 'reserveUsb', { type: 'checkbox' })),
       GMB.field('Automatic pin assignment', GMB.input(p.board, 'automaticPinAssignment', { type: 'checkbox' }))
     ]));
     body.appendChild(boardNotes(p.board.profile));

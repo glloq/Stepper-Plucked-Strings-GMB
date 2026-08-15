@@ -13,6 +13,7 @@
 
 #include "../Types.h"
 #include "MidiEvent.h"
+#include "MidiIdentity.h"
 
 namespace gmb {
 
@@ -199,22 +200,33 @@ private:
     std::vector<PendingStringSelection> pending_;
     std::vector<ActiveNote> active_;
     uint32_t nextInstanceId_ = 1;
-    // Last fully-validated string+fret PAIR, remembered PER channel key so the
-    // LastValid policy on channel 2 never reuses a value seen on channel 1, and
+    // Last fully-validated string+fret PAIR, remembered PER sender key so the
+    // LastValid policy on channel 2 never reuses a value seen on channel 1 (nor one
+    // seen on another transport), and
     // the string/fret always come from the same validated selection (audit P1-5).
     struct LastValidSelection {
         bool valid = false;
         uint8_t stringIndex = 0;
         uint8_t fret = 0;
     };
-    LastValidSelection lastValid_[16];
+    LastValidSelection lastValid_[256];
     std::vector<CompletedSelection> justCompleted_;
 
-    // Masked to 0..15: a MIDI channel is 4-bit, and this indexes lastValid_[16].
-    // Masking here is a defence in depth against a caller that passes a raw value
-    // out of range (e.g. an unvalidated web test note) — audit P0-6.
-    uint8_t channelKey(uint8_t ch) const {
-        return cfg_.perMidiChannel ? static_cast<uint8_t>(ch & 0x0F) : 0;
+    // The key a pending selection belongs to: (source, channel), not channel alone.
+    //
+    // A CC selection is a statement by ONE sender about the note it is about to
+    // play. With DIN, USB and Wi-Fi all feeding this selector, keying on the channel
+    // alone lets a Note On from one transport consume the CC20/CC21 pair another
+    // transport just sent — so a controller's tablature position gets applied to
+    // somebody else's note, on a real carriage. Same reasoning as the note identity
+    // in core/midi/MidiIdentity.h.
+    //
+    // Masking is defence in depth against a caller passing a raw out-of-range value
+    // (e.g. an unvalidated web test note) — audit P0-6. Source is masked to 4 bits
+    // and channel to 4, so the key still fits a uint8_t and indexes lastValid_[256].
+    uint8_t senderKey(const MidiEvent& e) const {
+        return cfg_.perMidiChannel ? sourceChannelKey(e)
+                                   : static_cast<uint8_t>(sourceKey(e.source) << 4);
     }
     // Record a newly-complete selection for anticipated pre-positioning, if the
     // feature is on and the selection is in range.

@@ -77,8 +77,16 @@ struct WebContext {
         bool bound = false;        // has real hardware behind it (pin / socket / stack)
         std::string detail;        // why it is or is not bound (port, GPIO, "no MIDI_RX pin")
         uint32_t events = 0;       // messages decoded since boot
+        uint32_t lastEventMs = 0;  // millis() of the most recent decoded message (0 = never)
     };
     std::function<std::vector<MidiTransportState>()> midiTransports;
+    // Which transport most recently delivered a message, and when. This is the
+    // answer to "what is playing this instrument right now"; `events` is a lifetime
+    // total and answers a different question. Picking the highest total was wrong
+    // for the case that matters: plug a DIN cable into a machine that has been on
+    // Wi-Fi all day and it stays "wifiUdp" no matter what you play.
+    std::function<std::string()> lastMidiSource;
+    std::function<uint32_t()> lastMidiEventMs;
     // POST /api/midi/source. policy: -1 leave unchanged, 0 open, 1 lockToFirst,
     // 2 disabled; `unlock` forgets the currently locked sender. Returns false when
     // the setting could not be persisted (the caller then reports a real failure

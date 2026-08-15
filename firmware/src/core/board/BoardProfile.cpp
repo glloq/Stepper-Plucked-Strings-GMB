@@ -21,7 +21,10 @@ static bool pinSupports(const PinCapability& p, SignalKind kind) {
             return p.output;
         case SignalKind::Home:
         case SignalKind::Limit:
-            return p.input && p.interrupt;
+            // StepperBank configures both as INPUT_PULLUP, so a pin without an
+            // internal pull-up would FLOAT and the endstop would read as noise.
+            // (The classic ESP32's input-only 34/35/36/39 are exactly that case.)
+            return p.input && p.interrupt && p.internalPullUp;
         case SignalKind::Diag:
             return p.input;
         case SignalKind::SafetyInput:
@@ -102,11 +105,18 @@ PinCapability reservedPin(int8_t gpio, const char* note, bool strapping = false,
     return c;
 }
 
-// Input-only GPIO (classic ESP32 34/35/36/39): usable as a sensor input but never
-// as an output, so it can carry none of our output signals (STEP/DIR/ENABLE/I2C/
-// servo//OE). Marked Reserved because pinSupports() rejects it for every output
-// signal; HOME/LIMIT would technically fit but have no internal pull, so an
-// endstop on one needs an external pull-up the wizard cannot verify.
+// Classic-ESP32 input-only pins (34/35/36/39).
+//
+// These are CAUTION, not Reserved. "Cannot drive an output" is not "cannot be used":
+// they are perfectly good MIDI-RX and other read-only inputs, and on a chip with very
+// few free pins left they are worth having. Marking them Reserved meant
+// `candidatesFor()` never returned them and the web UI filtered them out, so the one
+// signal they suit — `MIDI_RX` — could not actually be assigned to them even though
+// `supports()` accepted them.
+//
+// What keeps them out of the wrong slots is their CAPABILITIES, which is where the
+// truth belongs: output=false bars STEP/DIR/ENABLE//OE/I2C, and internalPullUp=false
+// bars HOME/LIMIT/ESTOP (all sampled INPUT_PULLUP — an input-only pin would float).
 PinCapability inputOnlyPin(int8_t gpio, const char* note) {
     PinCapability c;
     c.gpio = gpio;
@@ -118,7 +128,7 @@ PinCapability inputOnlyPin(int8_t gpio, const char* note) {
     c.internalPullUp = false;
     c.internalPullDown = false;
     c.adc = true;
-    c.preference = PinPreference::Reserved;
+    c.preference = PinPreference::Caution;
     c.note = note;
     return c;
 }
@@ -257,10 +267,10 @@ void addClassicEsp32Pins(BoardProfile& b, bool includeFlash) {
     add(normalPin(27, PinPreference::Recommended, true));
     add(normalPin(32, PinPreference::Recommended, true));
     add(normalPin(33, PinPreference::Recommended, true));
-    add(inputOnlyPin(34, "Input-only (ADC1) — cannot drive STEP/DIR/I2C//OE"));
-    add(inputOnlyPin(35, "Input-only (ADC1) — cannot drive STEP/DIR/I2C//OE"));
-    add(inputOnlyPin(36, "Input-only sensor VP (ADC1) — cannot output"));
-    add(inputOnlyPin(39, "Input-only sensor VN (ADC1) — cannot output"));
+    add(inputOnlyPin(34, "Input-only (ADC1), no internal pull-up — read-only signals such as MIDI_RX; cannot drive an output, and needs an external pull-up"));
+    add(inputOnlyPin(35, "Input-only (ADC1), no internal pull-up — read-only signals such as MIDI_RX; cannot drive an output, and needs an external pull-up"));
+    add(inputOnlyPin(36, "Input-only sensor VP (ADC1), no internal pull-up — read-only signals such as MIDI_RX; cannot output"));
+    add(inputOnlyPin(39, "Input-only sensor VN (ADC1), no internal pull-up — read-only signals such as MIDI_RX; cannot output"));
 }
 
 }  // namespace

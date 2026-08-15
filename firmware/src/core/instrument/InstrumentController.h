@@ -11,6 +11,7 @@
 
 #include "../configuration/Profile.h"
 #include "../midi/MidiEvent.h"
+#include "../midi/MidiIdentity.h"
 #include "../midi/StringFretSelector.h"
 #include "NoteAllocator.h"
 #include "StringController.h"
@@ -52,7 +53,13 @@ public:
     StringController& string(size_t i) { return strings_[i]; }
     const StringTarget& target(size_t i) const { return targets_[i]; }
     int soundingCount() const;
-    bool pedalDown() const { return pedalDown_; }
+    // True when ANY sender is holding its sustain pedal. Kept as a single query
+    // because it answers a status question ("is anything being held?"); the
+    // per-sender state is what the note logic uses.
+    bool pedalDown() const {
+        for (uint32_t w : pedalMask_) if (w) return true;
+        return false;
+    }
 
 private:
     StringFretSelector selector_;
@@ -69,7 +76,6 @@ private:
     uint8_t sustainCc_ = 64;
     int velocityCurve_ = 0;
 
-    bool pedalDown_ = false;
     // Global attack gain from CC7 (volume) and CC11 (expression), 0..1 each. A
     // plucked string can't modulate a sustained note, so these scale the attack
     // intensity of subsequent plucks (spec section 7).
@@ -78,6 +84,12 @@ private:
     double attackGain() const { return volume_ * expression_; }
 
     struct ActiveMap {
+        // (source, channel, note), NOT (channel, note): with DIN, USB and Wi-Fi all
+        // feeding this controller, a Note Off keyed on channel+note alone releases
+        // whichever sender's note happens to match — damping one player's string and
+        // leaving the other's pressed and ringing with nothing left to release it.
+        // See core/midi/MidiIdentity.h.
+        uint16_t key;
         uint8_t channel;
         uint8_t note;
         int stringIndex;
@@ -86,6 +98,8 @@ private:
     std::vector<ActiveMap> active_;
 
     struct PendingNote {
+        uint16_t key;      // same identity as ActiveMap (source+channel+note)
+        uint8_t source;
         uint8_t channel;
         uint8_t note;
         uint8_t velocity;
@@ -101,15 +115,27 @@ private:
     std::vector<uint32_t> preparedExpiryUs_; // per string, when the prepare expires
 
     bool accepts(uint8_t channel) const { return omni_ || channel == channel_; }
+    // Sustain is per SENDER, for the same reason note identity is: one controller's
+    // pedal must not hold (or release) another controller's notes. One bit per
+    // source+channel key; 256 keys = 4 words, cheaper than a per-key struct.
+    uint32_t pedalMask_[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    bool pedalDownFor(uint8_t key) const {
+        return (pedalMask_[key >> 5] >> (key & 31)) & 1u;
+    }
+    void setPedalDown(uint8_t key, bool down) {
+        uint32_t bit = 1u << (key & 31);
+        if (down) pedalMask_[key >> 5] |= bit;
+        else pedalMask_[key >> 5] &= ~bit;
+    }
     void prepareString(int stringIndex, int fret, uint32_t expiresAtUs);
     // Trigger a previously prepared string for this Note On. Returns false if the
     // string was not prepared for this fret (the caller then starts a fresh note).
-    bool triggerPreparedNote(int stringIndex, int fret, uint8_t channel,
+    bool triggerPreparedNote(int stringIndex, int fret, uint8_t source, uint8_t channel,
                              uint8_t note, uint8_t velocity);
-    void startNote(int stringIndex, int fret, uint8_t channel, uint8_t note,
+    void startNote(int stringIndex, int fret, uint8_t source, uint8_t channel, uint8_t note,
                    uint8_t velocity);
     void stopString(int stringIndex);
-    int findActive(uint8_t channel, uint8_t note) const;
+    int findActive(uint16_t key) const;
     void removeActiveByString(int stringIndex);
     void flushChord();
 };

@@ -55,6 +55,37 @@ public:
     static void toSlotJson(const Profile& p, JsonDocument& doc);
     static bool fromSlotJson(JsonVariantConst doc, Profile& out);
 
+    // ---- What actually boots -------------------------------------------------
+    //
+    // The 8 slots are a LIBRARY. They are not the running configuration, and they
+    // were the wrong thing to boot from: the startup slot carries a device half
+    // (board, pins, E-stop wiring, fitted hardware) captured whenever that slot was
+    // last written, so rewiring the machine and publishing the change worked for the
+    // session and then silently reverted at the next power-up. That also contradicted
+    // the hot path, where loading a slot deliberately KEEPS this machine's device
+    // config. Two files close it:
+    //
+    //   /device.json    this MACHINE's own config. One per device, never carried by
+    //                   an instrument, and it wins over whatever a slot claims.
+    //   /current.json   the instrument that is actually running, i.e. what was last
+    //                   published. Boot restores this, so "what runs" == "what boots".
+    //
+    // Both are written when a configuration is ACCEPTED for activation, so publishing
+    // is a real save. Neither replaces the library: `POST /api/profiles` still writes
+    // a named slot, and nothing here overwrites one behind the user's back.
+    //
+    // Legacy installs have neither file; boot then falls back to the startup slot as
+    // before and the two files appear on the first publish (a lazy migration).
+    bool saveDevice(const Profile& p);
+    // Overlays ONLY the device fields onto `inout`, leaving its instrument half
+    // untouched. False when no device file is stored.
+    bool loadDevice(Profile& inout) const;
+    bool hasDevice() const;
+
+    bool saveCurrent(const Profile& p);
+    bool loadCurrent(Profile& out) const;
+    bool hasCurrent() const;
+
     std::string exportJson(const Profile& p, bool includeSecrets = false) const;
     bool importJson(const std::string& json, Profile& out) const;
 
@@ -69,6 +100,14 @@ public:
 
 private:
     static std::string slotPath(int slot);
+#if defined(ARDUINO)
+    // Durable write: temp file -> read back and re-parse -> keep a .bak -> rename.
+    // A failure at any step leaves the previous file intact. `verify` re-parses the
+    // temp file; a write that cannot be read back is a failed write, because the
+    // failure mode that matters here is a truncated file that still looks present.
+    static bool writeJsonAtomic(const std::string& finalPath, const JsonDocument& doc,
+                                bool (*verify)(JsonVariantConst));
+#endif
     bool degraded_ = false;
 };
 

@@ -37,6 +37,8 @@ jobs:
         run: bash firmware/test/servobankcheck/run.sh
       - name: StepperBank motion + hard-stop + ActuatorResult check
         run: bash firmware/test/stepperbankcheck/run.sh
+      - name: SafetySupervisor + PlaybackScheduler behaviour check
+        run: bash firmware/test/runtimecheck/run.sh
 
   profiles:
     name: Profile validation (JSON + generated boards + C++ validator)

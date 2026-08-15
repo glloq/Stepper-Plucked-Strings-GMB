@@ -2,7 +2,11 @@
 # Usage:  make        -> build and run tests
 #         make build  -> build only
 CXX ?= g++
-CXXFLAGS ?= -std=c++17 -Wall -Wextra -O1 -g
+# -Werror by DEFAULT, matching what CI runs. It used to be CI-only, so a narrowing
+# conversion in a brace-init — the exact shape of mistake that silently reorders an
+# aggregate's fields — built clean locally and only failed after a push. The fast
+# loop should catch what the slow one does. Override CXXFLAGS to relax it.
+CXXFLAGS ?= -std=c++17 -Wall -Wextra -Werror -O1 -g
 
 ROOT := ..
 CORE := $(ROOT)/src/core

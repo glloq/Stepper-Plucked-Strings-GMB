@@ -367,14 +367,16 @@
 
   function midiSourceLabel(st) {
     if (st.midiSourcePolicy === 'disabled') return 'off';
-    var src = st.midiSource || 'wifiUdp';
-    if (src === 'none') return 'no input';
+    var src = st.midiSource || 'none';
+    // `midiSource` is the LAST source heard, so before the first message there is
+    // genuinely no active input — say that rather than name whichever port happens
+    // to be open.
+    var bound = (st.midiTransports || []).filter(function (t) { return t.bound; });
+    if (src === 'none') return bound.length ? 'waiting (' + bound.length + ')' : 'no input';
     var name = { wifiUdp: 'Wi-Fi UDP', din: 'DIN', usb: 'USB' }[src] || src;
-    // Name the second live input too, so a DIN cable plugged in beside the Wi-Fi
+    // Name the other live inputs too, so a DIN cable plugged in beside the Wi-Fi
     // link is visible from the dashboard rather than only in Settings.
-    var others = (st.midiTransports || []).filter(function (t) {
-      return t.bound && t.name !== src;
-    });
+    var others = bound.filter(function (t) { return t.name !== src; });
     if (others.length) name += ' +' + others.length;
     if (st.midiSourcePolicy === 'lockToFirst') name += st.midiSourceLocked ? ' · locked' : ' · unlocked';
     return name;

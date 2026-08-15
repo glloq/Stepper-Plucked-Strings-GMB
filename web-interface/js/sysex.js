@@ -31,7 +31,7 @@
         GMB.field('Instrument type', GMB.input(p.instrument, 'type', {
           type: 'select', options: ['ukulele', 'guitar', 'bass', 'mandolin', 'banjo', 'custom'] })),
         GMB.field('GM program', GMB.input(p.instrument, 'gmProgram', { type: 'number', min: 0, max: 127, onChange: function () { GMB.render(); } })),
-        GMB.field('MIDI channel (1–16)', GMB.input(p.midi, 'globalChannel', { type: 'number', min: 0, max: 15 }), 'stored zero-based')
+        GMB.field('MIDI channel', GMB.channelInput(p.midi, 'globalChannel'), '1–16')
       ]),
       h('div.toolbar', [
         GMB.button('Publish capabilities', publish, 'primary'),

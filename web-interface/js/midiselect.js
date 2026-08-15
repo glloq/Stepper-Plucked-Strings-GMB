@@ -23,10 +23,8 @@
     host.appendChild(h('div.card', [
       h('h2', 'MIDI parameters'),
       h('div.form-grid', [
-        GMB.field('Global channel (1–16)', GMB.input(p.midi, 'globalChannel', {
-          type: 'number', min: 0, max: 15,
-          onChange: function () {}, // stored zero-based
-        }), 'stored zero-based (0 = channel 1)'),
+        GMB.field('Global channel', GMB.channelInput(p.midi, 'globalChannel'),
+                  'as your controller numbers it (1–16)'),
         GMB.field('Omni mode', GMB.input(p.midi, 'omni', { type: 'checkbox' })),
         GMB.field('Transpose (semitones)', GMB.input(p.midi, 'transpose', { type: 'number', min: -24, max: 24 })),
         GMB.field('Chord window (ms)', GMB.input(p.midi, 'chordWindowMs', { type: 'number', min: 0, max: 50 })),

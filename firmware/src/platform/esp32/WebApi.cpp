@@ -2,6 +2,7 @@
 
 #include "ProfileStorage.h"
 #include "WebAssets.h"
+#include "../../core/configuration/DeviceInstrument.h"
 #include "../../core/configuration/ProfileValidator.h"
 
 #if defined(ARDUINO)
@@ -145,28 +146,32 @@ void WebApi::fillStatus(JsonDocument& doc) {
     wifi["ssid"] = ctx_.profile ? ctx_.profile->network.ssid : "";
     wifi["ip"] = ctx_.net ? ctx_.net->ipAddress() : "";
     wifi["connected"] = ctx_.net ? ctx_.net->connected() : false;
-    // Real transport state, not a constant: `midiSource` is whichever transport has
-    // actually decoded the most messages since boot (ties go to the first bound one),
+    // Real transport state, not a constant. `midiSource` is the transport that most
+    // recently delivered a message — "what is playing this instrument right now" —
     // and `midiTransports` carries the full picture so the UI can show a DIN cable
     // that is wired but silent separately from one that is not wired at all.
+    //
+    // It is deliberately NOT "the transport with the most messages since boot": that
+    // is a lifetime total, and it answered the wrong question in the case that
+    // matters. Plug a DIN cable into a machine that has been on Wi-Fi all day and the
+    // total still says wifiUdp however hard you play the cable.
     if (ctx_.midiTransports) {
         auto states = ctx_.midiTransports();
         JsonArray arr = doc["midiTransports"].to<JsonArray>();
-        const WebContext::MidiTransportState* best = nullptr;
         for (const auto& t : states) {
             JsonObject o = arr.add<JsonObject>();
             o["name"] = t.name;
             o["label"] = t.label;
             o["bound"] = t.bound;
             o["detail"] = t.detail;
-            o["events"] = t.events;
-            if (!t.bound) continue;
-            if (!best || t.events > best->events) best = &t;
+            o["events"] = t.events;          // lifetime total, for diagnostics
+            o["lastEventMs"] = t.lastEventMs;  // 0 = never heard from
         }
-        doc["midiSource"] = best ? best->name : "none";
-    } else {
-        doc["midiSource"] = "wifiUdp";
     }
+    // "none" until something is actually received: before the first message there is
+    // no active source, and naming one would be a guess.
+    doc["midiSource"] = ctx_.lastMidiSource ? ctx_.lastMidiSource() : "none";
+    doc["lastMidiEventAtMs"] = ctx_.lastMidiEventMs ? ctx_.lastMidiEventMs() : 0;
     // UDP source posture (audit P1.11) so the Settings UI shows the live state.
     doc["midiSourcePolicy"] = ctx_.midiSourcePolicy ? ctx_.midiSourcePolicy() : "open";
     doc["midiSourceLocked"] = ctx_.midiSourceLocked ? ctx_.midiSourceLocked() : false;
@@ -617,6 +622,28 @@ void WebApi::registerRoutes() {
                 sendJson(req, doc, 422);  // real error, not masked as success
                 return;
             }
+            // PERSIST before activating. "Save & publish" has to mean saved: this
+            // route used to only queue an activation, so a configuration could run
+            // perfectly for a whole session and then be gone at the next power-up —
+            // with the button that did it labelled "Save". Writing here, in the web
+            // task under the storage lock, is the same path POST /api/profiles
+            // already takes; loop() never waits on flash.
+            //
+            // Written at ACCEPT time, not after the activation completes: the
+            // activation runs on the loop over many passes and can still be refused
+            // by a safety lock. Persisting first means a refused activation still
+            // boots the configuration the user published, from a clean power-on
+            // state — which is the outcome they asked for.
+            bool persisted = false;
+            if (ctx_.storage) {
+                WebStorageLock sl(ctx_);
+                // Device half and running instrument are separate files on purpose:
+                // the device is this machine, the instrument travels.
+                persisted = ctx_.storage->saveDevice(p);
+                persisted = ctx_.storage->saveCurrent(p) && persisted;
+            }
+            doc["persisted"] = persisted;
+
             // Validated above; the actual activation runs in loop() (motor stop,
             // reconfigure, re-home). Report ACCEPTED, not "done".
             // This is the draft the user edited FOR THIS MACHINE — pins, board and
@@ -632,6 +659,56 @@ void WebApi::registerRoutes() {
         });
     putProfile->setMethod(HTTP_PUT);
     server_->addHandler(putProfile);
+
+    // ---- POST /api/profile/normalize (canonical profile + issues) ----
+    //
+    // The firmware owns the schema: the version migrations, the per-field defaults
+    // and the cross-field rules all live here. The web interface was re-deriving a
+    // subset of that in JS (ensureProfileDefaults), and only at the TOP level — so
+    // `{"stringFretSelection": {"enabled": true}}` parsed into a complete profile
+    // here while the browser kept an object with no `.string`, and the MIDI panel
+    // then read `sfs.string.ccNumber` off undefined.
+    //
+    // Rather than grow a second migration in JS, this returns the profile as the
+    // firmware understands it — migrated, defaulted, complete — and the UI adopts
+    // exactly that. Validation issues come back in the same round trip, because
+    // "normalise it" and "is it acceptable?" are the same question at import time.
+    //
+    // 200 even when the profile has blocking errors: the caller asked what this
+    // file MEANS, and the answer plus the reasons is more useful than a refusal.
+    auto* normalizeProfile = new AsyncCallbackJsonWebHandler(
+        "/api/profile/normalize", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            JsonDocument doc;
+            JsonDocument raw;
+            raw.set(body);
+            ProfileStorage::migrate(raw);   // v1 -> v2 -> ... before parsing
+            Profile p;
+            if (!ProfileStorage::fromJson(raw.as<JsonVariantConst>(), p)) {
+                doc["ok"] = false;
+                doc["error"] = "invalid profile JSON";
+                sendJson(req, doc, 400);
+                return;
+            }
+            bool ok = true;
+            JsonArray errs = doc["issues"].to<JsonArray>();
+            for (const auto& is : ProfileValidator::validate(p)) {
+                if (is.severity == ValidationIssue::Severity::Error) ok = false;
+                JsonObject o = errs.add<JsonObject>();
+                o["field"] = is.field;
+                o["message"] = is.message;
+                o["severity"] =
+                    is.severity == ValidationIssue::Severity::Error ? "error" : "warning";
+            }
+            doc["ok"] = ok;
+            // toJson builds a whole document; nest it (ArduinoJson deep-copies on
+            // cross-document assignment, so this is a full independent copy).
+            JsonDocument canonical;
+            ProfileStorage::toJson(p, canonical);
+            doc["profile"] = canonical;
+            sendJson(req, doc, 200);
+        });
+    normalizeProfile->setMethod(HTTP_POST);
+    server_->addHandler(normalizeProfile);
 
     // ---- POST /api/pins/validate (full-profile validation) ----
     auto* validatePins = new AsyncCallbackJsonWebHandler(
@@ -696,6 +773,24 @@ void WebApi::registerRoutes() {
             // hardware). Taking the slot's device half would, among other things,
             // report a network the radio is not on and adopt another machine's
             // E-stop polarity.
+            //
+            // Persist the result as the running instrument so the choice survives a
+            // reboot — but merge THIS machine's device half into what gets stored,
+            // exactly as the runtime is about to do. Writing the slot's own device
+            // half to /current.json would reintroduce, on disk, the very swap this
+            // route exists to prevent. /device.json is deliberately NOT touched: a
+            // slot load changes the instrument, never the machine.
+            bool persisted = false;
+            if (ctx_.storage) {
+                Profile toStore = p;
+                { WebStateLock lk(ctx_);
+                  if (ctx_.profile)
+                      toStore = mergeProfile(deviceConfigOf(*ctx_.profile),
+                                             instrumentProfileOf(p), p); }
+                WebStorageLock sl(ctx_);
+                persisted = ctx_.storage->saveCurrent(toStore);
+            }
+            doc["persisted"] = persisted;
             uint32_t cmdId = ctx_.onActivateProfile
                                  ? ctx_.onActivateProfile(p, /*keepDeviceConfig=*/true) : 0;
             bool queued = cmdId != 0;

@@ -18,10 +18,15 @@
 // fault an axis through the app's central fault path without needing to know about
 // capability rebuilds or panic escalation.
 //
-// Arduino-gated by its collaborators (StepperBank / ServoBank): compile-checked by
-// hostcheck, NOT host-unit-tested. Behaviour is preserved by construction (verbatim
-// bodies); like every mechanical path in this repo it is to be RE-VALIDATED on the
-// bench, not assumed correct because the software builds.
+// Arduino-gated by its collaborators (StepperBank / ServoBank), so it is not
+// reachable from the pure-core unit tests — but it is covered: test/runtimecheck/
+// drives this FSM against the real banks and asserts the ORDER, which is where §16
+// actually lives. The finger-lift wait and the "never move into a running axis"
+// guard each have a case that fails when the guard is removed.
+//
+// Like every mechanical path in this repo it is still to be RE-VALIDATED on the
+// bench: the harness proves sequencing, not timing on real silicon and not that a
+// finger physically clears a string.
 #pragma once
 
 #include <cmath>

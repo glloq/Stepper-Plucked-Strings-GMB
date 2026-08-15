@@ -71,6 +71,12 @@ MidiTransport* const g_transports[] = {&g_midi, &g_usbMidi, &g_dinMidi};
 // reports these so "which MIDI input is actually feeding the instrument?" has a
 // measured answer rather than an assumed one.
 std::atomic<uint32_t> g_transportEvents[3]{};
+// millis() of each transport's most recent decoded message (0 = never heard from),
+// and which one it was. "What is playing this instrument right now" is a different
+// question from "which has carried the most traffic since boot", and it is the one
+// the status page is actually asked.
+std::atomic<uint32_t> g_transportLastMs[3]{};
+std::atomic<int> g_lastTransport{-1};
 constexpr uint16_t kMidiUdpPort = 5006;  // AppleMIDI-free raw UDP MIDI (spec §8.1)
 WebApi g_web;
 
@@ -813,6 +819,15 @@ WebContext buildWebContext() {
         return udpSourcePolicyName(g_midi.sourcePolicy());
     };
     ctx.midiSourceLocked = []() -> bool { return g_midi.sourceLocked(); };
+    ctx.lastMidiSource = []() -> std::string {
+        int i = g_lastTransport.load();
+        if (i < 0) return "none";   // nothing received yet: do not name a guess
+        return g_transports[i]->name();
+    };
+    ctx.lastMidiEventMs = []() -> uint32_t {
+        int i = g_lastTransport.load();
+        return i < 0 ? 0u : g_transportLastMs[i].load();
+    };
     ctx.midiTransports = []() -> std::vector<WebContext::MidiTransportState> {
         std::vector<WebContext::MidiTransportState> out;
         WebContext::MidiTransportState udp;
@@ -823,6 +838,7 @@ WebContext buildWebContext() {
         udp.detail = udp.bound ? ("UDP port " + std::to_string(kMidiUdpPort))
                                : "no network link";
         udp.events = g_transportEvents[0].load();
+        udp.lastEventMs = g_transportLastMs[0].load();
         out.push_back(udp);
 
         WebContext::MidiTransportState usb;
@@ -836,6 +852,7 @@ WebContext buildWebContext() {
                                : "not built in (see the esp32-s3-usbmidi env)";
 #endif
         usb.events = g_transportEvents[1].load();
+        usb.lastEventMs = g_transportLastMs[1].load();
         out.push_back(usb);
 
         WebContext::MidiTransportState din;
@@ -847,6 +864,7 @@ WebContext buildWebContext() {
                             std::to_string(kDinMidiUart) + ", 31250 baud")
                          : "no MIDI_RX pin assigned";
         din.events = g_transportEvents[2].load();
+        din.lastEventMs = g_transportLastMs[2].load();
         out.push_back(din);
         return out;
     };
@@ -1036,8 +1054,22 @@ void setup() {
     // profile can be built or loaded, but no actuator can ever move. The Ukulele
     // template still exists in the web UI — it is just never applied behind the
     // user's back.
-    bool haveProfile = g_storage.load(g_storage.startupSlot(), g_profile) &&
-                       ProfileValidator::isActivatable(g_profile);
+    //
+    // WHAT boots, and in what order (audit P0/P1 — the persistence model):
+    //   1. /current.json — the instrument that was last published, i.e. what was
+    //      actually running. This is the answer to "why did my machine come back
+    //      different?": it did not, because what runs is what boots.
+    //   2. otherwise the startup slot, for installs predating /current.json. They
+    //      pick up the new files on their first publish (a lazy migration).
+    //   3. then /device.json OVERLAYS the device half. The board, pins, E-stop
+    //      wiring and fitted hardware belong to THIS MACHINE, so they must not be
+    //      whatever a stored instrument happened to be saved with. This is the same
+    //      rule the hot path already applied when loading a slot; it now holds at
+    //      boot too, which is where it used to silently not.
+    bool haveProfile = (g_storage.loadCurrent(g_profile) ||
+                        g_storage.load(g_storage.startupSlot(), g_profile));
+    g_storage.loadDevice(g_profile);  // this machine's own config wins, if stored
+    haveProfile = haveProfile && ProfileValidator::isActivatable(g_profile);
     if (!haveProfile) {
         g_profile = Profile{};  // empty: nothing to drive
         g_safety.configSafe();
@@ -1106,6 +1138,39 @@ void loop() {
     uint32_t nowUs = micros();
     uint32_t nowMs = millis();
 
+    // ---- SAFETY FIRST, literally -------------------------------------------
+    //
+    // This block used to sit AFTER g_net.tick() and four other service calls. They
+    // are all written to be non-blocking, so this was not a live defect — but it
+    // made the E-stop's software response time depend on the network stack for no
+    // reason at all, and a comment saying "SAFETY FIRST" under five other calls is
+    // a comment that will eventually be believed instead of read. Nothing below
+    // needs anything above it, so there is no cost to being first.
+    //
+    // (Still a SOFTWARE safety, and the second line of defence. The hardware E-stop
+    // must cut ENABLE and power on its own — see hardware/POWER_AND_SAFETY.md.)
+    //
+    // 1) Hardware E-stop. Must assert IMMEDIATELY: trip on the raw press this
+    //    instant (a false trip only fails safe); the debounced level only filters
+    //    the RELEASE so contact bounce can't un-latch it.
+    if (g_estopPin >= 0) {
+        bool level = digitalRead(g_estopPin) == HIGH;
+        bool rawStop = estopAsserted(level);  // same predicate as the pre-arm checks
+        bool debouncedStop = estopAsserted(g_estopDeb.update(nowMs, level));
+        if ((rawStop || debouncedStop) &&
+            g_safety.state() != SafetyState::EmergencyStop) {
+            doEmergencyStop();
+            purgeCommands();  // drop anything queued behind the E-stop
+        }
+    }
+    // 2) Web/CC STOP flag: honoured before draining, and it purges the queue.
+    bool panicked = servicePanic(nowMs);
+    // 3) Endstop debouncing, so the per-axis LIMIT/HOME scan below reads settled
+    //    levels. Kept with the safety block rather than with the mechanics: it is
+    //    what makes a LIMIT trip visible this tick.
+    g_steppers.updateSensors(nowMs);
+
+    // ---- everything that is not a safety input ------------------------------
     g_net.tick(nowMs);
     // MIDI source posture changes from POST /api/midi/source. loop() owns the
     // transport, so the web task only leaves a request here.
@@ -1118,27 +1183,6 @@ void loop() {
     serviceHotspotRequests(nowMs);  // BOOT long-press / web "Start hotspot"
     serviceNetworkApply();          // POST /api/wifi with apply:true
     serviceWifiRequests();          // network survey for the Settings picker
-    g_steppers.updateSensors(nowMs);  // debounce HOME/LIMIT before any read
-
-    // SAFETY FIRST, before any queued command runs this tick:
-    // 1) Hardware E-stop (active-low). Must assert IMMEDIATELY: trip on the raw
-    //    press this instant (a false trip only fails safe); the debounced level
-    //    only filters the RELEASE so contact bounce can't un-latch it. (Still a
-    //    software safety, not a substitute for a hardware cut of ENABLE / power.)
-    if (g_estopPin >= 0) {
-        bool level = digitalRead(g_estopPin) == HIGH;
-        bool rawStop = estopAsserted(level);  // same predicate as the pre-arm checks
-        // The debounced level only filters the RELEASE, so contact bounce can never
-        // un-latch a stop; the raw read trips immediately (a false trip fails safe).
-        bool debouncedStop = estopAsserted(g_estopDeb.update(nowMs, level));
-        if ((rawStop || debouncedStop) &&
-            g_safety.state() != SafetyState::EmergencyStop) {
-            doEmergencyStop();
-            purgeCommands();  // drop anything queued behind the E-stop
-        }
-    }
-    // 2) Web/CC STOP flag: honoured before draining, and it purges the queue.
-    bool panicked = servicePanic(nowMs);
 
     // Apply a BOUNDED number of queued web commands (skip if we just stopped, so
     // no stale activation/test runs after a STOP).
@@ -1163,6 +1207,11 @@ void loop() {
         if ((int32_t)(nowMs - g_testOffs[k].atMs) >= 0) {
             MidiEvent off;
             off.type = static_cast<uint8_t>(MidiType::NoteOff);
+            // MUST match the Note On's source: a note's identity is
+            // (source, channel, note), so a Note Off tagged Internal would look
+            // like a different note and the test note would never be released —
+            // finger down, string ringing, nothing left to stop it.
+            off.source = static_cast<uint8_t>(MidiSource::WebUiTest);
             off.channel = g_testOffs[k].channel; off.data1 = g_testOffs[k].note;
             off.timestampUs = nowUs;
             g_instrument.handleEvent(off, nowUs);
@@ -1181,7 +1230,11 @@ void loop() {
         MidiTransport* t = g_transports[ti];
         const uint32_t n = static_cast<uint32_t>(t->events().size());
         g_diag.addMidiEvents(n);
-        if (n) g_transportEvents[ti].fetch_add(n);
+        if (n) {
+            g_transportEvents[ti].fetch_add(n);
+            g_transportLastMs[ti].store(nowMs);
+            g_lastTransport.store(static_cast<int>(ti));
+        }
         for (auto& e : t->events()) {
             g_web.broadcastMidi(e);  // feed the Web MIDI monitor (all phases)
             if (g_phase == AppPhase::Ready) g_instrument.handleEvent(e, nowUs);

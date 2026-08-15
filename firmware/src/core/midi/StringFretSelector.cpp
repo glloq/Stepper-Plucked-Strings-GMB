@@ -70,7 +70,7 @@ bool StringFretSelector::onControlChange(const MidiEvent& e) {
     if (!e.isControlChange()) return false;
 
     const uint32_t timeoutUs = cfg_.selectionTimeoutMs * 1000u;
-    const uint8_t key = channelKey(e.channel);
+    const uint8_t key = senderKey(e);
 
     if (e.data1 == cfg_.string.ccNumber) {
         int axis = mapStringValue(e.data2);
@@ -214,7 +214,7 @@ NoteResolution StringFretSelector::onNoteOn(const MidiEvent& e, uint32_t nowUs) 
         return automaticResolution();
     }
 
-    const uint8_t key = channelKey(e.channel);
+    const uint8_t key = senderKey(e);
 
     // Find the oldest complete selection for this channel (spec section 9).
     // Prefer the oldest NON-expired one, and remember an expired one only as a
