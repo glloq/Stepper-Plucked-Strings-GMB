@@ -25,7 +25,8 @@
         GMB.button('Clear log', function () { rows = []; tbody.innerHTML = ''; t0 = null; }, 'ghost')
       ]),
       h('div.table-wrap.monitor-scroll', h('table.monitor-table', [
-        h('thead', h('tr', [h('th', 'Time'), h('th', 'Ch'), h('th', 'Message'), h('th', 'Value'), h('th', 'Interpretation')])),
+        h('thead', h('tr', [h('th', 'Time'), h('th', 'Source'), h('th', 'Ch'),
+                            h('th', 'Message'), h('th', 'Value'), h('th', 'Interpretation')])),
         tbody
       ]))
     ]);
@@ -42,11 +43,24 @@
       var d2 = ev.data2 !== undefined ? ev.data2 : ev.value;
       var ts = ev.timestampUs !== undefined ? ev.timestampUs / 1000 : (ev.t || Date.now());
       return {
+        // The transport and the sender within it. The firmware used to label every
+        // event "wifiUdp", so the one tool for diagnosing a multi-controller rig
+        // could not tell DIN from Wi-Fi; `origin` splits two laptops on the same
+        // Wi-Fi, which the transport alone cannot.
+        source: ev.source, origin: ev.origin,
         type: type, channel: ev.channel,
         cc: isCc ? d1 : undefined,
         note: isCc ? undefined : (ev.note !== undefined ? ev.note : d1),
         value: d2, ts: ts, interpretation: ev.interpretation
       };
+    }
+
+    // "din", "usb", "wifiUdp #6" — the transport, plus the origin when the
+    // transport can carry more than one sender.
+    function sourceLabel(ev) {
+      if (!ev.source) return '—';
+      var networkPeer = ev.origin !== undefined && ev.origin >= 4;
+      return networkPeer ? (ev.source + ' #' + ev.origin) : ev.source;
     }
 
     function ccName(cc) {
@@ -77,7 +91,11 @@
       var cls = ev.type === 'noteOn' ? 'row-note' : (ev.type === 'cc' ? 'row-cc' : '');
       var tr = h('tr.' + (cls || 'row'), [
         h('td', rel + ' ms'),
-        h('td', String(ev.channel)),
+        h('td', sourceLabel(ev)),
+        // 1-16, like every other channel field in this interface and like every
+        // controller's front panel. The wire is zero-based because MIDI is; showing
+        // that raw made this the only place where "channel 1" meant channel 2.
+        h('td', ev.channel === undefined ? '—' : String(ev.channel + 1)),
         h('td', msg),
         h('td', String(ev.value !== undefined ? ev.value : '')),
         h('td', interpret(ev))

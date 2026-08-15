@@ -287,6 +287,14 @@ void InstrumentController::allNotesOffFor(uint8_t senderKey) {
     selector_.forgetSender(senderKey);
 }
 
+// Every channel of one origin. 16 sweeps rather than a bespoke predicate: this
+// runs when a peer is evicted, which is rare, and reusing the per-sender path means
+// the pedal, the chord buffer and the selector are released by exactly the code
+// that already knows how — instead of a second implementation to keep in step.
+void InstrumentController::releaseOrigin(uint8_t origin) {
+    for (uint8_t ch = 0; ch < 16; ++ch) allNotesOffFor(senderKeyOf(origin, ch));
+}
+
 void InstrumentController::flushChord() {
     if (chordBuffer_.empty()) return;
     std::vector<uint8_t> notes;

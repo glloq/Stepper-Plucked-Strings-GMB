@@ -21,13 +21,11 @@
 // write; publish() then makes the command runnable. cancel() gives the slot back and
 // nothing anywhere has changed.
 //
-// ONE transaction at a time, deliberately. Two overlapping publishes would share the
-// single /active.json.tmp: B's prepare would overwrite A's staged bytes and A's
-// commit would rename B's file into place — activating A while storing B, which is
-// the exact failure this whole model exists to remove. Rather than leave that
-// impossible by convention (nothing stops two AsyncTCP callbacks from overlapping)
-// or mint a temp file per transaction on a small flash, a second publish is refused
-// while one is in flight, and the caller reports it as back-pressure.
+// ONE transaction at a time, deliberately — see ActiveSnapshotLock.h. That
+// exclusion used to live here, which made it a guard between publishes and nothing
+// more: POST /api/wifi writes the SAME snapshot (the link config is in its device
+// half) and was never asked to take it. The lock now sits outside both, so every
+// writer of /active.json takes the same one.
 //
 // Platform class (FreeRTOS) like CommandDispatcher, and driven by the real
 // runtimecheck harness rather than only compiled.
@@ -41,9 +39,27 @@
 
 #include "../../core/configuration/Profile.h"
 #include "../../core/configuration/ProfileValidator.h"
+#include "ActiveSnapshotLock.h"
 #include "CommandDispatcher.h"
 
 namespace gmb {
+
+// Why a reservation failed. Three different answers used to share one `0`, and the
+// route reported all three as 503 "try again" — including an instrument that is
+// simply incompatible with this machine, which no amount of retrying will fix and
+// which is a 422.
+enum class ReserveStatus : uint8_t {
+    Ok,
+    InvalidProfile,  // 422: this instrument cannot run on this device, ever
+    QueueFull,       // 503: transient, retry
+    Busy,            // 503: another snapshot write is in flight, retry
+};
+
+struct ReserveResult {
+    uint32_t token = 0;
+    ReserveStatus status = ReserveStatus::InvalidProfile;
+    bool ok() const { return status == ReserveStatus::Ok && token != 0; }
+};
 
 class ActivationCoordinator {
 public:
@@ -53,8 +69,10 @@ public:
     // only under its own state lock.
     using Merge = std::function<Profile(const Profile& in, bool keepDeviceConfig)>;
 
-    void begin(CommandDispatcher* dispatcher, Merge merge) {
+    void begin(CommandDispatcher* dispatcher, ActiveSnapshotLock* snapshotLock,
+               Merge merge) {
         dispatcher_ = dispatcher;
+        snapshotLock_ = snapshotLock;
         merge_ = std::move(merge);
         mutex_ = xSemaphoreCreateMutex();
     }
@@ -66,22 +84,37 @@ public:
     // `mergedOut` receives the profile that will run, which is therefore the profile
     // the caller must store. Deriving those bytes separately is two merges that have
     // to agree, and they did diverge once already.
-    uint32_t reserve(const Profile& in, bool keepDeviceConfig, Profile& mergedOut) {
-        if (!dispatcher_) return 0;
+    ReserveResult reserve(const Profile& in, bool keepDeviceConfig, Profile& mergedOut) {
+        ReserveResult r;
+        if (!dispatcher_) { r.status = ReserveStatus::Busy; return r; }
         Profile target = merge_ ? merge_(in, keepDeviceConfig) : in;
         // Validate the MERGED profile: the instrument half has to fit THIS device's
         // pins, and that combination is what will run. Pure, so it is safe here on
         // the web task and rejects an impossible profile before anything is claimed.
-        if (!ProfileValidator::isActivatable(target)) return 0;
-
+        if (!ProfileValidator::isActivatable(target)) {
+            r.status = ReserveStatus::InvalidProfile;
+            return r;
+        }
+        // The snapshot lock BEFORE the queue slot: it is the scarcer resource and
+        // the one whose loss would corrupt something, so failing to get it should
+        // cost nothing.
+        if (snapshotLock_ && !snapshotLock_->tryAcquire()) {
+            r.status = ReserveStatus::Busy;
+            return r;
+        }
         Guard lock(mutex_);
-        if (token_ != 0) return 0;             // one transaction at a time
         uint32_t token = dispatcher_->reserve();
-        if (token == 0) return 0;              // no queue capacity
+        if (token == 0) {
+            if (snapshotLock_) snapshotLock_->release();
+            r.status = ReserveStatus::QueueFull;
+            return r;
+        }
         token_ = token;
         pending_ = target;
         mergedOut = target;
-        return token;
+        r.token = token;
+        r.status = ReserveStatus::Ok;
+        return r;
     }
 
     // Make the reserved activation runnable. Called only once the write is committed.
@@ -92,6 +125,7 @@ public:
         c.profile = new Profile(pending_);          // ownership passes to the command
         bool ok = dispatcher_->publish(token, c);   // frees it if the send fails
         clearLocked();
+        if (snapshotLock_) snapshotLock_->release();
         return ok;
     }
 
@@ -101,6 +135,7 @@ public:
         if (!dispatcher_ || token == 0 || token_ != token) return;
         dispatcher_->cancel(token);
         clearLocked();
+        if (snapshotLock_) snapshotLock_->release();
     }
 
     // Is a transaction in flight? Diagnostics and tests only — never use it to
@@ -131,6 +166,7 @@ private:
     }
 
     CommandDispatcher* dispatcher_ = nullptr;
+    ActiveSnapshotLock* snapshotLock_ = nullptr;
     Merge merge_;
     SemaphoreHandle_t mutex_ = nullptr;
     uint32_t token_ = 0;

@@ -51,10 +51,42 @@ this* (`core/midi/MidiIdentity.h`):
 
 A note is identified by `(origin, channel, note)`, and anything scoped to a sender
 — pending CC selections, the sustain pedal, the last-valid selection, the reach of
-an All Notes Off — by `(origin, channel)`. The network table holds 12 peers and
-recycles the oldest slot beyond that; two peers then share an id, which is exactly
-the behaviour of having no ids at all, so the worst case for a 13th simultaneous
-controller is the old one.
+an All Notes Off — by `(origin, channel)`.
+
+#### Recycling an origin is not free
+
+The network table holds 12 peers, so ids get reused. The first version of this
+argued that reuse "only confuses two peers with each other, which is the behaviour
+of having no ids at all". That was **wrong**, and wrong in the one direction that
+leaves a finger pressed on a ringing string:
+
+```text
+PC A -> NoteOn  ch1 C4      recorded as (origin 4, ch1, C4)
+        ... enough other endpoints appear, A's slot is recycled
+PC A -> NoteOff ch1 C4      A is new again: (origin 7, ch1, C4)
+                            -> no match. The Note Off is lost.
+```
+
+Without ids, A's key was *shared* but *stable*. Recycling changes one sender's
+identity between its own Note On and its own Note Off, which the earlier design
+could not do — and it does not take 13 simultaneous players: a client that
+reconnects on a fresh ephemeral port is a new `IP:port` every time.
+
+Three rules close it, and all three are needed:
+
+* **A talking peer keeps its origin.** Eviction takes the *least recently used*
+  slot, never the next one round a ring, so a peer that is mid-note is the last
+  one chosen rather than an arbitrary one.
+* **Silent slots are reclaimed** after `kPeerIdleTimeoutMs` (10 minutes), so the
+  table does not silt up with dead reconnects and start evicting live players.
+* **Losing a slot is reported.** `MidiWifi::takeReleasedOrigins()` hands the owner
+  every origin that was evicted or expired, and `main.cpp` calls
+  `InstrumentController::releaseOrigin()` on each: notes, chord buffer, sustain
+  pedal and pending selections, across all 16 of that origin's channels. A note
+  that outlives its sender is a stuck note whatever the table size.
+
+`firmware/test/runtimecheck` drives the real peer table for all three, and the
+integration tests cover the instrument side.
 
 ### CC120 / CC123 are messages, not stop buttons
 

@@ -31,7 +31,13 @@ enum class MidiSource : uint8_t {
     Ble = 5,
     Usb = 6,
     Din = 7,
-    Serial = 8,
+    // NOT `Serial`. Arduino's HardwareSerial.h does `#define Serial Serial0`
+    // (or HWCDCSerial / USBSerial depending on the USB mode), so ANY translation
+    // unit that includes Arduino.h and writes `MidiSource::Serial` is macro-expanded
+    // into `MidiSource::Serial0` and fails to compile. The enumerator went unnamed
+    // for a long time, which is the only reason it took until a `switch` over every
+    // source to find out — on all four hardware targets at once.
+    SerialPort = 8,
 };
 
 struct MidiEvent {

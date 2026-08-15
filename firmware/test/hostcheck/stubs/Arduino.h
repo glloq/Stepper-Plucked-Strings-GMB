@@ -106,7 +106,24 @@ struct SerialStub {
   template <typename T> void print(T) {}
   template <typename... Args> void printf(const char*, Args...) {}
 };
-[[maybe_unused]] static SerialStub Serial;
+
+// `Serial` is a MACRO on the real Arduino-ESP32 core, not an object:
+//
+//   #define Serial Serial0       // classic ESP32 / S3 with UART CDC
+//   #define Serial USBSerial     // S3 with USB CDC on boot
+//   #define Serial HWCDCSerial   // S3 with the hardware CDC
+//
+// which means any translation unit that includes Arduino.h and writes a
+// qualified name ending in `::Serial` gets it rewritten — `MidiSource::Serial`
+// became `MidiSource::Serial0` and failed to compile on all four targets at once,
+// while this check stayed green because the stub declared a plain OBJECT.
+//
+// So the stub is a macro too. It costs nothing (`Serial.begin(...)` still resolves)
+// and it means the fast loop reproduces one of the sharper edges of the platform
+// instead of smoothing it over. A stub that is kinder than the real header does not
+// test the real header.
+[[maybe_unused]] static SerialStub Serial0;
+#define Serial Serial0
 
 // Extra UARTs. The DIN-MIDI input binds one of these at 31250 baud with an
 // explicit RX pin and no TX, so the stub must accept that exact signature —

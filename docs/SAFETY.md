@@ -151,6 +151,39 @@ If one or more axes fail their homing, the system still enters playback **but**:
 * the exposed state becomes `readyDegraded`, the affected lane is flagged on the
   Instrument page, and the fault is logged.
 
+### Policy: the E-stop GPIO is an INPUT, and it is optional
+
+The profile validator requires `STEP`, `DIR` and `HOME` for every enabled axis,
+plus the shared `ENABLE` and — when a PCA9685 is fitted — `SDA`/`SCL`/`SERVO_OE`.
+It does **not** require an `ESTOP` signal, and that is a decision rather than an
+omission:
+
+```text
+EMERGENCY STOP
+     │
+     ├── hardware chain: cut the motor rail, cut the servo rail, force ENABLE
+     │   inactive, pull /OE high                      ← this is the safety function
+     │
+     └── ESTOP GPIO on the ESP32                      ← feedback, so the firmware
+                                                        knows and can say so
+```
+
+What actually stops the machine is the wiring. The GPIO exists so the firmware
+*learns* that it happened — to latch, to refuse to re-arm, to report it on the
+status page, and to log it. A firmware that never sees the signal still stops,
+because the contactor already opened; a firmware that sees it but has no contactor
+does not stop at all. Requiring the input would therefore refuse to arm machines
+that are correctly protected, while doing nothing for machines that are not.
+
+So it stays optional, and the Wiring tab raises a **warning** — never an error —
+when no `ESTOP` is declared, alongside the reference circuit in
+[`../hardware/POWER_AND_SAFETY.md`](../hardware/POWER_AND_SAFETY.md). Everything
+in this section and in that document is **prevention**: it makes a good machine
+better, and none of it is a substitute for the mechanical and electrical chain.
+
+If a particular build must always know the state of its emergency stop, that is a
+commissioning gate for that build, not a firmware rule.
+
 ### Wi-Fi secrets and access
 
 * Wi-Fi passwords (station and access point) are stored in **NVS**

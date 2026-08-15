@@ -1472,7 +1472,10 @@
     if (wire.clearStationPassword) mockWifiState.stationPassword = false;
     if (wire.apPassword) mockWifiState.apPassword = true;
     if (wire.clearApPassword) mockWifiState.apPassword = false;
-    return { ok: true, applied: !!wire.apply,
+    // `persisted` and `applied` are separate on the device: the write happens first
+    // and the radio is only asked once it succeeded. The mock mirrors that shape so
+    // the UI is exercised against the real contract rather than a simpler one.
+    return { ok: true, persisted: !!wire.mode, applied: !!wire.apply,
              note: wire.apply ? 'applied now (mock)' : 'stored (mock); reboot to apply' };
   }
 
@@ -1535,12 +1538,20 @@
       var str = 1 + (seq % p.instrument.stringCount);
       var fret = (seq * 2) % (p.strings[str - 1].maxFret + 1);
       var note = p.strings[str - 1].openNote + fret;
-      emitMidi({ channel: 1, type: 'cc', cc: sfs.string.ccNumber, value: str,
-        interpretation: 'string ' + str });
-      emitMidi({ channel: 1, type: 'cc', cc: sfs.fret.ccNumber, value: fret,
-        interpretation: 'fret ' + fret });
-      emitMidi({ channel: 1, type: 'noteOn', note: note, value: 100,
-        interpretation: 'string ' + str + ', fret ' + fret + (fret === 0 ? ' (open)' : '') });
+      // Alternate between a network peer and the DIN cable. The demo used to be
+      // single-source, which is exactly the case where a monitor that labels
+      // everything "wifiUdp" looks correct — the mock now shows the difference the
+      // real device reports. `channel` is zero-based here because it is zero-based
+      // on the wire; the monitor is what adds 1 for display.
+      var din = (seq % 2) === 1;
+      var tag = din ? { source: 'din', origin: 1 } : { source: 'wifiUdp', origin: 4 };
+      function ev(o) { for (var k in tag) o[k] = tag[k]; o.channel = 0; return o; }
+      emitMidi(ev({ type: 'cc', cc: sfs.string.ccNumber, value: str,
+        interpretation: 'string ' + str }));
+      emitMidi(ev({ type: 'cc', cc: sfs.fret.ccNumber, value: fret,
+        interpretation: 'fret ' + fret }));
+      emitMidi(ev({ type: 'noteOn', note: note, value: 100,
+        interpretation: 'string ' + str + ', fret ' + fret + (fret === 0 ? ' (open)' : '') }));
       seq++;
     }, 2500);
   }
@@ -1557,20 +1568,25 @@
   function injectMidi(payload) {
     var p = (global.GMB.state && global.GMB.state.profile) || MOCK.profile;
     var sfs = p.stringFretSelection;
-    var ch = (payload.channel || 0) + 1;
+    // Zero-based on the wire, and tagged as what it is: these come from the web
+    // test tools, not from a controller. `+ 1` here was double-counting — the
+    // monitor is what converts to the 1-16 the rest of the interface shows.
+    var ch = payload.channel || 0;
+    var tag = { source: 'webUiTest', origin: 3, channel: ch };
+    function ev(o) { for (var k in tag) o[k] = tag[k]; return o; }
     var axis = -1;
     if (payload.ccString !== undefined && payload.ccString !== null) {
       axis = GMB.decodeStringCc(sfs, p, payload.ccString);
-      emitMidi({ channel: ch, type: 'cc', cc: sfs.string.ccNumber, value: payload.ccString,
-        interpretation: axis >= 0 ? 'string ' + (axis + 1) : 'invalid string value' });
+      emitMidi(ev({ type: 'cc', cc: sfs.string.ccNumber, value: payload.ccString,
+        interpretation: axis >= 0 ? 'string ' + (axis + 1) : 'invalid string value' }));
     }
     if (payload.ccFret !== undefined && payload.ccFret !== null) {
       var fret = GMB.decodeFretCc(sfs, payload.ccFret);
-      emitMidi({ channel: ch, type: 'cc', cc: sfs.fret.ccNumber, value: payload.ccFret,
-        interpretation: fret >= 0 ? 'fret ' + fret : 'invalid fret value' });
+      emitMidi(ev({ type: 'cc', cc: sfs.fret.ccNumber, value: payload.ccFret,
+        interpretation: fret >= 0 ? 'fret ' + fret : 'invalid fret value' }));
     }
-    emitMidi({ channel: ch, type: 'noteOn', note: payload.note, value: payload.velocity,
-      interpretation: axis >= 0 ? 'string ' + (axis + 1) : 'auto-allocated' });
+    emitMidi(ev({ type: 'noteOn', note: payload.note, value: payload.velocity,
+      interpretation: axis >= 0 ? 'string ' + (axis + 1) : 'auto-allocated' }));
   }
   GMB.injectMidi = injectMidi;
 

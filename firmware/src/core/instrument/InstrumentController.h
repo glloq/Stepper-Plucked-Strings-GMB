@@ -40,6 +40,18 @@ public:
     // Emergency stop everything (spec §21.3).
     void panic();
 
+    // Release EVERYTHING belonging to one origin, across all 16 of its channels.
+    //
+    // Needed when a sender ceases to exist rather than merely going quiet: a UDP
+    // peer whose slot is recycled or expired is, from here on, a different sender.
+    // Anything it left active would never be matched again — its own Note Off now
+    // carries a different origin — so a finger would stay pressed on a ringing
+    // string until something unrelated happened to reuse that string.
+    //
+    // Called by the transport that evicted it, not inferred here: only the
+    // transport knows when an identity stops meaning what it meant.
+    void releaseOrigin(uint8_t origin);
+
     // Take a string out of service at runtime (failed homing, etc.): fault its
     // state machine, mark it faulted in the allocator, drop its target and any
     // active note. It can no longer be chosen automatically OR by explicit CC.

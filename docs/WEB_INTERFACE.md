@@ -396,6 +396,14 @@ there is no sender identity on a DIN line to lock to.
 The GMB identity and capabilities with its SysEx tester, the live MIDI monitor,
 and the integrated note tester. These are diagnostics, not configuration.
 
+The **MIDI monitor** reports each event's real **source** and, when the transport
+can carry more than one sender, the origin within it — `din`, `usb`, `wifiUdp #6`.
+It used to label every event `wifiUdp`, which is the one mislabelling that matters
+here: the tool for diagnosing a multi-controller rig showed DIN, USB and web-test
+traffic as Wi-Fi. Channels are shown **1–16**, like every other channel field in
+the interface and like the front panel of every controller — the wire is
+zero-based because MIDI is, and this was the last place that leaked through.
+
 The SysEx tester leads with what a **v2** controller actually does: request the
 handshake, then read the JSON descriptor (**Show descriptor JSON** fetches
 `GET /gmb/descriptor.json`). The v1 fixed-block buttons are still there for older
