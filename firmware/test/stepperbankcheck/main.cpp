@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "../../src/core/motion/HomingController.h"
 #include "../../src/platform/esp32/StepperBank.h"
 
 using namespace gmb;
@@ -156,6 +157,88 @@ int main() {
     CHECK(!bank.attachFault(),
           "a disabled axis with no pins does not fault the bank");
     CHECK(bank.stopDurationMs() == 0, "no enabled axis -> nothing to wait for");
+  }
+
+  // ---- endstop technology picks the filter, and the filter costs position ----
+  //
+  // The claim being tested is the whole reason the option exists: an optical HOME
+  // is believed on the sample it changes, a mechanical one only after its contact
+  // has settled. On the slow seek the axis is still moving throughout that wait, so
+  // the settling time is not merely latency — it displaces the zero the homing
+  // sequence is about to latch.
+  {
+    g_maxGenerators = 8;
+    std::vector<AxisConfig> axes = {axis(true), axis(true)};
+    std::vector<AxisPins> ap = {pins(4, 5, 12, 13), pins(6, 7, 14, 15)};
+    // Axis 0 optical (0 ms), axis 1 mechanical (3 ms). Same polarity, same pins
+    // otherwise, so the only difference in what follows is the sensor type.
+    AxisEndstops opt;
+    opt.homeActiveHigh = false;
+    opt.homeDebounceMs = endstopDebounceMs(EndstopType::Optical);
+    opt.limitDebounceMs = endstopDebounceMs(EndstopType::Optical);
+    AxisEndstops mech;
+    mech.homeActiveHigh = false;
+    mech.homeDebounceMs = endstopDebounceMs(EndstopType::Mechanical);
+    mech.limitDebounceMs = endstopDebounceMs(EndstopType::Mechanical);
+    CHECK(opt.homeDebounceMs == 0, "an optical gate is taken at face value");
+    CHECK(mech.homeDebounceMs == 3, "a mechanical contact must settle first");
+
+    StepperBank bank;
+    gmbSetMillis(1000);
+    gmbSetPinLevel(12, HIGH);   // both idle: active-low, so HIGH = not triggered
+    gmbSetPinLevel(14, HIGH);
+    bank.begin(axes, ap, /*enablePin=*/42, {opt, mech});
+    bank.updateSensors(millis());
+    CHECK(!bank.homeActive(0) && !bank.homeActive(1), "both endstops start clear");
+
+    // The carriage reaches the flag: both inputs go LOW on the same millisecond.
+    gmbSetPinLevel(12, LOW);
+    gmbSetPinLevel(14, LOW);
+    bank.updateSensors(millis());
+    CHECK(bank.homeActive(0), "optical HOME triggers on the first sample");
+    CHECK(!bank.homeActive(1), "mechanical HOME is still settling");
+
+    // Two more milliseconds of travel and the contact is still not believed.
+    gmbAdvanceMs(2);
+    bank.updateSensors(millis());
+    CHECK(!bank.homeActive(1), "mechanical HOME has not settled at 2 ms");
+    gmbAdvanceMs(1);
+    bank.updateSensors(millis());
+    CHECK(bank.homeActive(1), "mechanical HOME is believed at 3 ms");
+
+    // Those 3 ms are travel. At the default 5 mm/s slow seek that is 15 µm of zero
+    // displacement — small, but it MOVES when the slow-seek speed is retuned, which
+    // is what makes it worth removing rather than calibrating out.
+    HomingConfig hc;             // defaults: slowSpeedMmS = 5
+    hc.homeSensor = EndstopType::Mechanical;
+    CHECK(homingSensorLagMm(hc) > 0.0149 && homingSensorLagMm(hc) < 0.0151,
+          "mechanical HOME at 5 mm/s displaces the zero by ~15 um");
+    hc.homeSensor = EndstopType::Optical;
+    CHECK(homingSensorLagMm(hc) == 0.0, "optical HOME displaces the zero by nothing");
+    hc.homeSensor = EndstopType::Mechanical;
+    hc.slowSpeedMmS = 20.0;      // four times faster -> four times the displacement
+    CHECK(homingSensorLagMm(hc) > 0.0599 && homingSensorLagMm(hc) < 0.0601,
+          "the displacement scales with the slow-seek speed");
+  }
+
+  // ---- a missing endstop entry falls back to the struct's own defaults ------
+  // Not to whatever the previous axis had: axis 1 has no entry here, and reading
+  // axis 0's active-HIGH polarity into it would report a clear switch as triggered.
+  {
+    g_maxGenerators = 8;
+    std::vector<AxisConfig> axes = {axis(true), axis(true)};
+    std::vector<AxisPins> ap = {pins(4, 5, 12, 13), pins(6, 7, 14, 15)};
+    AxisEndstops high;
+    high.homeActiveHigh = true;
+    StepperBank bank;
+    gmbSetMillis(2000);
+    gmbSetPinLevel(12, HIGH);
+    gmbSetPinLevel(14, HIGH);
+    bank.begin(axes, ap, /*enablePin=*/42, {high});  // one entry, two axes
+    gmbAdvanceMs(10);
+    bank.updateSensors(millis());
+    CHECK(bank.homeActive(0), "axis 0 is active-high as configured");
+    CHECK(!bank.homeActive(1), "the unconfigured axis defaults to active-low");
   }
 
   std::printf(g_fail ? "\nSTEPPERBANKCHECK FAILED (%d)\n" : "\nstepperbankcheck OK\n",

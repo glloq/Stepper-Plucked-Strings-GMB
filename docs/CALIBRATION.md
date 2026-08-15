@@ -78,8 +78,23 @@ SeekSlow → SetZero → MoveToOffset → Ready
 
 Configuration (`HomingConfig`): `direction` (±1 toward the sensor), `fastSpeedMmS`,
 `slowSpeedMmS`, `backoffMm`, `offsetMm`, `timeoutMs` (default 8000), `maxSearchMm`
-(default 500), `sensorActiveHigh` (the raw electrical level is normalized
-internally).
+(default 500), `sensorActiveHigh` / `limitActiveHigh` (the raw electrical level is
+normalized internally), and `homeSensor` / `limitSensor` — the sensor technology,
+`mechanical` (default) or `optical`.
+
+The technology is not a label: it selects the input filter, and the filter has a
+position cost. A mechanical contact bounces, so its level must hold for **3 ms**
+before it is believed; an optical gate has no contact and is taken as it comes.
+The zero is latched when the sensor trips in `SeekSlow`, so those 3 ms are travel:
+
+> zero displacement = `slowSpeedMmS` × 0.003 mm
+
+15 µm at the default 5 mm/s, 60 µm at 20 mm/s. It is repeatable — but it **scales
+with the slow-seek speed**, so retuning that speed silently shifts every fret on
+the axis. Fitting an optical HOME removes the term instead of calibrating around
+it, which is the case for fitting one; a mechanical LIMIT alongside it is fine,
+since LIMIT sets no reference. The figure for the speed actually configured is
+shown in Setup ▸ Homing and in the Stepper drivers table on the Wiring tab.
 
 ### 2.2 Detected faults (§13.2, `HomingFault`)
 

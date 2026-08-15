@@ -249,15 +249,23 @@ void applyProfile() {
     std::vector<AxisPins> axisPins;
     int8_t enablePin = -1;
     buildStepperPins(axisPins, enablePin);
-    std::vector<bool> homeActiveHigh, limitActiveHigh;
+    // Per-axis endstop electrics: polarity and the settling time the sensor
+    // technology implies. An axis with no homing entry falls back to the struct's
+    // defaults (active-low, mechanical debounce) rather than to whatever the
+    // previous axis had.
+    std::vector<AxisEndstops> endstops;
     for (size_t i = 0; i < g_profile.strings.size(); ++i) {
-        bool hah = i < g_profile.homing.size() ? g_profile.homing[i].sensorActiveHigh : false;
-        bool lah = i < g_profile.homing.size() ? g_profile.homing[i].limitActiveHigh : false;
-        homeActiveHigh.push_back(hah);
-        limitActiveHigh.push_back(lah);
+        AxisEndstops es;
+        if (i < g_profile.homing.size()) {
+            const HomingConfig& hc = g_profile.homing[i];
+            es.homeActiveHigh = hc.sensorActiveHigh;
+            es.limitActiveHigh = hc.limitActiveHigh;
+            es.homeDebounceMs = endstopDebounceMs(hc.homeSensor);
+            es.limitDebounceMs = endstopDebounceMs(hc.limitSensor);
+        }
+        endstops.push_back(es);
     }
-    g_steppers.begin(g_profile.strings, axisPins, enablePin, homeActiveHigh,
-                     limitActiveHigh);
+    g_steppers.begin(g_profile.strings, axisPins, enablePin, endstops);
     // Bus 0 = Wire (SDA/SCL, /OE on SERVO_OE); bus 1 = Wire1 (SDA2/SCL2), with its
     // own /OE when SERVO_OE2 is assigned, otherwise sharing the single /OE line.
     g_servos.begin(g_profile.servos, pinOf("SDA"), pinOf("SCL"), pinOf("SERVO_OE"),
@@ -450,6 +458,7 @@ bool doTestNote(uint8_t channel, uint8_t note, uint8_t vel, uint16_t durationMs,
         cc.data2 = value;
         cc.timestampUs = micros();
         cc.source = static_cast<uint8_t>(MidiSource::WebUiTest);
+        cc.origin = MidiOrigin::kWebUiTest;
         g_instrument.handleEvent(cc, cc.timestampUs);
     };
     const SelectorConfig& sel = g_profile.selector;
@@ -461,6 +470,7 @@ bool doTestNote(uint8_t channel, uint8_t note, uint8_t vel, uint16_t durationMs,
     on.channel = channel; on.data1 = note; on.data2 = vel;
     on.timestampUs = micros();
     on.source = static_cast<uint8_t>(MidiSource::WebUiTest);
+    on.origin = MidiOrigin::kWebUiTest;
     g_instrument.handleEvent(on, on.timestampUs);
     uint32_t offAt = nowMs + (durationMs ? durationMs : 500u);
     g_testOffs.push_back({channel, note, offAt});
@@ -669,27 +679,66 @@ void bindDinMidi() {
                   static_cast<unsigned>(kDinMidiBaud));
 }
 
-// ---- device-level network settings (NVS) ---------------------------------
+// ---- network config: one home, not two ---------------------------------------
 //
-// The link config belongs to the DEVICE, not to the instrument (P1.13): moving a
-// profile between machines must not carry one machine's SSID onto another, and
-// changing instrument must not drop you off the network. It therefore lives in
-// NVS beside the passwords and OVERRIDES whatever an older profile still carries.
-// NVS keys are capped at 15 characters.
-void loadNetworkOverrides(NetworkConfig& cfg) {
+// The non-secret link settings (mode, SSID, AP SSID, hostname) used to live in NVS
+// as an OVERRIDE applied on top of whatever the profile carried. That existed for a
+// real reason: a profile could arrive from another machine carrying its SSID, and
+// swapping instruments must not move this device onto another network.
+//
+// That reason is gone. The device half of /active.json is per-machine by
+// construction — loading a stored instrument keeps it (`keepDeviceConfig`), an
+// import keeps it (the file has no device half at all) — so the override now only
+// duplicates a field the snapshot already owns, and two places holding the same
+// value is how they come to disagree. The failure it produced was concrete: after
+// POST /api/wifi the exported profile and NVS agreed, but publishing an older
+// profile afterwards left `profile.network` stale while the radio kept following
+// NVS, so /api/profile described a network the machine was not on. NVS now keeps
+// SECRETS (Wi-Fi passwords, admin token) and nothing else.
+//
+// Machines configured before this change have their network in NVS and NOWHERE
+// else, so the keys are read once and folded into the snapshot. Reading and
+// clearing are separate on purpose: the keys are the only copy until the snapshot
+// write succeeds, so dropping them first would lose the network of any machine that
+// boots CONFIG_SAFE or whose flash write fails — exactly the machines that can
+// least afford to fall off the network. NVS keys are capped at 15 characters.
+bool readLegacyNetworkNvs(NetworkConfig& cfg) {
     Preferences p;
     p.begin("gmb", true);
-    if (p.isKey("netmode")) {
-        cfg.mode = p.getString("netmode", "accessPoint") == "station"
-                       ? NetworkMode::Station : NetworkMode::AccessPoint;
-        cfg.ssid = p.getString("netssid", cfg.ssid.c_str()).c_str();
-        cfg.apSsid = p.getString("netapssid", cfg.apSsid.c_str()).c_str();
-        cfg.hostname = p.getString("nethost", cfg.hostname.c_str()).c_str();
-    }
+    if (!p.isKey("netmode")) { p.end(); return false; }
+    cfg.mode = p.getString("netmode", "accessPoint") == "station"
+                   ? NetworkMode::Station : NetworkMode::AccessPoint;
+    cfg.ssid = p.getString("netssid", cfg.ssid.c_str()).c_str();
+    cfg.apSsid = p.getString("netapssid", cfg.apSsid.c_str()).c_str();
+    cfg.hostname = p.getString("nethost", cfg.hostname.c_str()).c_str();
+    p.end();
+    return true;
+}
+
+void clearLegacyNetworkNvs() {
+    Preferences p;
+    p.begin("gmb", false);
+    p.remove("netmode");
+    p.remove("netssid");
+    p.remove("netapssid");
+    p.remove("nethost");
     p.end();
 }
 
-void storeNetworkOverrides(const NetworkConfig& cfg) {
+// The same keys, used as a BOOTSTRAP store rather than a duplicate.
+//
+// A machine in CONFIG_SAFE has no snapshot to put the network in — that is what
+// CONFIG_SAFE means — yet configuring the network is precisely what an operator
+// does there, over the hotspot, before publishing anything. Writing an empty
+// snapshot just to hold an SSID would be worse than the duplicate: `/active.json`
+// would then exist and shadow the legacy files the boot path still reads, so a
+// machine that was one corrupt `/device.json` away from recovery would lose its
+// stored instrument for good.
+//
+// So the keys stay as the store of last resort, read at boot and cleared the moment
+// a real snapshot can hold the value. They never coexist as two live copies: while
+// they exist there is no snapshot to disagree with.
+void writeBootstrapNetworkNvs(const NetworkConfig& cfg) {
     Preferences p;
     p.begin("gmb", false);
     p.putString("netmode", cfg.mode == NetworkMode::Station ? "station" : "accessPoint");
@@ -908,11 +957,31 @@ WebContext buildWebContext() {
         else if (rq.clearApPassword) p.remove("appass");
         p.end();
         if (rq.hasNetwork) {
-            storeNetworkOverrides(rq.network);
-            // Mirror into the running profile so /api/status, the exported profile
-            // and the next boot all agree with what was just stored.
-            StateGuard lock;
-            g_profile.network = rq.network;
+            // The link config belongs to the device half of the active snapshot,
+            // which is also what boots — so storing it is storing it once, in the
+            // place that already decides. It used to be written to NVS AND mirrored
+            // into the running profile, which is two copies with one writer: publish
+            // an older profile afterwards and the exported network no longer matched
+            // the radio.
+            Profile toStore;
+            { StateGuard lock;
+              g_profile.network = rq.network;
+              toStore = g_profile; }
+            if (ProfileValidator::isActivatable(toStore)) {
+                if (g_storageMutex) xSemaphoreTake(g_storageMutex, portMAX_DELAY);
+                bool wrote = g_storage.saveActive(toStore);
+                if (g_storageMutex) xSemaphoreGive(g_storageMutex);
+                if (!wrote) return "applied in RAM, but could NOT be saved";
+                // Any bootstrap/legacy keys are now superseded. Leaving them would
+                // hand the next boot an OLDER network than the one just stored:
+                // boot reads them last precisely because they mean "the snapshot
+                // could not hold this yet", and that has stopped being true.
+                clearLegacyNetworkNvs();
+            } else {
+                // CONFIG_SAFE: no snapshot exists to carry it. See
+                // writeBootstrapNetworkNvs() — the fallback store, not a duplicate.
+                writeBootstrapNetworkNvs(rq.network);
+            }
         }
         if (!rq.apply) return "stored; reboot to apply";
         g_netApplyRequested.store(true);
@@ -1055,21 +1124,53 @@ void setup() {
     // template still exists in the web UI — it is just never applied behind the
     // user's back.
     //
-    // WHAT boots, and in what order (audit P0/P1 — the persistence model):
-    //   1. /current.json — the instrument that was last published, i.e. what was
-    //      actually running. This is the answer to "why did my machine come back
-    //      different?": it did not, because what runs is what boots.
-    //   2. otherwise the startup slot, for installs predating /current.json. They
-    //      pick up the new files on their first publish (a lazy migration).
-    //   3. then /device.json OVERLAYS the device half. The board, pins, E-stop
-    //      wiring and fitted hardware belong to THIS MACHINE, so they must not be
-    //      whatever a stored instrument happened to be saved with. This is the same
-    //      rule the hot path already applied when loading a slot; it now holds at
-    //      boot too, which is where it used to silently not.
-    bool haveProfile = (g_storage.loadCurrent(g_profile) ||
-                        g_storage.load(g_storage.startupSlot(), g_profile));
-    g_storage.loadDevice(g_profile);  // this machine's own config wins, if stored
-    haveProfile = haveProfile && ProfileValidator::isActivatable(g_profile);
+    // WHAT boots (audit — the persistence model):
+    //
+    //   /active.json is the whole answer. It holds this machine's device half AND
+    //   the instrument that was last published, in one file replaced atomically, so
+    //   "what runs" == "what boots" and the pair can never be mismatched.
+    //
+    // A missing file and an UNREADABLE one are handled differently, and the
+    // difference matters more than it looks. Missing means a first boot or an
+    // install from before this file existed, where reading a legacy location is
+    // right. Unreadable means CORRUPTION — and falling back then would boot some
+    // other stored instrument on a machine whose own config just failed to parse,
+    // i.e. drive these carriages from someone else's pin map. That is CONFIG_SAFE,
+    // every time, and the operator gets told which file to fix.
+    using LR = ProfileStorage::LoadResult;
+    bool haveProfile = false;
+    const char* configFault = nullptr;
+    LR active = g_storage.loadActive(g_profile);
+    if (active == LR::Ok) {
+        haveProfile = true;
+    } else if (active == LR::Unreadable) {
+        configFault = "/active.json is present but unreadable — refusing to boot "
+                      "someone else's configuration; re-publish or reformat storage";
+    } else {
+        // Migration for installs predating /active.json: read the old pair, then
+        // write the merged result once so the next boot takes the fast path. A
+        // corrupt legacy file is still corruption, not "probably an old install".
+        LR cur = g_storage.loadLegacyCurrent(g_profile);
+        if (cur == LR::Unreadable) {
+            configFault = "/current.json is present but unreadable";
+        } else {
+            bool haveInstrument = (cur == LR::Ok) ||
+                                  g_storage.load(g_storage.startupSlot(), g_profile);
+            LR dev = g_storage.loadLegacyDevice(g_profile);
+            if (dev == LR::Unreadable) {
+                configFault = "/device.json is present but unreadable";
+            } else if (haveInstrument) {
+                haveProfile = true;
+                if (ProfileValidator::isActivatable(g_profile))
+                    g_storage.saveActive(g_profile);  // migrate, once
+            }
+        }
+    }
+    haveProfile = haveProfile && !configFault &&
+                  ProfileValidator::isActivatable(g_profile);
+    if (configFault) {
+        g_safety.recordFault("storage", configFault, millis());
+    }
     if (!haveProfile) {
         g_profile = Profile{};  // empty: nothing to drive
         g_safety.configSafe();
@@ -1089,11 +1190,17 @@ void setup() {
     // byte so a v1-only client can still detect and skip it.
     g_sysex.setUseV2(true);
 
-    // Wi-Fi secrets live in NVS, never in the exportable profile (§20). The link
-    // config lives there too and wins over whatever the profile carries: it
-    // describes this machine, so swapping instruments must not move the device to
-    // another network (P1.13).
-    loadNetworkOverrides(g_profile.network);
+    // Wi-Fi SECRETS live in NVS, never in the exportable profile (§20). The link
+    // config itself lives in the active snapshot's device half — one home, not two.
+    // A machine configured before that change still has it in NVS: fold it in once,
+    // so the upgrade does not move a station-mode machine back onto its access
+    // point. The keys go only after the snapshot has actually been written; until
+    // then they are the sole copy, and a CONFIG_SAFE boot (no snapshot to write
+    // into) must still come up on the operator's network so it can be fixed
+    // remotely. The migration simply retries on the next boot.
+    if (readLegacyNetworkNvs(g_profile.network)) {
+        if (haveProfile && g_storage.saveActive(g_profile)) clearLegacyNetworkNvs();
+    }
     Preferences prefs;
     prefs.begin("gmb", true);
     String staPass = prefs.getString("wifipass", "");
@@ -1212,6 +1319,7 @@ void loop() {
             // like a different note and the test note would never be released —
             // finger down, string ringing, nothing left to stop it.
             off.source = static_cast<uint8_t>(MidiSource::WebUiTest);
+            off.origin = MidiOrigin::kWebUiTest;
             off.channel = g_testOffs[k].channel; off.data1 = g_testOffs[k].note;
             off.timestampUs = nowUs;
             g_instrument.handleEvent(off, nowUs);

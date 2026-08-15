@@ -2,6 +2,11 @@
 # web-interface/tools/screenshots.js; nothing in this repo is an npm package.
 node_modules/
 
+# Python bytecode. apicheck/check.py is imported by a mutation-test one-liner,
+# which is enough to leave a __pycache__ behind — and one got committed.
+__pycache__/
+*.py[cod]
+
 # PlatformIO / build output
 .pio/
 firmware/test/run_tests

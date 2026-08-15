@@ -9,12 +9,20 @@
 #include <vector>
 
 #include "MidiEvent.h"
+#include "MidiIdentity.h"
 
 namespace gmb {
 
 class MidiParser {
 public:
-    void setSource(MidiSource s) { source_ = static_cast<uint8_t>(s); }
+    // Setting the source also sets the DEFAULT origin for that transport, so a
+    // single-sender transport (a DIN cable) needs no further wiring. A transport
+    // that can have several senders — network MIDI — calls setOrigin() per packet.
+    void setSource(MidiSource s) {
+        source_ = static_cast<uint8_t>(s);
+        origin_ = defaultOriginFor(s);
+    }
+    void setOrigin(uint8_t origin) { origin_ = origin; }
 
     // Feed one raw MIDI byte.
     void feed(uint8_t b, uint32_t nowUs);
@@ -46,6 +54,7 @@ public:
 
 private:
     uint8_t source_ = static_cast<uint8_t>(MidiSource::WifiUdp);
+    uint8_t origin_ = MidiOrigin::kInternal;
     uint8_t status_ = 0;       // running status
     uint8_t data_[2] = {0, 0};
     int dataCount_ = 0;

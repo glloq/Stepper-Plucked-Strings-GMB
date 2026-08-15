@@ -8,8 +8,7 @@ namespace gmb {
 
 void StepperBank::begin(const std::vector<AxisConfig>& axes,
                         const std::vector<AxisPins>& pins, int8_t enablePin,
-                        const std::vector<bool>& homeActiveHigh,
-                        const std::vector<bool>& limitActiveHigh) {
+                        const std::vector<AxisEndstops>& endstops) {
     axes_.clear();
     steppers_.clear();
     enablePin_ = enablePin;
@@ -20,10 +19,14 @@ void StepperBank::begin(const std::vector<AxisConfig>& axes,
         AxisRt rt(axes[i]);
         rt.pins = i < pins.size() ? pins[i] : AxisPins{};
         rt.stepsPerMm = rt.geom.stepsPerMm();
-        rt.homeActiveHigh = i < homeActiveHigh.size() ? homeActiveHigh[i] : false;
-        rt.limitActiveHigh = i < limitActiveHigh.size() ? limitActiveHigh[i] : false;
-        rt.homeDeb.configure(3, false);   // 3 ms contact debounce
-        rt.limitDeb.configure(3, false);
+        AxisEndstops es = i < endstops.size() ? endstops[i] : AxisEndstops{};
+        rt.homeActiveHigh = es.homeActiveHigh;
+        rt.limitActiveHigh = es.limitActiveHigh;
+        // The settling time comes from the sensor technology (see EndstopType):
+        // a contact bounces and must settle, an optical gate does not and its
+        // filter would only lag the zero by slowSpeed × debounce.
+        rt.homeDeb.configure(es.homeDebounceMs, false);
+        rt.limitDeb.configure(es.limitDebounceMs, false);
 
         // A disabled axis is never attached and never faults the bank: it may
         // legitimately carry no STEP/DIR/HOME pins at all.
@@ -53,6 +56,12 @@ void StepperBank::begin(const std::vector<AxisConfig>& axes,
         axes_.push_back(rt);
         steppers_.push_back(s);
 
+        // INPUT_PULLUP for BOTH sensor technologies, deliberately. A mechanical
+        // switch to GND needs it. An open-collector / NPN optical module needs it
+        // too. A push-pull optical module does not, but the ESP32's ~45 kΩ internal
+        // pull-up loses to a driver sourcing milliamps, so it costs nothing there.
+        // Making the pull mode configurable would add a knob whose only correct
+        // setting is the one already chosen.
         if (rt.pins.home >= 0) pinMode(rt.pins.home, INPUT_PULLUP);
         if (rt.pins.limit >= 0) pinMode(rt.pins.limit, INPUT_PULLUP);
     }
@@ -176,7 +185,7 @@ bool StepperBank::limitActive(size_t axis) const {
 
 void StepperBank::begin(const std::vector<AxisConfig>& axes,
                         const std::vector<AxisPins>& pins, int8_t enablePin,
-                        const std::vector<bool>&, const std::vector<bool>&) {
+                        const std::vector<AxisEndstops>&) {
     axes_.clear();
     enablePin_ = enablePin;
     for (size_t i = 0; i < axes.size(); ++i) {

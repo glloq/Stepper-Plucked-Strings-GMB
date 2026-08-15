@@ -103,3 +103,113 @@ legacy flat slot and a legacy v1 flat slot still load.
 > As with every mechanical item in this repository, only the software behaviour above
 > is validated (host tests + sanitizers + ESP32 CI build). Nothing here has been
 > exercised on a powered device.
+
+
+---
+
+## Ce qui démarre : l'instantané actif (`/active.json`)
+
+Les 8 slots sont une **bibliothèque**. Ils ne sont pas la configuration qui
+tourne, et ils étaient le mauvais endroit d'où démarrer : un slot embarque une
+moitié *device* (carte, broches, câblage E-stop, matériel monté) figée au moment
+où il a été écrit — donc recâbler la machine puis publier fonctionnait pour la
+session et revenait silencieusement en arrière au redémarrage suivant.
+
+Un seul fichier porte la vérité :
+
+```text
+/active.json
+├── device      ← cette machine (carte, broches, E-stop, matériel, réseau)
+└── instrument  ← ce qui joue (cordes, homing, servos, MIDI, pluck)
+```
+
+### Pourquoi un fichier et pas deux
+
+Il y en a eu deux, `/device.json` et `/current.json`, chacun écrit
+atomiquement. **La paire ne l'était pas** : le premier pouvait réussir et le
+second échouer, laissant le boot suivant reconstruire une nouvelle config
+machine avec un ancien instrument — une combinaison qui n'a jamais existé et n'a
+jamais été validée. Un fichier a un seul point de commit ; cet état devient
+irreprésentable.
+
+### Persister et activer, ensemble ou pas du tout
+
+Écrire puis mettre en file, ou l'inverse, ne satisfait ni l'un ni l'autre :
+
+| Ordre | Ce qui casse |
+| ----- | ------------ |
+| persister → activer | file pleine ⇒ HTTP 503 alors que le flash contient déjà la nouvelle configuration : la requête a échoué et le prochain boot a changé |
+| activer → persister | échec flash ⇒ la machine tourne sur une configuration qu'elle ne retrouvera pas, et l'UI a déjà annoncé « publié et ACTIF » |
+
+L'écriture est donc coupée à son point de commit :
+
+```text
+prepareActive()   écrit + relit un fichier temporaire — rien de visible n'a changé
+   ↓
+enqueue()         l'activation est acceptée, ou refusée
+   ↓
+commitActive()    un seul rename       │   discardActive()   le temporaire disparaît
+(accepté)                              │   (refusé : le stockage est intact)
+```
+
+Si l'écriture est impossible, `PUT /api/profile` répond **507** et **n'active
+rien** : faire tourner une configuration qui n'a pas pu être écrite est
+exactement l'ambiguïté que ce modèle existe pour supprimer.
+
+### Absent n'est pas corrompu
+
+Au boot, `loadActive()` distingue trois cas :
+
+| État | Comportement |
+| ---- | ------------ |
+| `Ok` | démarrage normal |
+| `Missing` | premier boot ou installation antérieure : lecture des anciens emplacements, puis migration écrite une fois |
+| `Unreadable` | **CONFIG_SAFE**, avec le fichier fautif nommé dans le journal |
+
+Se rabattre sur un autre profil parce que le fichier de la machine ne se lit
+plus, ce serait piloter ces chariots avec la carte de broches de quelqu'un
+d'autre. La récupération `.bak` de `begin()` couvre aussi ce fichier — c'est
+celui qui est réécrit à chaque publication, donc le plus exposé à une coupure
+pendant le rename.
+
+### Le réseau : une seule maison
+
+Les réglages de lien non secrets — mode, SSID, nom du point d'accès, hostname —
+vivaient dans la NVS comme un **override** appliqué par-dessus le profil. La
+raison était réelle : un profil venu d'une autre machine porte son SSID, et
+changer d'instrument ne doit pas déplacer l'appareil sur un autre réseau.
+
+Cette raison a disparu. La moitié *device* de `/active.json` est propre à la
+machine par construction — charger un instrument stocké la conserve
+(`keepDeviceConfig`), un import la conserve aussi puisque le fichier importé n'en
+a pas. L'override ne faisait donc plus que dupliquer un champ que l'instantané
+possédait déjà, et deux endroits qui portent la même valeur finissent par ne plus
+être d'accord :
+
+```text
+POST /api/wifi            NVS = station "Atelier"   profil = station "Atelier"   ✔
+publier un profil ancien  NVS = station "Atelier"   profil = AP "GMB-Setup"      ✘
+                          la radio suit la NVS, GET /api/profile décrit l'autre
+```
+
+La NVS ne garde donc plus que des **secrets** : mots de passe Wi-Fi et jeton
+d'administration.
+
+**Migration.** Une machine configurée avant ce changement a son réseau dans la
+NVS et nulle part ailleurs. Le boot lit les clés, les replie dans l'instantané,
+puis les efface — *dans cet ordre, et seulement si l'écriture a réussi*. Tant que
+l'instantané n'a pas été écrit, ces clés sont la seule copie ; les supprimer
+d'abord ferait tomber du réseau exactement les machines qui en ont le plus
+besoin, celles dont le flash refuse l'écriture ou qui démarrent en CONFIG_SAFE.
+Si l'écriture échoue, rien n'est effacé et la migration recommence au boot
+suivant.
+
+**CONFIG_SAFE.** Là, il n'y a pas d'instantané où ranger le réseau — c'est la
+définition de cet état — et c'est pourtant précisément là qu'un opérateur
+configure le Wi-Fi, depuis le hotspot, avant d'avoir publié quoi que ce soit. Les
+clés NVS restent donc le magasin de dernier recours. Écrire un instantané vide
+juste pour y loger un SSID serait pire que le doublon : `/active.json` existerait
+alors et masquerait les anciens fichiers que le boot lit encore, si bien qu'une
+machine à un `/device.json` corrompu de la récupération perdrait son instrument
+pour de bon. Les deux copies ne coexistent jamais : tant que les clés existent,
+il n'y a pas d'instantané avec qui être en désaccord.

@@ -28,7 +28,7 @@ frette est choisie par un **chariot**, pas par un servo dédié.
 | P1.10 | `WifiLossBehavior` : retiré (jamais câblé) | **DONE** | identique |
 | P1.11 | Postures réseau + gate UDP | **DONE** | `UdpSourceGate` host-testé + `POST /api/midi/source` (politique persistée en NVS, appliquée par la boucle) |
 | P1.12 | Migration de profils v1→v2 + fixture | **DONE** | identique |
-| P1.13 | Split `DeviceConfig`/`InstrumentProfile` + slots disque | **DONE** | le **homing** voyage côté *instrument* (§3) ; persistance fermée : `/device.json` (la machine) + `/current.json` (l'instrument qui tourne), le boot ne dépend plus du slot |
+| P1.13 | Split `DeviceConfig`/`InstrumentProfile` + slots disque | **DONE** | le **homing** voyage côté *instrument* (§3) ; persistance fermée : un instantané actif `/active.json` (moitié machine + moitié instrument) remplacé atomiquement, le boot ne dépend plus du slot |
 | P1.14 | Builds PlatformIO multi-cartes | **DONE** | 3 cartes + note sur les unités RMT/MCPWM |
 | P1.15 | Réserver GPIO0 (BOOT-hotspot) | **DONE** | identique, testé sur les 4 profils de carte |
 | P1.16 | CI GitHub Actions complète | **DONE** | + `stepperbankcheck` + `boardcheck` |

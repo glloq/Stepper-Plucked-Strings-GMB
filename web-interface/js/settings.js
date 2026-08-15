@@ -6,7 +6,7 @@
  * is what produced two editors for the Wi-Fi and a profile library no route
  * reached:
  *
- *   Profiles     the instrument LIBRARY: slots, startup slot, import/export.
+ *   Profiles     the instrument LIBRARY: slots, import/export.
  *   Network      device link: mode, SSIDs, hostname, write-only credentials,
  *                the on-demand hotspot. Stays with the machine, not the tune.
  *   Security     device: admin token and the network-MIDI source policy.
@@ -464,14 +464,15 @@
 
   // ---- Profiles tab ---------------------------------------------------------
   // profiles.js has always been complete — slots, save, copy, rename, delete,
-  // startup slot, import/export, restore — and until now nothing navigated to it,
+  // import/export, restore — and until now nothing navigated to it,
   // so a whole working feature was invisible. It belongs here: the instrument
   // LIBRARY is not part of building one instrument (that is the Setup page), and
   // it is not a device setting either.
   function profilesTab(host) {
     host.appendChild(h('div.note-box',
-      'Saved instruments. Each slot holds a complete instrument profile; the ' +
-      'startup slot is what the device loads when it boots. The network settings ' +
+      'Saved instruments — a LIBRARY. What the device boots is whatever is ' +
+      'currently running, so publishing or loading a profile is what changes it; ' +
+      'there is no separate “startup” choice to keep in sync. The network settings ' +
       'and Wi-Fi passwords are NOT part of a profile — they stay with the machine.'));
     if (GMB.views.profiles && GMB.views.profiles.render) GMB.views.profiles.render(host);
   }

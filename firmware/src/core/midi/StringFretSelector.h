@@ -113,6 +113,13 @@ struct PendingStringSelection {
 // A currently-sounding note, remembered so Note Off releases the right string
 // (spec section 12).
 struct ActiveNote {
+    // (origin, channel, note), matching InstrumentController's key. onNoteOff()
+    // looked notes up by channel+note alone, so with two senders it could delete
+    // the WRONG entry and leave a phantom behind. That no longer misdirects the
+    // mechanics — the controller owns the real release and has its own correct
+    // key — but a selector that quietly holds a note nobody is playing is a
+    // half-migrated model, and the next feature built on it inherits the bug.
+    uint16_t key = 0;
     uint8_t midiChannel = 0;
     uint8_t midiNote = 0;
     uint8_t stringIndex = 0;
@@ -177,6 +184,20 @@ public:
     // Clear all pending/active selections and last-valid state. Call on profile
     // load, panic, or tuning/string-count change so stale CC selections from a
     // previous configuration are never applied to the new one.
+    // Drop everything belonging to ONE sender: its pending selections, its active
+    // note records and its last-valid memory. Used by that sender's All Notes Off,
+    // which must not disturb anybody else's state.
+    void forgetSender(uint8_t senderKey) {
+        for (int i = static_cast<int>(pending_.size()) - 1; i >= 0; --i)
+            if (pending_[i].midiChannel == senderKey)
+                pending_.erase(pending_.begin() + i);
+        for (int i = static_cast<int>(active_.size()) - 1; i >= 0; --i)
+            if (senderKeyOf(originOfKey(active_[i].key), active_[i].midiChannel) ==
+                senderKey)
+                active_.erase(active_.begin() + i);
+        lastValid_[senderKey] = LastValidSelection{};
+    }
+
     void reset() {
         pending_.clear();
         active_.clear();
@@ -212,12 +233,12 @@ private:
     LastValidSelection lastValid_[256];
     std::vector<CompletedSelection> justCompleted_;
 
-    // The key a pending selection belongs to: (source, channel), not channel alone.
+    // The key a pending selection belongs to: (origin, channel), not channel alone.
     //
     // A CC selection is a statement by ONE sender about the note it is about to
-    // play. With DIN, USB and Wi-Fi all feeding this selector, keying on the channel
-    // alone lets a Note On from one transport consume the CC20/CC21 pair another
-    // transport just sent — so a controller's tablature position gets applied to
+    // play. With DIN, USB and several network peers all feeding this selector,
+    // keying on the channel alone lets a Note On from one sender consume the
+    // CC20/CC21 pair another just sent — so a controller's tablature position gets applied to
     // somebody else's note, on a real carriage. Same reasoning as the note identity
     // in core/midi/MidiIdentity.h.
     //
@@ -225,8 +246,8 @@ private:
     // (e.g. an unvalidated web test note) — audit P0-6. Source is masked to 4 bits
     // and channel to 4, so the key still fits a uint8_t and indexes lastValid_[256].
     uint8_t senderKey(const MidiEvent& e) const {
-        return cfg_.perMidiChannel ? sourceChannelKey(e)
-                                   : static_cast<uint8_t>(sourceKey(e.source) << 4);
+        return cfg_.perMidiChannel ? senderKeyOf(e)
+                                   : static_cast<uint8_t>(originKey(e.origin) << 4);
     }
     // Record a newly-complete selection for anticipated pre-positioning, if the
     // feature is on and the selection is in range.

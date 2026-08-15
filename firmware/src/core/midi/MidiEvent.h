@@ -37,6 +37,11 @@ enum class MidiSource : uint8_t {
 struct MidiEvent {
     uint32_t timestampUs = 0;
     uint8_t source = static_cast<uint8_t>(MidiSource::Internal);
+    // WHICH sender, not just which transport. A transport with one cable has one
+    // origin; a network transport allocates one per IP:port, because "accept any
+    // sender" is the default policy and two hosts on the same Wi-Fi are otherwise
+    // indistinguishable. See core/midi/MidiIdentity.h.
+    uint8_t origin = 0;
     uint8_t type = 0;      // MidiType value (status high nibble)
     uint8_t channel = 0;   // 0..15 (internal, zero-based)
     uint8_t data1 = 0;

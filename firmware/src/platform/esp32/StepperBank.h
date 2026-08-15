@@ -30,15 +30,29 @@ struct AxisPins {
     int8_t limit = -1;
 };
 
+// The electrical half of an axis's endstops: how to read the pins, not what to do
+// with them. Polarity used to arrive as two parallel `vector<bool>` and the
+// debounce was a constant compiled in here; adding the sensor technology as a third
+// and fourth parallel vector is how call sites start passing the LIMIT polarity in
+// the HOME slot. One struct per axis, filled from that axis's HomingConfig.
+struct AxisEndstops {
+    bool homeActiveHigh = false;
+    bool limitActiveHigh = false;
+    // Milliseconds the level must hold before it is believed. Derived from the
+    // sensor type via endstopDebounceMs(); 0 = take the sample as it comes.
+    uint8_t homeDebounceMs = 3;
+    uint8_t limitDebounceMs = 3;
+};
+
 class StepperBank {
 public:
-    // `homeActiveHigh[i]` gives the sensor polarity for axis i (from its homing
-    // config). homeActive()/limitActive() are normalised through it; empty means
-    // active-low (the common endstop wiring).
+    // `endstops[i]` describes axis i's HOME/LIMIT inputs (polarity + settling
+    // time), built from its homing config. homeActive()/limitActive() are
+    // normalised through it; a missing entry means active-low with the mechanical
+    // debounce — the common endstop wiring.
     void begin(const std::vector<AxisConfig>& axes,
                const std::vector<AxisPins>& pins, int8_t enablePin,
-               const std::vector<bool>& homeActiveHigh = {},
-               const std::vector<bool>& limitActiveHigh = {});
+               const std::vector<AxisEndstops>& endstops = {});
 
     // Sample & debounce the HOME/LIMIT inputs. Call once per loop() before
     // reading homeActive()/limitActive()/homeRawHigh().

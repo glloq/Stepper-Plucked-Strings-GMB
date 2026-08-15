@@ -371,7 +371,8 @@
       leadPerRevolutionMm: 8, customStepsPerMm: 80, invertDirection: false,
       minPositionMm: 0, maxPositionMm: 300, fretOffsetMm: 0, maxSpeedMmS: 200, maxAccelMmS2: 2000,
       calibratedFretMm: [], homing: { direction: -1, fastSpeedMmS: 40, slowSpeedMmS: 5,
-        backoffMm: 3, offsetMm: 0, timeoutMs: 8000, maxSearchMm: 500, sensorActiveHigh: true }
+        backoffMm: 3, offsetMm: 0, timeoutMs: 8000, maxSearchMm: 500, sensorActiveHigh: true,
+        limitActiveHigh: false, homeSensor: 'mechanical', limitSensor: 'mechanical' }
     };
   }
 
@@ -713,10 +714,25 @@
     return sel;
   }
 
+  // What the HOME sensor choice actually costs, as a number rather than a claim.
+  // The zero is latched when the sensor trips on the SLOW seek, so whatever
+  // debounce the technology needs is time the carriage spends still moving.
+  function sensorHint(hm) {
+    var ms = GMB.endstopDebounceMs(hm.homeSensor);
+    if (!ms) {
+      return 'No contact to bounce: the level is taken as it comes, so the zero lands where the ' +
+        'gate actually tripped. Needs 3 wires (V, GND, OUT) — see the Wiring tab.';
+    }
+    var mm = GMB.homingLagMm(hm);
+    return 'A contact must settle for ' + ms + ' ms before it is believed. At ' +
+      (Number(hm.slowSpeedMmS) || 0) + ' mm/s that places the zero ' + mm.toFixed(3) +
+      ' mm past the real trigger — repeatable, but it MOVES if you retune the slow speed.';
+  }
+
   // ---- Step 5: Homing & endstops -------------------------------------------
   function stepHoming(body) {
     body.appendChild(h('h3', 'Homing & endstops per string'));
-    body.appendChild(h('p.muted', 'Each string homes on its own HOME switch. Pick the GPIO and the homing behaviour; a LIMIT switch is optional but strongly recommended — without it, a missed HOME sensor is only caught by the search-distance timeout, after the carriage has run to the end of its travel.'));
+    body.appendChild(h('p.muted', 'Each string homes on its own HOME endstop, which is what sets that axis’s zero — so its repeatability is the axis’s repeatability. Pick the GPIO, the sensor technology and the homing behaviour. A LIMIT endstop is optional but strongly recommended: without it, a missed HOME sensor is only caught by the search-distance timeout, after the carriage has run to the end of its travel. HOME and LIMIT are chosen independently — an optical HOME beside a cheap mechanical LIMIT is a sensible build, since LIMIT sets no reference. Wiring for each is on the Wiring tab.'));
     body.appendChild(stringTabs());
     var i = activeStr, s = GMB.state.profile.strings[i];
     if (!s) return;
@@ -728,10 +744,16 @@
         gpioSelect('home', homeGpio, usedGpios({ exceptSignal: homeSignal }),
           function (g) { setPinSignal(homeSignal, 'home', g); drawStep(); }),
         'Endstop that defines the zero (FDC).'),
+      GMB.field('HOME sensor type', GMB.input(hm, 'homeSensor', {
+        type: 'select', options: [
+          { value: 'mechanical', label: 'Mechanical switch' },
+          { value: 'optical', label: 'Optical gate' }
+        ]
+      }), sensorHint(hm)),
       GMB.field('Sensor active level', GMB.input(hm, 'sensorActiveHigh', {
         type: 'select', options: [{ value: true, label: 'Active high' }, { value: false, label: 'Active low' }],
         coerce: function (v) { return v === 'true' || v === true; }
-      })),
+      }), 'An optical gate usually idles the OPPOSITE way from the switch it replaces — check with “Test endstop”.'),
       GMB.field('Homing search direction', GMB.input(hm, 'direction', {
         type: 'select', options: [{ value: -1, label: 'Toward − (home)' }, { value: 1, label: 'Toward +' }],
         coerce: Number
@@ -745,6 +767,12 @@
         gpioSelect('limit', limitGpio, usedGpios({ exceptSignal: limitSignal }),
           function (g) { setPinSignal(limitSignal, 'limit', g); drawStep(); }),
         'End-of-travel safety switch — strongly recommended.'),
+      GMB.field('LIMIT sensor type', GMB.input(hm, 'limitSensor', {
+        type: 'select', options: [
+          { value: 'mechanical', label: 'Mechanical switch' },
+          { value: 'optical', label: 'Optical gate' }
+        ]
+      }), 'Independent of HOME. A cheap contact is fine here — LIMIT only has to say “too far”, it sets no reference.'),
       GMB.field('LIMIT active level', GMB.input(hm, 'limitActiveHigh', {
         type: 'select', options: [{ value: false, label: 'Active low' }, { value: true, label: 'Active high' }],
         coerce: function (v) { return v === 'true' || v === true; }
@@ -803,16 +831,27 @@
       if (homeGpio < 0) {
         readout.appendChild(h('span.pill.mini.error', 'HOME switch has no GPIO assigned.'));
       } else {
-        readout.appendChild(endstopLed('HOME', homeGpio, !!res.home));
+        readout.appendChild(endstopLed('HOME', homeGpio, !!res.home, res.homeSensor, res.homeRaw));
       }
-      if (limitGpio >= 0) readout.appendChild(endstopLed('LIMIT', limitGpio, !!res.limit));
+      if (limitGpio >= 0) readout.appendChild(endstopLed('LIMIT', limitGpio, !!res.limit, res.limitSensor));
+      // "Idle" and "polarity is backwards" look identical until the raw level is
+      // on screen next to the declared active level — and an optical gate usually
+      // idles the opposite way from the switch it replaced, so this is where a
+      // freshly fitted one either checks out or does not.
+      if (res.homeRaw) {
+        readout.appendChild(h('p.muted', 'HOME pin reads ' + res.homeRaw.toUpperCase() +
+          '; the profile declares active ' + (s.homing.sensorActiveHigh ? 'high' : 'low') +
+          '. Block the sensor and read again — the level must change.'));
+      }
     }).catch(function (e) { testErr('Endstop read failed', e); });
   }
-  function endstopLed(name, gpio, active) {
+  function endstopLed(name, gpio, active, sensor, raw) {
     return h('div.endstop-line', [
       h('span.leddot' + (active ? '.on' : '')),
       h('span.endstop-name', name + ' GPIO' + gpio),
-      h('span.pill.mini' + (active ? '.ok' : '.muted'), active ? 'active' : 'idle')
+      h('span.pill.mini' + (active ? '.ok' : '.muted'), active ? 'active' : 'idle'),
+      sensor ? h('span.pill.mini', sensor === 'optical' ? 'optical' : 'mechanical') : null,
+      raw ? h('span.pill.mini.muted', 'raw ' + raw) : null
     ]);
   }
 

@@ -45,8 +45,10 @@ struct Rig {
         safety.boot();
         instrument.load(profile);
         std::vector<AxisPins> pins = rigAxisPins();
+        // Endstops as this rig wires them: active-low contacts, so the struct's
+        // own defaults describe both axes and the call needs no per-axis table.
         steppers.begin(profile.strings, pins, /*enablePin=*/3,
-                       {false, false}, {false, false});
+                       {AxisEndstops{}, AxisEndstops{}});
         servos.begin(profile.servos, -1, -1, -1, -1, -1);
         axisFaulted.assign(profile.strings.size(), false);
         scheduler.configure(profile.strings.size());

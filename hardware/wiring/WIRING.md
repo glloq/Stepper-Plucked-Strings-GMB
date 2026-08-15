@@ -45,18 +45,51 @@ Each pluggable driver module connects as follows:
 | `UART` (optional) | spare UART | TMC2209 configuration |
 | `MS1 / MS2` | set per module | microstep select (match `microsteps` in the profile) |
 
-HOME sensor for each axis:
+### Endstops: HOME and LIMIT
 
-| Sensor pin | Connect to |
-| ---------- | ---------- |
-| Signal | ESP32-S3 HOME GPIO (per string) — interrupt-capable |
-| VCC | 3.3 V |
-| GND | common ground |
+Each axis has a **HOME** sensor — the reference it must find before it may play —
+and, strongly recommended, a **LIMIT** at the far end that catches a missed HOME.
+Both come in two technologies, chosen per sensor in the profile
+(`homing.homeSensor` / `homing.limitSensor`, Setup ▸ Homing in the web UI), and
+they are wired differently:
 
-Use the internal pull-up/down where the sensor allows it, or an external
-resistor otherwise. The firmware `sensorActiveHigh` field selects the active
-level; NO and NC contacts are both supported (§5 wizard, §13). Optional LIMIT
-end-stops wire the same way on spare interrupt-capable GPIO.
+| | Mechanical switch | Optical gate |
+| --- | --- | --- |
+| Wires | **2** — signal, GND | **3** — 3V3, GND, OUT |
+| Supply | none (dry contact) | 3.3 V **from the ESP32**, never the motor rail |
+| Firmware pull-up | enabled (`INPUT_PULLUP`) | enabled — harmless on a push-pull output, required on an open-collector one |
+| Debounce | 3 ms, to let the contact settle | **none** — there is no contact to bounce |
+| Typical repeatability | tens of µm, and it drifts as the contact wears | a few µm |
+
+The debounce is not free. The zero is latched when the sensor trips during the
+**slow seek**, so a 3 ms settling time at a slow-seek speed of *v* mm/s places
+the zero *v*·0.003 mm past the real trigger point — 15 µm at the default 5 mm/s.
+That offset is repeatable, but it **moves when the slow-seek speed is retuned**,
+which is the confusing kind of error: change one speed and every fret shifts. An
+optical gate removes it rather than calibrating around it, which is the whole
+reason to fit one. The web UI shows the figure for the speed actually configured
+(Setup ▸ Homing, and the Stepper drivers table on the Wiring tab).
+
+Wiring notes for both:
+
+* Wire a mechanical switch **normally-closed to the common** where the switch
+  allows it, so a broken wire or an unplugged connector reads *triggered* rather
+  than *clear*. The `sensorActiveHigh` / `limitActiveHigh` fields select the
+  active level; NO and NC are both supported (§5 wizard, §13).
+* **Check an optical module is a 3.3 V part.** A 5 V push-pull output on an
+  ESP32 input is over its absolute maximum and needs a divider or a level
+  shifter. Its output usually idles the **opposite** way from the switch it
+  replaces, so set the active level from a real reading — Setup ▸ Homing ▸ *Test
+  endstop* reports the raw pin level next to the declared one — rather than from
+  the switch it replaced.
+* Route the endstop wires **away from the motor leads**. A chopping driver puts
+  fast edges on those four wires, and a sensor line running beside them down a
+  moving cable chain is the usual cause of homing that works on the bench and
+  trips at random once the machine is closed up. Use shielded or twisted pairs if
+  they must share the chain.
+* Both wire on interrupt-capable GPIO. Input-only pins (34/35/36/39 on a classic
+  ESP32) are fine for endstops — they cannot drive anything, and an endstop only
+  ever reads.
 
 **Set the driver motor current** on each TMC2209 (VREF / UART) before enabling.
 

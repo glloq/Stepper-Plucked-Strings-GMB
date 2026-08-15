@@ -622,28 +622,42 @@ void WebApi::registerRoutes() {
                 sendJson(req, doc, 422);  // real error, not masked as success
                 return;
             }
-            // PERSIST before activating. "Save & publish" has to mean saved: this
-            // route used to only queue an activation, so a configuration could run
-            // perfectly for a whole session and then be gone at the next power-up —
-            // with the button that did it labelled "Save". Writing here, in the web
-            // task under the storage lock, is the same path POST /api/profiles
-            // already takes; loop() never waits on flash.
+            // PERSIST AND ACTIVATE, or neither. "Save & publish" has to mean saved,
+            // and a request that FAILS must not change what boots next. Those are
+            // the same requirement seen from two sides, and doing the two steps in
+            // sequence satisfies neither:
             //
-            // Written at ACCEPT time, not after the activation completes: the
-            // activation runs on the loop over many passes and can still be refused
-            // by a safety lock. Persisting first means a refused activation still
-            // boots the configuration the user published, from a clean power-on
-            // state — which is the outcome they asked for.
-            bool persisted = false;
-            if (ctx_.storage) {
-                WebStorageLock sl(ctx_);
-                // Device half and running instrument are separate files on purpose:
-                // the device is this machine, the instrument travels.
-                persisted = ctx_.storage->saveDevice(p);
-                persisted = ctx_.storage->saveCurrent(p) && persisted;
+            //   persist then enqueue  — a full queue returns 503 while the flash
+            //                           already holds the new configuration: the
+            //                           request failed and the next boot changed.
+            //   enqueue then persist  — a flash failure leaves the machine running
+            //                           something it will not come back as, and the
+            //                           UI has already said "published and ACTIVE".
+            //
+            // So the write is split at its commit point: prepare (write + verify a
+            // temp file, nothing visible has changed), enqueue, and only then commit
+            // with a single rename. If the queue refuses, the temp file is discarded
+            // and the stored snapshot is untouched.
+            if (!ctx_.storage) {
+                doc["ok"] = false;
+                doc["persisted"] = false;
+                doc["error"] = "no storage";
+                sendJson(req, doc, 507);
+                return;
             }
-            doc["persisted"] = persisted;
-
+            bool prepared;
+            { WebStorageLock sl(ctx_); prepared = ctx_.storage->prepareActive(p); }
+            if (!prepared) {
+                // Refuse the activation too. Running a configuration that could not
+                // be written is the ambiguity this whole model exists to remove.
+                doc["ok"] = false;
+                doc["persisted"] = false;
+                doc["accepted"] = false;
+                doc["error"] = "could not write the configuration to storage — "
+                               "not activating it";
+                sendJson(req, doc, 507);   // Insufficient Storage
+                return;
+            }
             // Validated above; the actual activation runs in loop() (motor stop,
             // reconfigure, re-home). Report ACCEPTED, not "done".
             // This is the draft the user edited FOR THIS MACHINE — pins, board and
@@ -651,8 +665,21 @@ void WebApi::registerRoutes() {
             uint32_t cmdId = ctx_.onActivateProfile
                                  ? ctx_.onActivateProfile(p, /*keepDeviceConfig=*/false) : 0;
             bool queued = cmdId != 0;
+            bool persisted = false;
+            { WebStorageLock sl(ctx_);
+              if (queued) persisted = ctx_.storage->commitActive();
+              else ctx_.storage->discardActive(); }
+            if (queued && !persisted) {
+                // The rename failed after the activation was accepted. Say so rather
+                // than report a clean success: the machine will run this profile and
+                // boot the previous one.
+                doc["warning"] = "activation accepted but the configuration could "
+                                 "not be committed to storage — it will not survive "
+                                 "a reboot";
+            }
             doc["ok"] = queued;
             doc["accepted"] = queued;
+            doc["persisted"] = persisted;
             doc["commandId"] = cmdId;
             doc["note"] = queued ? "activation queued" : "command queue full";
             sendJson(req, doc, queued ? 202 : 503);
@@ -775,27 +802,46 @@ void WebApi::registerRoutes() {
             // E-stop polarity.
             //
             // Persist the result as the running instrument so the choice survives a
-            // reboot — but merge THIS machine's device half into what gets stored,
-            // exactly as the runtime is about to do. Writing the slot's own device
-            // half to /current.json would reintroduce, on disk, the very swap this
-            // route exists to prevent. /device.json is deliberately NOT touched: a
-            // slot load changes the instrument, never the machine.
-            bool persisted = false;
-            if (ctx_.storage) {
-                Profile toStore = p;
-                { WebStateLock lk(ctx_);
-                  if (ctx_.profile)
-                      toStore = mergeProfile(deviceConfigOf(*ctx_.profile),
-                                             instrumentProfileOf(p), p); }
-                WebStorageLock sl(ctx_);
-                persisted = ctx_.storage->saveCurrent(toStore);
+            // reboot — but store THIS machine's device half merged with the slot's
+            // instrument, exactly as the runtime is about to do. Storing the slot's
+            // own device half would reintroduce, on disk, the very swap this route
+            // exists to prevent.
+            //
+            // Same prepare/commit transaction as PUT /api/profile: a slot load that
+            // is refused by a full queue must not change the next boot either.
+            if (!ctx_.storage) {
+                doc["ok"] = false;
+                doc["persisted"] = false;
+                doc["error"] = "no storage";
+                sendJson(req, doc, 507);
+                return;
             }
-            doc["persisted"] = persisted;
+            Profile toStore = p;
+            { WebStateLock lk(ctx_);
+              if (ctx_.profile)
+                  toStore = mergeProfile(deviceConfigOf(*ctx_.profile),
+                                         instrumentProfileOf(p), p); }
+            bool prepared;
+            { WebStorageLock sl(ctx_); prepared = ctx_.storage->prepareActive(toStore); }
+            if (!prepared) {
+                doc["ok"] = false;
+                doc["persisted"] = false;
+                doc["accepted"] = false;
+                doc["error"] = "could not write the configuration to storage — "
+                               "not activating it";
+                sendJson(req, doc, 507);
+                return;
+            }
             uint32_t cmdId = ctx_.onActivateProfile
                                  ? ctx_.onActivateProfile(p, /*keepDeviceConfig=*/true) : 0;
             bool queued = cmdId != 0;
+            bool persisted = false;
+            { WebStorageLock sl(ctx_);
+              if (queued) persisted = ctx_.storage->commitActive();
+              else ctx_.storage->discardActive(); }
             doc["ok"] = queued;
             doc["accepted"] = queued;
+            doc["persisted"] = persisted;
             doc["commandId"] = cmdId;
             doc["note"] = queued ? "instrument activation queued (device config kept)"
                                  : "invalid profile or queue full";
@@ -965,6 +1011,18 @@ void WebApi::registerRoutes() {
             doc["ok"] = true;
             doc["home"] = ctx_.steppers->homeActive(axis);
             doc["limit"] = ctx_.steppers->limitActive(axis);
+            // The RAW level and the declared sensor type alongside the normalised
+            // reading, because "not triggered" is the same answer as "polarity is
+            // backwards" until you can see both. That distinction matters most on an
+            // optical gate, whose output usually idles the opposite way round from
+            // the switch it replaced.
+            doc["homeRaw"] = ctx_.steppers->homeRawHigh(axis) ? "high" : "low";
+            if (ctx_.profile && axis < ctx_.profile->homing.size()) {
+                const HomingConfig& hc = ctx_.profile->homing[axis];
+                doc["homeSensor"] = endstopTypeName(hc.homeSensor);
+                doc["limitSensor"] = endstopTypeName(hc.limitSensor);
+                doc["homeDebounceMs"] = endstopDebounceMs(hc.homeSensor);
+            }
             sendJson(req, doc);
         });
     testEndstop->setMethod(HTTP_POST);

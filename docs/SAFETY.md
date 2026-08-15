@@ -157,6 +157,11 @@ If one or more axes fail their homing, the system still enters playback **but**:
   (`Preferences`), never in the exportable profile, and are set via
   `POST /api/wifi`. The access point can be protected with WPA2 (password ≥ 8
   characters); otherwise it remains open.
+* The **non-secret** link settings (mode, SSID, AP name, hostname) are *not* in
+  NVS: they are the device half of `/active.json`, so exporting a profile never
+  exports a password and the network the device follows is the one the API
+  reports. The only exception is a machine in CONFIG_SAFE, which has no snapshot
+  to write into and keeps them in NVS until it does.
 ### Web API authentication
 
 The routes that **move the mechanics or change the configuration**

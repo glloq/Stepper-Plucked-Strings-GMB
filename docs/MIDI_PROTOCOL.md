@@ -22,12 +22,56 @@ version, the Wi-Fi inputs can be:
 * a configurable UDP protocol;
 * test commands from the Web interface.
 
+### Who sent it: `origin`
+
+`MidiSource` names a **transport**. That was a sufficient key while each transport
+had one sender — and it stopped being one as soon as the instrument accepted
+several. The default UDP posture accepts any host, so two laptops on the same
+Wi-Fi both arrive as `MidiSource::WifiUdp`, and
+
+```text
+PC A -> NoteOn  ch1 C4
+PC B -> NoteOn  ch1 C4
+PC B -> NoteOff ch1 C4
+```
+
+is ambiguous: the Note Off can release PC A's note, damping their string and
+leaving PC B's pressed with nothing able to release it.
+
+So every event also carries an **origin** — a small id for *the thing that sent
+this* (`core/midi/MidiIdentity.h`):
+
+| Origin | Sender |
+| ------ | ------ |
+| 0 | firmware-internal |
+| 1 | DIN-5 / TRS (one cable, one sender) |
+| 2 | USB-MIDI (one host) |
+| 3 | the web test tools |
+| 4–15 | network peers, one per `IP:port` |
+
+A note is identified by `(origin, channel, note)`, and anything scoped to a sender
+— pending CC selections, the sustain pedal, the last-valid selection, the reach of
+an All Notes Off — by `(origin, channel)`. The network table holds 12 peers and
+recycles the oldest slot beyond that; two peers then share an id, which is exactly
+the behaviour of having no ids at all, so the worst case for a 13th simultaneous
+controller is the old one.
+
+### CC120 / CC123 are messages, not stop buttons
+
+All Sound Off and All Notes Off act on **the sender's own channel**. They used to
+call the instrument-wide panic, so a DIN controller sending CC123 also damped the
+Wi-Fi player's strings, dropped their pedal and wiped their pending selections.
+
+An instrument-wide stop is a *safety* action and has its own routes:
+`POST /api/panic`, the hardware E-stop, and the panic path in `main.cpp`.
+
 All transports produce a **common internal event**:
 
 ```cpp
 struct MidiEvent {
     uint32_t timestampUs = 0;
-    uint8_t source;    // MidiSource (WifiWebSocket, WifiRtp, WifiUdp, WebUiTest, Ble, Usb, Din, Serial…)
+    uint8_t source;    // MidiSource — which TRANSPORT (WifiUdp, Din, Usb, WebUiTest…)
+    uint8_t origin;    // which SENDER on it (a cable, or one network IP:port)
     uint8_t type;      // MidiType : NoteOff 0x80, NoteOn 0x90, ControlChange 0xB0, SysEx 0xF0…
     uint8_t channel;   // 0..15 (internal, base 0)
     uint8_t data1;
@@ -43,8 +87,9 @@ CAN/RS485. GPIO19/GPIO20 remain reserved for native USB.
 
 ### 1.1 Physical inputs
 
-Every transport feeds the **same** `InstrumentController`; `MidiEvent.source`
-keeps them apart. Two are built:
+Every transport feeds the **same** `InstrumentController`; `MidiEvent.origin`
+keeps their SENDERS apart (see above — the transport alone is not enough once one
+transport can carry several). Two are built:
 
 | Transport | Class | State | Bound when |
 | --------- | ----- | ----- | ---------- |
@@ -76,10 +121,13 @@ With no `MIDI_RX` pin the transport stays inert rather than half-configured, and
 ]
 ```
 
-`midiSource` names the bound transport that has decoded the most messages since
-boot (`"none"` if none is bound), so "which input is actually driving this
-instrument?" has a measured answer. It used to be the constant `"wifiUdp"`, which
-was wrong the moment a second transport existed.
+`midiSource` names the transport that most recently delivered a message —
+`"none"` before the first one — so "which input is driving this instrument right
+now?" has a measured answer. It was once the constant `"wifiUdp"`, then briefly
+"the transport with the most messages since boot", which answers a different
+question: a lifetime total still says Wi-Fi on a machine that has been on Wi-Fi
+all day, however hard you play a DIN cable plugged in five minutes ago. The
+lifetime counts are still reported per transport, as `events`.
 
 The **source policy** (`POST /api/midi/source`, Settings → Security) governs the
 Wi-Fi transport only. A physical cable is trusted by being plugged in — there is
