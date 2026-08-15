@@ -1,0 +1,55 @@
+# REST contract between web-interface/js/api.js and firmware WebApi.cpp.
+#
+# One row per endpoint. Tab- or multi-space separated; `-` means "none".
+#
+#   path        the registered route. A trailing / marks a path parameter
+#               (/api/board/<id>): the firmware registers one route per value.
+#   method      GET | POST | PUT
+#   request     fields the handler MUST read from the body, or @body when the whole
+#               body is the payload (a profile) and the check is that it is parsed
+#               at all. This column is the
+#               point of the file: /api/pins/auto existed, was called with a
+#               `board` field, and ignored it — handing out ESP32-S3 pins whichever
+#               board you had selected. Route-only checking cannot see that; a
+#               required request field the handler never reads is exactly it.
+#   response    fields the handler MUST write, so the UI can rely on them. Prefix
+#               with `helper:` when a named helper writes them — /api/status serves
+#               a snapshot built by WebApi::fillStatus, deliberately, so the REST
+#               route and the WebSocket broadcast cannot drift apart.
+#
+# Optional request fields are deliberately NOT listed: this file states what a
+# handler cannot be correct without, not everything it may accept.
+
+# path                     method  request                     response
+/api/status                GET     -                           fillStatus:state,midiSource,midiTransports,safety,stringsReady,stringsTotal
+/api/diagnostics           GET     -                           -
+/api/capabilities          GET     -                           -
+/api/boards                GET     -                           boards
+/api/board/                GET     -                           identifier,pins
+/api/profile               GET     -                           -
+/api/profile               PUT     @body                       ok,accepted,commandId,persisted
+/api/profile/normalize     POST    @body                       ok,issues,profile
+/api/profiles              GET     -                           profiles,startupSlot
+/api/profiles              POST    slot                        ok
+/api/profiles/load         POST    slot                        ok,accepted,commandId,persisted
+/api/profiles/read         POST    slot                        -
+/api/profiles/delete       POST    slot                        ok
+/api/pins/auto             POST    board,stringCount           pins
+/api/pins/validate         POST    @body                       ok,issues
+/api/reset                 POST    -                           ok
+/api/panic                 POST    -                           ok
+/api/hotspot               POST    -                           ok
+/api/wifi                  POST    -                           ok
+/api/wifi/scan             GET     -                           -
+/api/midi/source           POST    -                           ok
+/api/auth                  POST    token                       ok
+/api/auth/check            POST    -                           ok
+/api/test/note             POST    note                        ok
+/api/test/servo            POST    index                       ok
+/api/test/jog              POST    axis,deltaMm                ok
+/api/test/moveto           POST    axis,positionMm             ok
+/api/test/endstop          POST    axis                        ok,home,limit
+/api/sysex/request         POST    -                           -
+/api/commands              GET     -                           -
+/api/storage/format        POST    -                           ok
+/gmb/descriptor.json       GET     -                           -

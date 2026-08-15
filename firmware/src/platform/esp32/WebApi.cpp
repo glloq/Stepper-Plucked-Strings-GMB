@@ -660,6 +660,56 @@ void WebApi::registerRoutes() {
     putProfile->setMethod(HTTP_PUT);
     server_->addHandler(putProfile);
 
+    // ---- POST /api/profile/normalize (canonical profile + issues) ----
+    //
+    // The firmware owns the schema: the version migrations, the per-field defaults
+    // and the cross-field rules all live here. The web interface was re-deriving a
+    // subset of that in JS (ensureProfileDefaults), and only at the TOP level — so
+    // `{"stringFretSelection": {"enabled": true}}` parsed into a complete profile
+    // here while the browser kept an object with no `.string`, and the MIDI panel
+    // then read `sfs.string.ccNumber` off undefined.
+    //
+    // Rather than grow a second migration in JS, this returns the profile as the
+    // firmware understands it — migrated, defaulted, complete — and the UI adopts
+    // exactly that. Validation issues come back in the same round trip, because
+    // "normalise it" and "is it acceptable?" are the same question at import time.
+    //
+    // 200 even when the profile has blocking errors: the caller asked what this
+    // file MEANS, and the answer plus the reasons is more useful than a refusal.
+    auto* normalizeProfile = new AsyncCallbackJsonWebHandler(
+        "/api/profile/normalize", [this](AsyncWebServerRequest* req, JsonVariant& body) {
+            JsonDocument doc;
+            JsonDocument raw;
+            raw.set(body);
+            ProfileStorage::migrate(raw);   // v1 -> v2 -> ... before parsing
+            Profile p;
+            if (!ProfileStorage::fromJson(raw.as<JsonVariantConst>(), p)) {
+                doc["ok"] = false;
+                doc["error"] = "invalid profile JSON";
+                sendJson(req, doc, 400);
+                return;
+            }
+            bool ok = true;
+            JsonArray errs = doc["issues"].to<JsonArray>();
+            for (const auto& is : ProfileValidator::validate(p)) {
+                if (is.severity == ValidationIssue::Severity::Error) ok = false;
+                JsonObject o = errs.add<JsonObject>();
+                o["field"] = is.field;
+                o["message"] = is.message;
+                o["severity"] =
+                    is.severity == ValidationIssue::Severity::Error ? "error" : "warning";
+            }
+            doc["ok"] = ok;
+            // toJson builds a whole document; nest it (ArduinoJson deep-copies on
+            // cross-document assignment, so this is a full independent copy).
+            JsonDocument canonical;
+            ProfileStorage::toJson(p, canonical);
+            doc["profile"] = canonical;
+            sendJson(req, doc, 200);
+        });
+    normalizeProfile->setMethod(HTTP_POST);
+    server_->addHandler(normalizeProfile);
+
     // ---- POST /api/pins/validate (full-profile validation) ----
     auto* validatePins = new AsyncCallbackJsonWebHandler(
         "/api/pins/validate",

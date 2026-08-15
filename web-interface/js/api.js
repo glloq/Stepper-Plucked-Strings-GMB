@@ -130,6 +130,17 @@
     if (!p.project) p.project = d.project;
     if (!(p.profileVersion >= 1)) p.profileVersion = d.profileVersion;
     if (!(p.capabilitiesRevision >= 0)) p.capabilitiesRevision = 0;
+    // Nested blocks the views bind to DIRECTLY, which the whole-section rule above
+    // does not reach: a file carrying `"stringFretSelection": {"enabled": true}`
+    // keeps that object (it exists and is an object) and midiselect.js then reads
+    // `sfs.string.ccNumber` off undefined. The firmware fills these in when it
+    // parses, so this only matters offline — but offline is a real path, and a
+    // thrown render is not a good way to learn that.
+    var sfs = p.stringFretSelection;
+    ['string', 'fret', 'validation'].forEach(function (k) {
+      if (!sfs[k] || typeof sfs[k] !== 'object') sfs[k] = d.stringFretSelection[k];
+    });
+    if (!Array.isArray(sfs.string.mapping)) sfs.string.mapping = [];
     // Per-string blocks the views bind to directly.
     p.strings.forEach(function (st) {
       if (!st.homing || typeof st.homing !== 'object') st.homing = d.strings[0].homing;
@@ -1168,6 +1179,22 @@
       return this._call('/api/pins/validate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(profile)
       }, function () { return mockValidatePins(profile); });
+    },
+    // Ask the DEVICE what a profile JSON means: migrated, defaulted, complete,
+    // plus its validation issues in the same round trip. The firmware owns the
+    // schema, so this is the only place the canonical shape exists — the UI adopts
+    // what comes back rather than re-deriving a subset of it in JS.
+    normalizeProfile: function (profile) {
+      return this._call('/api/profile/normalize', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(profile)
+      }, function () {
+        // Offline: ensureProfileDefaults is the mock's best approximation of the
+        // firmware's defaulting, and mockValidatePins its validator.
+        var canonical = GMB.ensureProfileDefaults(GMB.deepCopy(profile));
+        var res = mockValidatePins(canonical);
+        return { ok: res.ok, issues: res.issues, profile: canonical };
+      });
     },
     panic: function () {
       return this._call('/api/panic', { method: 'POST' }, function () {
