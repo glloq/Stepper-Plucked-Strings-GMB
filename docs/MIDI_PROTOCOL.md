@@ -70,7 +70,8 @@ All transports produce a **common internal event**:
 ```cpp
 struct MidiEvent {
     uint32_t timestampUs = 0;
-    uint8_t source;    // MidiSource (WifiWebSocket, WifiRtp, WifiUdp, WebUiTest, Ble, Usb, Din, Serial…)
+    uint8_t source;    // MidiSource — which TRANSPORT (WifiUdp, Din, Usb, WebUiTest…)
+    uint8_t origin;    // which SENDER on it (a cable, or one network IP:port)
     uint8_t type;      // MidiType : NoteOff 0x80, NoteOn 0x90, ControlChange 0xB0, SysEx 0xF0…
     uint8_t channel;   // 0..15 (internal, base 0)
     uint8_t data1;
@@ -86,8 +87,9 @@ CAN/RS485. GPIO19/GPIO20 remain reserved for native USB.
 
 ### 1.1 Physical inputs
 
-Every transport feeds the **same** `InstrumentController`; `MidiEvent.source`
-keeps them apart. Two are built:
+Every transport feeds the **same** `InstrumentController`; `MidiEvent.origin`
+keeps their SENDERS apart (see above — the transport alone is not enough once one
+transport can carry several). Two are built:
 
 | Transport | Class | State | Bound when |
 | --------- | ----- | ----- | ---------- |
@@ -119,10 +121,13 @@ With no `MIDI_RX` pin the transport stays inert rather than half-configured, and
 ]
 ```
 
-`midiSource` names the bound transport that has decoded the most messages since
-boot (`"none"` if none is bound), so "which input is actually driving this
-instrument?" has a measured answer. It used to be the constant `"wifiUdp"`, which
-was wrong the moment a second transport existed.
+`midiSource` names the transport that most recently delivered a message —
+`"none"` before the first one — so "which input is driving this instrument right
+now?" has a measured answer. It was once the constant `"wifiUdp"`, then briefly
+"the transport with the most messages since boot", which answers a different
+question: a lifetime total still says Wi-Fi on a machine that has been on Wi-Fi
+all day, however hard you play a DIN cable plugged in five minutes ago. The
+lifetime counts are still reported per transport, as `events`.
 
 The **source policy** (`POST /api/midi/source`, Settings → Security) governs the
 Wi-Fi transport only. A physical cable is trusted by being plugged in — there is

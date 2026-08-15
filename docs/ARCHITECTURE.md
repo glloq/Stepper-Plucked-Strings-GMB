@@ -142,8 +142,9 @@ firmware/src/platform/esp32/     the hardware glue — Arduino-gated
 ├── Net.{h,cpp}                  Wi-Fi station/AP, forced hotspot, captive
 │                                portal, async network survey
 ├── WebApi.{h,cpp}               REST + WebSocket
-└── ProfileStorage.{h,cpp}       LittleFS slots (split device/instrument layout,
-                                 atomic temp+bak writes) + NVS for secrets
+└── ProfileStorage.{h,cpp}       LittleFS: the active snapshot /active.json
+                                 (two-phase prepare/commit, temp+bak recovery)
+                                 plus the 8-slot library + NVS for secrets
 ```
 
 `main.cpp` is what remains: it owns the mechanical state and wires the pieces

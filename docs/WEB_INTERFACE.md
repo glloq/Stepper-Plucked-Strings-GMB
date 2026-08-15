@@ -295,13 +295,24 @@ Device Wi-Fi: station or access point, SSID (with a live survey — `GET
 /api/wifi/scan`), hostname, AP name, and passwords, which are **write-only** and
 never leave the device.
 
-This is **the only place the network is configured**. The link config belongs to
-the machine, not to the tune: it is stored in NVS beside the passwords and
-overrides whatever an imported profile carries, so moving a profile between
-machines never moves one machine's SSID onto another, and loading another
-instrument never drops the device off the network. The Setup wizard used to carry
-a second copy of these fields (plus a `staticIp` checkbox for a flag that drove no
-`WiFi.config()` call and was removed from the schema in v2); it now links here.
+This is **the only place the network is configured**, and it now has a single
+place to write to. The link config belongs to the machine, not to the tune, so it
+lives in the **device half of `/active.json`** — the same half that already
+survives loading another instrument and importing a profile, because an import
+carries no device half at all. Moving a profile between machines still never moves
+one machine's SSID onto another, and the value the radio follows is the value
+`GET /api/profile` reports.
+
+It used to be kept in NVS as an *override* on top of the profile, which is two
+copies with one writer: after `POST /api/wifi` they agreed, but publishing an
+older profile afterwards left `profile.network` stale while the radio kept
+following NVS, so the exported profile described a network the device was not on.
+NVS now holds **secrets only** (Wi-Fi passwords, admin token) — plus, on a machine
+in CONFIG_SAFE, the network as a bootstrap store, since there is no snapshot yet
+to put it in; it is folded into the snapshot and erased as soon as one exists. The
+Setup wizard used to carry a second copy of these fields (plus a `staticIp`
+checkbox for a flag that drove no `WiFi.config()` call and was removed from the
+schema in v2); it now links here.
 
 **Save & publish** stores the settings *and applies them* — `POST /api/wifi` with
 `apply: true` makes `loop()` reconfigure the radio, with the usual automatic

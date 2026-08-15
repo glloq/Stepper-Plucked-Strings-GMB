@@ -171,3 +171,45 @@ plus, ce serait piloter ces chariots avec la carte de broches de quelqu'un
 d'autre. La récupération `.bak` de `begin()` couvre aussi ce fichier — c'est
 celui qui est réécrit à chaque publication, donc le plus exposé à une coupure
 pendant le rename.
+
+### Le réseau : une seule maison
+
+Les réglages de lien non secrets — mode, SSID, nom du point d'accès, hostname —
+vivaient dans la NVS comme un **override** appliqué par-dessus le profil. La
+raison était réelle : un profil venu d'une autre machine porte son SSID, et
+changer d'instrument ne doit pas déplacer l'appareil sur un autre réseau.
+
+Cette raison a disparu. La moitié *device* de `/active.json` est propre à la
+machine par construction — charger un instrument stocké la conserve
+(`keepDeviceConfig`), un import la conserve aussi puisque le fichier importé n'en
+a pas. L'override ne faisait donc plus que dupliquer un champ que l'instantané
+possédait déjà, et deux endroits qui portent la même valeur finissent par ne plus
+être d'accord :
+
+```text
+POST /api/wifi            NVS = station "Atelier"   profil = station "Atelier"   ✔
+publier un profil ancien  NVS = station "Atelier"   profil = AP "GMB-Setup"      ✘
+                          la radio suit la NVS, GET /api/profile décrit l'autre
+```
+
+La NVS ne garde donc plus que des **secrets** : mots de passe Wi-Fi et jeton
+d'administration.
+
+**Migration.** Une machine configurée avant ce changement a son réseau dans la
+NVS et nulle part ailleurs. Le boot lit les clés, les replie dans l'instantané,
+puis les efface — *dans cet ordre, et seulement si l'écriture a réussi*. Tant que
+l'instantané n'a pas été écrit, ces clés sont la seule copie ; les supprimer
+d'abord ferait tomber du réseau exactement les machines qui en ont le plus
+besoin, celles dont le flash refuse l'écriture ou qui démarrent en CONFIG_SAFE.
+Si l'écriture échoue, rien n'est effacé et la migration recommence au boot
+suivant.
+
+**CONFIG_SAFE.** Là, il n'y a pas d'instantané où ranger le réseau — c'est la
+définition de cet état — et c'est pourtant précisément là qu'un opérateur
+configure le Wi-Fi, depuis le hotspot, avant d'avoir publié quoi que ce soit. Les
+clés NVS restent donc le magasin de dernier recours. Écrire un instantané vide
+juste pour y loger un SSID serait pire que le doublon : `/active.json` existerait
+alors et masquerait les anciens fichiers que le boot lit encore, si bien qu'une
+machine à un `/device.json` corrompu de la récupération perdrait son instrument
+pour de bon. Les deux copies ne coexistent jamais : tant que les clés existent,
+il n'y a pas d'instantané avec qui être en désaccord.
