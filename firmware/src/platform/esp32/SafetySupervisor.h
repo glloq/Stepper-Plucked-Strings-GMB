@@ -19,11 +19,21 @@
 // only the operation BODIES moved here, unchanged, and main.cpp's free functions
 // became thin delegates so every call site is byte-identical.
 //
-// Arduino-gated (it drives StepperBank / ServoBank and reads a GPIO):
-// compile-checked by hostcheck, NOT host-unit-tested. The one piece of logic that
-// IS unit-tested is the E-stop polarity predicate, which lives in the pure core as
-// core/safety/EstopPolarity.h — precisely because getting it backwards is how a
-// healthy machine refuses to home and a pressed button goes unseen.
+// Arduino-gated (it drives StepperBank / ServoBank and reads a GPIO), so it is not
+// reachable from the pure-core unit tests. It is NOT untested for that reason:
+// test/runtimecheck/ builds this component against the real banks on instrumented
+// stubs and drives the sequences — E-stop at pre-arm on both polarities, LIMIT
+// during the seek, zero axes homed, the last axis failing, an unattributable PCA
+// loss, hard stop, and the reset preconditions. Each guard there is covered by a
+// case that fails when the guard is removed.
+//
+// The E-stop polarity predicate additionally lives in the pure core as
+// core/safety/EstopPolarity.h, where it is unit-tested for both wirings —
+// precisely because getting it backwards is how a healthy machine refuses to home
+// and a pressed button goes unseen.
+//
+// What none of that proves: timing on real silicon, I2C under load, or whether a
+// finger physically clears a string. Those remain bench work.
 #pragma once
 
 #include <cstddef>
