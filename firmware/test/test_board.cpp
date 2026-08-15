@@ -267,3 +267,17 @@ TEST(endstops_require_an_internal_pull_up) {
     for (const PinCapability* c : w->candidatesFor(SignalKind::Home))
         CHECK(c->internalPullUp);
 }
+
+// The `reserveUsb` flag cannot change any decision on any board this firmware
+// ships, which is why the web interface stopped presenting it as a choice. On the
+// S3 the USB pins are already `reserved` (so no signal is offered them either
+// way); the classic ESP32 has no native USB pins at all. If a future board ever
+// exposes freely-usable USB pins this test fails, and the control comes back.
+TEST(reserve_usb_is_inert_on_every_shipped_board) {
+    for (const BoardProfile* b : builtinBoardProfiles()) {
+        for (const PinCapability& p : b->pins) {
+            if (!p.usb) continue;
+            CHECK(p.reserved);   // usb && !reserved would make the flag meaningful
+        }
+    }
+}

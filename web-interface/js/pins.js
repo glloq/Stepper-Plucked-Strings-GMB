@@ -31,8 +31,13 @@
         h('span.muted', 'green first, caution pins flagged, reserved never offered')]),
       h('div.toolbar', [
         h('label.inline', [GMB.input(p.board, 'automaticPinAssignment', { type: 'checkbox' }), h('span', 'Automatic pin assignment')]),
-        h('label.inline', [GMB.input(p.board, 'reserveUsb', { type: 'checkbox', onChange: function () { validate(); } }),
-          h('span', 'Reserve GPIO19/20 for future USB')]),
+        // "Reserve GPIO19/20 for future USB" used to be a checkbox here. It could
+        // not change anything on any board this firmware ships: the S3 profiles
+        // already mark 19/20 `reserved` (so no signal is ever offered them either
+        // way), and the classic ESP32 has no native USB pins at all. The field
+        // stays in the schema — older profiles carry it, and a future board could
+        // have freely-usable USB pins — but it is not a decision to put in front of
+        // someone configuring an instrument.
         h('span.spacer'),
         GMB.button('Assign automatically', autoAssign, 'primary'),
         GMB.button('Validate', validate)

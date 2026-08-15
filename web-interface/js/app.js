@@ -1,11 +1,17 @@
 /*
- * app.js — application shell: routing between views, shared DOM helpers, the
- * global working-profile state, and the Simplified / Advanced mode toggle
- * (spec 9.2). Loaded after api.js and before the view modules.
+ * app.js — application shell: routing between views, shared DOM helpers and the
+ * global working-profile state. Loaded after api.js and before the view modules.
+ *
+ * There is no Simplified / Advanced mode toggle. It was removed: disclosure is
+ * LOCAL to each step (GMB.details), because a global mode makes the one field you
+ * need at the bench unreachable and doubles every page into two variants to
+ * maintain. GMB.isAdvanced() survives only as a `true` stub for callers not yet
+ * cleaned up.
  *
  * Each view module registers itself on GMB.views[name] with a render(container)
- * function. app.js owns navigation, the mode flag, and the draft profile that
- * views read and mutate; saving is atomic through GMB.api.putProfile.
+ * function. app.js owns navigation and the draft profile that views read and
+ * mutate; publishing goes through GMB.saveProfile -> PUT /api/profile, which both
+ * persists and activates.
  */
 (function (global) {
   'use strict';
@@ -114,6 +120,30 @@
       GMB.markDirty();
     });
     if (opts.disabled) el.disabled = true;
+    return el;
+  };
+
+  // A MIDI channel field. Shows 1–16, stores 0–15.
+  //
+  // The field was labelled "Global channel (1–16)" over an input with min=0 max=15
+  // and the note "stored zero-based". That asks the user to know an implementation
+  // detail in order to enter their own channel correctly — and to type 0 when their
+  // sequencer says 1. The wire format is unchanged; only the conversion moved to
+  // where it belongs.
+  GMB.channelInput = function (obj, key, opts) {
+    opts = opts || {};
+    var el = h('input', { type: 'number', value: ((obj[key] | 0) + 1) });
+    el.min = 1;
+    el.max = 16;
+    el.addEventListener('change', function () {
+      var shown = el.value === '' ? 1 : Number(el.value);
+      if (!(shown >= 1)) shown = 1;
+      if (shown > 16) shown = 16;
+      el.value = shown;
+      obj[key] = shown - 1;          // stored zero-based, as the firmware expects
+      if (opts.onChange) opts.onChange(obj[key]);
+      GMB.markDirty();
+    });
     return el;
   };
 

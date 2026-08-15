@@ -2,10 +2,15 @@
  * profiles.js — profiles page (spec section 20).
  *
  * Saved profiles live in numbered storage slots on the device
- * (GET /api/profiles -> { profiles:[{slot,name,used}], startupSlot }). Because
- * the firmware exposes no "read one slot" endpoint, copy / rename / set-startup
- * are composed client-side by loading the slot (which returns it as the active
- * profile), editing it and re-saving via POST /api/profiles.
+ * (GET /api/profiles -> { profiles:[{slot,name,used}], startupSlot }). Copy /
+ * rename / set-startup read a slot through POST /api/profiles/read, which returns
+ * it WITHOUT activating it, and re-save via POST /api/profiles — so an
+ * administrative action never moves a motor.
+ *
+ * The slots are a LIBRARY, not what boots: the running instrument lives in
+ * /current.json and this machine's own config in /device.json (see
+ * docs/DEVICE_INSTRUMENT.md). Loading a slot swaps the instrument and keeps the
+ * device half.
  *
  * This page is the instrument LIBRARY and nothing else. Network settings belong
  * to the device and live in Settings > Network — there is exactly one editor for
