@@ -58,33 +58,51 @@ public:
     // ---- What actually boots -------------------------------------------------
     //
     // The 8 slots are a LIBRARY. They are not the running configuration, and they
-    // were the wrong thing to boot from: the startup slot carries a device half
-    // (board, pins, E-stop wiring, fitted hardware) captured whenever that slot was
-    // last written, so rewiring the machine and publishing the change worked for the
-    // session and then silently reverted at the next power-up. That also contradicted
-    // the hot path, where loading a slot deliberately KEEPS this machine's device
-    // config. Two files close it:
+    // were the wrong thing to boot from: a slot carries a device half (board, pins,
+    // E-stop wiring, fitted hardware) captured whenever it was last written, so
+    // rewiring the machine and publishing worked for the session and then silently
+    // reverted at the next power-up.
     //
-    //   /device.json    this MACHINE's own config. One per device, never carried by
-    //                   an instrument, and it wins over whatever a slot claims.
-    //   /current.json   the instrument that is actually running, i.e. what was last
-    //                   published. Boot restores this, so "what runs" == "what boots".
+    // ONE file holds what runs, replaced atomically. It carries both halves under the same split
+    // `device` / `instrument` sections the slots use.
     //
-    // Both are written when a configuration is ACCEPTED for activation, so publishing
-    // is a real save. Neither replaces the library: `POST /api/profiles` still writes
-    // a named slot, and nothing here overwrites one behind the user's back.
-    //
-    // Legacy installs have neither file; boot then falls back to the startup slot as
-    // before and the two files appear on the first publish (a lazy migration).
-    bool saveDevice(const Profile& p);
-    // Overlays ONLY the device fields onto `inout`, leaving its instrument half
-    // untouched. False when no device file is stored.
-    bool loadDevice(Profile& inout) const;
-    bool hasDevice() const;
+    // This was two files, /device.json and /current.json, each individually atomic.
+    // The PAIR was not: device could be written and current fail, leaving the next
+    // boot to reassemble a new machine config with an old instrument — a
+    // combination that never existed and was never validated. One file has one
+    // commit point, so that state is unrepresentable.
+    static constexpr const char* kActivePath = "/active.json";
 
-    bool saveCurrent(const Profile& p);
-    bool loadCurrent(Profile& out) const;
-    bool hasCurrent() const;
+    // Two-phase, because persisting and accepting an activation must succeed or
+    // fail TOGETHER. Writing first and enqueuing after means a full command queue
+    // returns 503 while the flash already holds the new configuration — the request
+    // failed and the next boot changed anyway. Writing after means a flash failure
+    // leaves the machine running something it will not come back as.
+    //
+    //   prepareActive()  write + verify a temp file. Nothing visible has changed.
+    //   commitActive()   one rename makes it the active snapshot.
+    //   discardActive()  drop the temp; the stored snapshot is untouched.
+    bool prepareActive(const Profile& p);
+    bool commitActive();
+    void discardActive();
+
+    // Convenience for callers with nothing to coordinate (there are none on the
+    // activation path — this exists for tests and one-shot migration).
+    bool saveActive(const Profile& p) { return prepareActive(p) && commitActive(); }
+
+    // How reading the active snapshot went. `Missing` and `Unreadable` must NOT be
+    // treated alike: a missing file is a first boot or a pre-/active.json install,
+    // where falling back to a legacy location is right; an unreadable one is
+    // CORRUPTION, and quietly booting some other stored instrument on a machine
+    // whose own config just failed to parse is how a carriage ends up driven by
+    // someone else's pin map.
+    enum class LoadResult : uint8_t { Ok, Missing, Unreadable };
+    LoadResult loadActive(Profile& out) const;
+
+    // Legacy readers, kept only so an install predating /active.json migrates on
+    // its first publish. Both return Missing when the file is absent.
+    LoadResult loadLegacyCurrent(Profile& out) const;
+    LoadResult loadLegacyDevice(Profile& inout) const;
 
     std::string exportJson(const Profile& p, bool includeSecrets = false) const;
     bool importJson(const std::string& json, Profile& out) const;
@@ -107,6 +125,12 @@ private:
     // failure mode that matters here is a truncated file that still looks present.
     static bool writeJsonAtomic(const std::string& finalPath, const JsonDocument& doc,
                                 bool (*verify)(JsonVariantConst));
+    // The same write split at its commit point, so a caller can put a non-filesystem
+    // step (accepting an activation) between "it is on flash" and "it is the file".
+    static bool prepareJsonAtomic(const std::string& finalPath, const JsonDocument& doc,
+                                  bool (*verify)(JsonVariantConst));
+    static bool commitJsonAtomic(const std::string& finalPath);
+    static void discardJsonAtomic(const std::string& finalPath);
 #endif
     bool degraded_ = false;
 };

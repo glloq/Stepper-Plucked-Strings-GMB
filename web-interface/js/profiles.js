@@ -2,15 +2,23 @@
  * profiles.js — profiles page (spec section 20).
  *
  * Saved profiles live in numbered storage slots on the device
- * (GET /api/profiles -> { profiles:[{slot,name,used}], startupSlot }). Copy /
- * rename / set-startup read a slot through POST /api/profiles/read, which returns
- * it WITHOUT activating it, and re-save via POST /api/profiles — so an
- * administrative action never moves a motor.
+ * (GET /api/profiles -> { profiles:[{slot,name,used}] }). Copy and rename read a
+ * slot through POST /api/profiles/read, which returns it WITHOUT activating it,
+ * and re-save via POST /api/profiles — so an administrative action never moves a
+ * motor.
  *
- * The slots are a LIBRARY, not what boots: the running instrument lives in
- * /current.json and this machine's own config in /device.json (see
- * docs/DEVICE_INSTRUMENT.md). Loading a slot swaps the instrument and keeps the
- * device half.
+ * The slots are a LIBRARY, not what boots. The model has three parts and no
+ * fourth:
+ *
+ *   Current instrument  what is running, and therefore what will boot
+ *   Library             the saved profiles below
+ *   Load                makes a library profile the current one
+ *
+ * There is deliberately no "startup profile": the device boots from its active
+ * snapshot (/active.json, device half + instrument half in one atomically
+ * replaced file), so a separately-chosen startup slot would be a second answer to
+ * a question that already has one. Loading a slot swaps the instrument and keeps
+ * this machine's device config — see docs/DEVICE_INSTRUMENT.md.
  *
  * This page is the instrument LIBRARY and nothing else. Network settings belong
  * to the device and live in Settings > Network — there is exactly one editor for
@@ -26,7 +34,7 @@
   'use strict';
   var GMB = global.GMB, h = GMB.h;
 
-  var lastList = { profiles: [], startupSlot: 0 };
+  var lastList = { profiles: [] };
 
   function render(host) {
     host.appendChild(h('div.card', [
@@ -34,18 +42,34 @@
       h('div#profile-list.profile-list', 'Loading…'),
       h('div.toolbar', [
         GMB.button('Save working profile to a free slot', createProfile, 'primary'),
-        GMB.button('Import JSON…', importProfile, 'ghost'),
-        GMB.button('Export current', function () { exportProfile(GMB.state.profile); }, 'ghost')
-      ])
+        GMB.button('Import instrument…', function () { importProfile(false); }, 'ghost'),
+        GMB.button('Export instrument', function () { exportProfile(false); }, 'ghost')
+      ]),
+      // The machine half is available, but not as a peer of the everyday buttons:
+      // handing someone a file that carries your GPIO map and E-stop polarity is a
+      // different act from sharing a tuning, and it should read that way.
+      GMB.details('profiles-machine-transfer',
+        'Whole-machine transfer (GPIOs, wiring, network)', function () {
+          return [
+            h('p.muted', 'A complete machine configuration only makes sense between ' +
+              'identically wired machines. On any other, importing one replaces the ' +
+              'GPIO assignments and E-stop wiring that match YOUR hardware.'),
+            h('div.toolbar', [
+              GMB.button('Import full machine configuration…', function () { importProfile(true); }, 'ghost'),
+              GMB.button('Export full machine configuration', function () { exportProfile(true); }, 'ghost')
+            ])
+          ];
+        })
     ]));
 
     host.appendChild(h('div.card', [
       h('h2', 'Current working profile'),
       h('p.muted', 'Edited across the Wizard, Pins and MIDI tabs; saved atomically.'),
       h('div.form-grid', [
-        GMB.field('Name', GMB.input(GMB.state.profile.instrument, 'name')),
-        GMB.field('Startup profile', h('span.muted', 'set from the list above'))
+        GMB.field('Name', GMB.input(GMB.state.profile.instrument, 'name'))
       ]),
+      h('p.muted', 'This is what the device will come back as: publishing writes ' +
+        'the running configuration, and that is what boots.'),
       h('div.toolbar', [GMB.button('Save & publish', function () { GMB.saveProfile(); }, 'primary')])
     ]));
 
@@ -54,35 +78,32 @@
 
   function loadList() {
     GMB.api.getProfiles().then(function (data) {
-      lastList = data || { profiles: [], startupSlot: 0 };
+      lastList = data || { profiles: [] };
       var box = document.getElementById('profile-list');
       if (!box) return;
       box.innerHTML = '';
       var profiles = lastList.profiles || [];
       profiles.forEach(function (pr) {
-        var isStartup = pr.slot === lastList.startupSlot;
         if (!pr.used) {
           box.appendChild(h('div.profile-item.empty', [
             h('div.profile-main', [
               h('div.profile-name', [h('strong', 'Slot ' + pr.slot), h('span.muted', ' — empty')])
             ]),
             h('div.profile-actions', [
-              GMB.button('Save working profile here', function () { saveDraftToSlot(pr.slot, false); }, 'ghost')
+              GMB.button('Save working profile here', function () { saveDraftToSlot(pr.slot); }, 'ghost')
             ])
           ]));
           return;
         }
         box.appendChild(h('div.profile-item', [
           h('div.profile-main', [
-            h('div.profile-name', [h('strong', pr.name || '(unnamed)'),
-              isStartup ? h('span.pill.mini.ok', 'startup') : null]),
+            h('div.profile-name', [h('strong', pr.name || '(unnamed)')]),
             h('div.muted', 'slot ' + pr.slot)
           ]),
           h('div.profile-actions', [
             GMB.button('Load', function () { loadProfile(pr); }, 'ghost'),
             GMB.button('Copy', function () { copyProfile(pr); }, 'ghost'),
             GMB.button('Rename', function () { renameProfile(pr); }, 'ghost'),
-            GMB.button('Startup', function () { setStartup(pr); }, 'ghost'),
             GMB.button('Delete', function () { deleteProfile(pr); }, 'danger-ghost')
           ])
         ]));
@@ -97,13 +118,13 @@
   }
 
   // Read a slot's profile WITHOUT activating it (no homing / motor movement),
-  // so copy / rename / set-startup are safe administrative actions.
+  // so copy and rename are safe administrative actions.
   function fetchSlotProfile(slot) {
     return GMB.api.readProfileSlot(slot);
   }
 
-  function saveDraftToSlot(slot, startup) {
-    return GMB.api.saveProfileSlot(slot, GMB.deepCopy(GMB.state.profile), startup).then(function (res) {
+  function saveDraftToSlot(slot) {
+    return GMB.api.saveProfileSlot(slot, GMB.deepCopy(GMB.state.profile), false).then(function (res) {
       if (res && res.ok === false) { GMB.toast('Save to slot ' + slot + ' failed.', 'error'); return; }
       GMB.toast('Working profile saved to slot ' + slot + '.', 'ok');
       loadList();
@@ -144,7 +165,7 @@
     if (!name) return;
     fetchSlotProfile(pr.slot).then(function (prof) {
       prof.instrument.name = name;
-      return GMB.api.saveProfileSlot(pr.slot, prof, pr.slot === lastList.startupSlot);
+      return GMB.api.saveProfileSlot(pr.slot, prof, false);
     }).then(function (res) {
       if (res && res.ok === false) { GMB.toast('Rename failed.', 'error'); return; }
       GMB.toast('Renamed slot ' + pr.slot + ' to "' + name + '".', 'ok');
@@ -161,23 +182,36 @@
     }).catch(function (e) { reportErr('Delete failed', e); });
   }
 
-  // Set startup = re-save the slot with startup:true (no dedicated endpoint).
-  function setStartup(pr) {
-    fetchSlotProfile(pr.slot).then(function (prof) {
-      return GMB.api.saveProfileSlot(pr.slot, prof, true);
-    }).then(function (res) {
-      if (res && res.ok === false) { GMB.toast('Could not set startup slot.', 'error'); return; }
-      GMB.toast('"' + pr.name + '" set as the startup profile.', 'ok');
-      loadList();
-    }).catch(function (e) { reportErr('Set startup failed', e); });
-  }
+  // There is no "set startup slot" any more, and the button that offered it is
+  // gone. It stopped meaning anything when the device began booting from its
+  // active snapshot: whatever is RUNNING is what comes back, so a slot flagged
+  // "startup" was a label the boot path no longer read. `startupSlot` survives in
+  // the API only to migrate installs that predate the active snapshot.
 
   function loadProfile(pr) {
     GMB.api.loadProfileSlot(pr.slot).then(function (res) {
       if (res && res.ok === false) { GMB.toast('Slot ' + pr.slot + ' is empty.', 'warn'); return; }
-      GMB.reloadProfile().then(function () {
-        GMB.toast('Loaded "' + pr.name + '".', 'ok');
-        GMB.navigate('fretboard');
+      // The device answers 202: the activation spans park -> swap -> re-home ->
+      // Ready over many loop passes. Re-reading the profile straight away raced
+      // that, so this could show the OLD instrument under a toast saying the new
+      // one had loaded. Follow the command to completion, like Save & publish.
+      GMB.toast('Loading "' + pr.name + '" — activating…', 'ok');
+      var follow = (res && res.commandId && GMB.followCommand)
+        ? GMB.followCommand(res.commandId)
+        : Promise.resolve('ready');   // mock / legacy backend: immediate
+      return follow.then(function (r) {
+        return GMB.reloadProfile().then(function () {
+          if (r === 'timeout') {
+            GMB.toast('"' + pr.name + '" is still activating — the Instrument page ' +
+                      'shows the live state.', 'warn');
+          } else if (res && res.persisted === false) {
+            GMB.toast('"' + pr.name + '" is active, but could NOT be saved: a reboot ' +
+                      'will restore the previous instrument.', 'error');
+          } else {
+            GMB.toast('Loaded "' + pr.name + '".', 'ok');
+          }
+          GMB.navigate('fretboard');
+        });
       });
     }).catch(function (e) { reportErr('Load failed', e); });
   }
@@ -198,18 +232,28 @@
 
   // Export — strips the Wi-Fi password (never present in our schema, but we also
   // guard against a passworded field) and downloads pretty JSON.
-  function exportProfile(profile) {
-    var copy = GMB.deepCopy(profile);
+  // Export the INSTRUMENT by default: the tune, portable to another machine. The
+  // full machine — GPIOs, E-stop wiring, fitted hardware, which network it is on —
+  // is a separate, deliberate choice, because those describe THIS machine and are
+  // exactly what you do not want to hand someone along with a tuning.
+  function exportProfile(fullMachine) {
+    var profile = GMB.state.profile;
+    var copy = fullMachine ? GMB.deepCopy(profile) : GMB.instrumentHalfOf(profile);
     if (copy.network) { delete copy.network.password; delete copy.network.stationPassword; delete copy.network.apPassword; }
+    var suffix = fullMachine ? '-machine' : '';
     var blob = new Blob([JSON.stringify(copy, null, 2)], { type: 'application/json' });
     var url = URL.createObjectURL(blob);
-    var a = h('a', { href: url, download: (GMB.slug(profile.instrument.name) || 'profile') + '.json' });
+    var a = h('a', { href: url,
+      download: (GMB.slug(profile.instrument.name) || 'profile') + suffix + '.json' });
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-    GMB.toast('Profile exported (Wi-Fi password excluded).', 'ok');
+    GMB.toast(fullMachine
+      ? 'Full machine configuration exported (Wi-Fi password excluded).'
+      : 'Instrument exported — this machine\'s GPIOs and wiring are not in the file.',
+      'ok');
   }
 
-  function importProfile() {
+  function importProfile(fullMachine) {
     var input = h('input', { type: 'file', accept: '.json,application/json', style: 'display:none' });
     input.addEventListener('change', function () {
       var file = input.files[0];
@@ -224,8 +268,25 @@
         // readable message rather than through the API.
         var errs = validateImport(obj);
         if (errs.length) { alert('Invalid profile:\n- ' + errs.join('\n- ')); return; }
-        if (!confirm('Load imported profile "' + (obj.instrument && obj.instrument.name) +
-                     '" as the working profile?')) return;
+        var name = (obj.instrument && obj.instrument.name) || 'unnamed';
+        // An imported file may carry ANOTHER machine's device half. Adopting it
+        // wholesale is how you inherit somebody else's GPIO map, E-stop polarity
+        // and fitted-hardware declarations — and the firmware-family check cannot
+        // catch that, because two machines of the same family can be wired
+        // completely differently. So the default keeps THIS machine's device
+        // config and takes only the instrument.
+        if (fullMachine) {
+          if (!confirm('Import the COMPLETE machine configuration from "' + name +
+                       '"?\n\nThis replaces this machine\'s GPIO assignments, ' +
+                       'E-stop wiring, fitted-hardware declarations and network ' +
+                       'settings with the ones in the file. Only do this if the ' +
+                       'file came from an identically wired machine.')) return;
+        } else {
+          if (!confirm('Import the instrument "' + name + '"?\n\n' +
+                       'This machine\'s GPIOs, E-stop wiring and network settings ' +
+                       'are kept.')) return;
+          obj = GMB.mergeHalves(GMB.state.profile, obj);
+        }
         // Then ask the DEVICE what this file means. The firmware owns the schema,
         // the version migrations and the cross-field rules; the shape check above
         // only knows four keys. It answers with the CANONICAL profile — migrated

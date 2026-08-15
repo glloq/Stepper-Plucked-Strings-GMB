@@ -1055,21 +1055,53 @@ void setup() {
     // template still exists in the web UI — it is just never applied behind the
     // user's back.
     //
-    // WHAT boots, and in what order (audit P0/P1 — the persistence model):
-    //   1. /current.json — the instrument that was last published, i.e. what was
-    //      actually running. This is the answer to "why did my machine come back
-    //      different?": it did not, because what runs is what boots.
-    //   2. otherwise the startup slot, for installs predating /current.json. They
-    //      pick up the new files on their first publish (a lazy migration).
-    //   3. then /device.json OVERLAYS the device half. The board, pins, E-stop
-    //      wiring and fitted hardware belong to THIS MACHINE, so they must not be
-    //      whatever a stored instrument happened to be saved with. This is the same
-    //      rule the hot path already applied when loading a slot; it now holds at
-    //      boot too, which is where it used to silently not.
-    bool haveProfile = (g_storage.loadCurrent(g_profile) ||
-                        g_storage.load(g_storage.startupSlot(), g_profile));
-    g_storage.loadDevice(g_profile);  // this machine's own config wins, if stored
-    haveProfile = haveProfile && ProfileValidator::isActivatable(g_profile);
+    // WHAT boots (audit — the persistence model):
+    //
+    //   /active.json is the whole answer. It holds this machine's device half AND
+    //   the instrument that was last published, in one file replaced atomically, so
+    //   "what runs" == "what boots" and the pair can never be mismatched.
+    //
+    // A missing file and an UNREADABLE one are handled differently, and the
+    // difference matters more than it looks. Missing means a first boot or an
+    // install from before this file existed, where reading a legacy location is
+    // right. Unreadable means CORRUPTION — and falling back then would boot some
+    // other stored instrument on a machine whose own config just failed to parse,
+    // i.e. drive these carriages from someone else's pin map. That is CONFIG_SAFE,
+    // every time, and the operator gets told which file to fix.
+    using LR = ProfileStorage::LoadResult;
+    bool haveProfile = false;
+    const char* configFault = nullptr;
+    LR active = g_storage.loadActive(g_profile);
+    if (active == LR::Ok) {
+        haveProfile = true;
+    } else if (active == LR::Unreadable) {
+        configFault = "/active.json is present but unreadable — refusing to boot "
+                      "someone else's configuration; re-publish or reformat storage";
+    } else {
+        // Migration for installs predating /active.json: read the old pair, then
+        // write the merged result once so the next boot takes the fast path. A
+        // corrupt legacy file is still corruption, not "probably an old install".
+        LR cur = g_storage.loadLegacyCurrent(g_profile);
+        if (cur == LR::Unreadable) {
+            configFault = "/current.json is present but unreadable";
+        } else {
+            bool haveInstrument = (cur == LR::Ok) ||
+                                  g_storage.load(g_storage.startupSlot(), g_profile);
+            LR dev = g_storage.loadLegacyDevice(g_profile);
+            if (dev == LR::Unreadable) {
+                configFault = "/device.json is present but unreadable";
+            } else if (haveInstrument) {
+                haveProfile = true;
+                if (ProfileValidator::isActivatable(g_profile))
+                    g_storage.saveActive(g_profile);  // migrate, once
+            }
+        }
+    }
+    haveProfile = haveProfile && !configFault &&
+                  ProfileValidator::isActivatable(g_profile);
+    if (configFault) {
+        g_safety.recordFault("storage", configFault, millis());
+    }
     if (!haveProfile) {
         g_profile = Profile{};  // empty: nothing to drive
         g_safety.configSafe();

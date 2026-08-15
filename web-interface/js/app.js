@@ -349,6 +349,15 @@
     });
   }
 
+  // Follow an accepted command through to the machine actually being Ready.
+  //
+  // Exposed because "the device said 202" is not "the device did it": an activation
+  // spans park -> swap -> re-home -> Ready over many loop passes. Save & publish
+  // already waited; Load profile did not, and re-read the profile immediately after
+  // the 202 — so it could show the OLD instrument under a toast saying the new one
+  // had loaded.
+  GMB.followCommand = function (commandId) { return waitForActivation(commandId); };
+
   GMB.saveProfile = function () {
     // `dirty` is only cleared once the activation is CONFIRMED (or on the mock /
     // legacy immediate path): the 202 merely queues it, and the command can still
@@ -368,6 +377,14 @@
           if (r === 'timeout') {
             GMB.toast('Activation still in progress — the draft stays marked ' +
                       'unsaved until it is confirmed.', 'warn');
+          } else if (res.persisted === false) {
+            // Activated but NOT written. The button says "Save", so saying
+            // "published and ACTIVE" here would be the exact ambiguity the
+            // persistence model exists to remove: it runs now and comes back as the
+            // previous configuration. Keep the draft dirty and say what happened.
+            GMB.toast('Active now, but NOT saved: the device could not write it to ' +
+                      'storage, so a reboot will restore the previous configuration.',
+                      'error');
           } else {
             markSaved();
             GMB.toast('Profile published and ACTIVE (revision ' +

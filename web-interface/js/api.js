@@ -71,6 +71,41 @@
            { STEP: [], DIR: [], HOME: [], SDA: -1, SCL: -1, ENABLE: -1, SERVO_OE: -1 };
   };
 
+  // ---------------------------------------------------------------------------
+  // The Device / Instrument split, as the interface sees it.
+  //
+  // Mirrors core/configuration/DeviceInstrument.h. Kept in ONE place here because
+  // import, export and the merge all need the same answer to "which half is this
+  // field in?", and three copies of that list would drift.
+  //
+  //   DEVICE      this machine: which board, which GPIOs, how the E-stop is wired,
+  //               what hardware is fitted, which network it is on.
+  //   INSTRUMENT  the tune: strings, homing geometry, servos, MIDI, plucking.
+  //               Portable from one machine to another.
+  // ---------------------------------------------------------------------------
+  GMB.DEVICE_KEYS = ['board', 'pins', 'network', 'hardware'];
+  GMB.INSTRUMENT_KEYS = ['instrument', 'midi', 'stringFretSelection', 'power',
+                         'pluck', 'strings', 'servos'];
+
+  // A profile carrying `deviceFrom`'s machine half and `instrumentFrom`'s tune.
+  // Profile-level metadata (project / versions) follows the instrument, since that
+  // is what an exported file is about.
+  GMB.mergeHalves = function (deviceFrom, instrumentFrom) {
+    var out = GMB.deepCopy(instrumentFrom);
+    GMB.DEVICE_KEYS.forEach(function (k) {
+      if (deviceFrom && deviceFrom[k] !== undefined) out[k] = GMB.deepCopy(deviceFrom[k]);
+      else delete out[k];
+    });
+    return out;
+  };
+
+  // Strip the machine half, leaving a portable instrument.
+  GMB.instrumentHalfOf = function (p) {
+    var out = GMB.deepCopy(p);
+    GMB.DEVICE_KEYS.forEach(function (k) { delete out[k]; });
+    return out;
+  };
+
   // Fold an auto-assignment into the current pin map instead of replacing it.
   //
   // Auto-assign only places the signals it knows the instrument needs (STEP/DIR/

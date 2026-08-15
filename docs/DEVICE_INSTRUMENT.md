@@ -103,3 +103,71 @@ legacy flat slot and a legacy v1 flat slot still load.
 > As with every mechanical item in this repository, only the software behaviour above
 > is validated (host tests + sanitizers + ESP32 CI build). Nothing here has been
 > exercised on a powered device.
+
+
+---
+
+## Ce qui démarre : l'instantané actif (`/active.json`)
+
+Les 8 slots sont une **bibliothèque**. Ils ne sont pas la configuration qui
+tourne, et ils étaient le mauvais endroit d'où démarrer : un slot embarque une
+moitié *device* (carte, broches, câblage E-stop, matériel monté) figée au moment
+où il a été écrit — donc recâbler la machine puis publier fonctionnait pour la
+session et revenait silencieusement en arrière au redémarrage suivant.
+
+Un seul fichier porte la vérité :
+
+```text
+/active.json
+├── device      ← cette machine (carte, broches, E-stop, matériel, réseau)
+└── instrument  ← ce qui joue (cordes, homing, servos, MIDI, pluck)
+```
+
+### Pourquoi un fichier et pas deux
+
+Il y en a eu deux, `/device.json` et `/current.json`, chacun écrit
+atomiquement. **La paire ne l'était pas** : le premier pouvait réussir et le
+second échouer, laissant le boot suivant reconstruire une nouvelle config
+machine avec un ancien instrument — une combinaison qui n'a jamais existé et n'a
+jamais été validée. Un fichier a un seul point de commit ; cet état devient
+irreprésentable.
+
+### Persister et activer, ensemble ou pas du tout
+
+Écrire puis mettre en file, ou l'inverse, ne satisfait ni l'un ni l'autre :
+
+| Ordre | Ce qui casse |
+| ----- | ------------ |
+| persister → activer | file pleine ⇒ HTTP 503 alors que le flash contient déjà la nouvelle configuration : la requête a échoué et le prochain boot a changé |
+| activer → persister | échec flash ⇒ la machine tourne sur une configuration qu'elle ne retrouvera pas, et l'UI a déjà annoncé « publié et ACTIF » |
+
+L'écriture est donc coupée à son point de commit :
+
+```text
+prepareActive()   écrit + relit un fichier temporaire — rien de visible n'a changé
+   ↓
+enqueue()         l'activation est acceptée, ou refusée
+   ↓
+commitActive()    un seul rename       │   discardActive()   le temporaire disparaît
+(accepté)                              │   (refusé : le stockage est intact)
+```
+
+Si l'écriture est impossible, `PUT /api/profile` répond **507** et **n'active
+rien** : faire tourner une configuration qui n'a pas pu être écrite est
+exactement l'ambiguïté que ce modèle existe pour supprimer.
+
+### Absent n'est pas corrompu
+
+Au boot, `loadActive()` distingue trois cas :
+
+| État | Comportement |
+| ---- | ------------ |
+| `Ok` | démarrage normal |
+| `Missing` | premier boot ou installation antérieure : lecture des anciens emplacements, puis migration écrite une fois |
+| `Unreadable` | **CONFIG_SAFE**, avec le fichier fautif nommé dans le journal |
+
+Se rabattre sur un autre profil parce que le fichier de la machine ne se lit
+plus, ce serait piloter ces chariots avec la carte de broches de quelqu'un
+d'autre. La récupération `.bak` de `begin()` couvre aussi ce fichier — c'est
+celui qui est réécrit à chaque publication, donc le plus exposé à une coupure
+pendant le rename.

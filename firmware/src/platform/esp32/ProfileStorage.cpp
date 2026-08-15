@@ -776,16 +776,25 @@ bool ProfileStorage::begin() {
     // Recover from an interrupted save: restore the .bak when the final file is
     // MISSING, or present but CORRUPT (truncated / invalid JSON), as long as the
     // .bak itself is healthy (audit P1-4).
-    for (int i = 0; i < kMaxProfiles; ++i) {
-        std::string path = slotPath(i);
+    auto recover = [&](const std::string& path) {
         std::string bak = path + ".bak";
-        if (!LittleFS.exists(bak.c_str())) continue;
+        if (!LittleFS.exists(bak.c_str())) return;
         bool finalOk = LittleFS.exists(path.c_str()) && healthy(path);
         if (!finalOk && healthy(bak)) {
             LittleFS.remove(path.c_str());
             LittleFS.rename(bak.c_str(), path.c_str());
         }
-    }
+    };
+    for (int i = 0; i < kMaxProfiles; ++i) recover(slotPath(i));
+    // The active snapshot needs this MORE than a library slot does: it is the file
+    // the machine boots from, and it is now written on every publish, so it is the
+    // one most likely to be caught by a power cut mid-rename. The recovery loop
+    // used to cover the slots only, which left the important file out.
+    recover(kActivePath);
+    // A temp file left behind means a prepare that was never committed — a request
+    // that failed after writing. It is not the active configuration and must not be
+    // mistaken for one; drop it rather than leave litter that looks meaningful.
+    LittleFS.remove((std::string(kActivePath) + ".tmp").c_str());
     return true;
 }
 
@@ -836,10 +845,11 @@ bool ProfileStorage::load(int slot, Profile& out) const {
     return fromSlotJson(doc.as<JsonVariantConst>(), out);
 }
 
-bool ProfileStorage::writeJsonAtomic(const std::string& finalPath, const JsonDocument& doc,
-                                     bool (*verify)(JsonVariantConst)) {
-    // Write to a temp file first, and only replace the existing file once the temp
-    // file is fully written — so a failure never destroys what is already stored.
+// Phase 1: write and verify the temp file. NOTHING visible has changed yet, so a
+// caller may still decide not to go through with it.
+bool ProfileStorage::prepareJsonAtomic(const std::string& finalPath,
+                                       const JsonDocument& doc,
+                                       bool (*verify)(JsonVariantConst)) {
     std::string tmp = finalPath + ".tmp";
     File f = LittleFS.open(tmp.c_str(), "w");
     if (!f) return false;
@@ -860,7 +870,14 @@ bool ProfileStorage::writeJsonAtomic(const std::string& finalPath, const JsonDoc
         rf.close();
         if (!ok) { LittleFS.remove(tmp.c_str()); return false; }
     }
-    // Keep a backup of the existing file so a failed rename never loses data.
+    return true;
+}
+
+// Phase 2: the commit point. A backup of the existing file is kept across the two
+// renames, which is the window begin()'s recovery closes if power is cut here.
+bool ProfileStorage::commitJsonAtomic(const std::string& finalPath) {
+    std::string tmp = finalPath + ".tmp";
+    if (!LittleFS.exists(tmp.c_str())) return false;   // nothing was prepared
     std::string bak = finalPath + ".bak";
     LittleFS.remove(bak.c_str());
     bool hadOld = LittleFS.exists(finalPath.c_str());
@@ -872,6 +889,18 @@ bool ProfileStorage::writeJsonAtomic(const std::string& finalPath, const JsonDoc
     // Rename failed: restore the previous file from the backup.
     if (hadOld) LittleFS.rename(bak.c_str(), finalPath.c_str());
     LittleFS.remove(tmp.c_str());
+    return false;
+}
+
+void ProfileStorage::discardJsonAtomic(const std::string& finalPath) {
+    LittleFS.remove((finalPath + ".tmp").c_str());
+}
+
+bool ProfileStorage::writeJsonAtomic(const std::string& finalPath, const JsonDocument& doc,
+                                     bool (*verify)(JsonVariantConst)) {
+    if (!prepareJsonAtomic(finalPath, doc, verify)) return false;
+    if (commitJsonAtomic(finalPath)) return true;
+    discardJsonAtomic(finalPath);
     return false;
 }
 
@@ -896,31 +925,59 @@ bool ProfileStorage::save(int slot, const Profile& p) {
     return writeJsonAtomic(slotPath(slot), doc, verifySlotDoc);
 }
 
-// ---- the machine's own config, and what is actually running -------------------
+// ---- the active snapshot: what is running, and what will boot ---------------
 
-bool ProfileStorage::saveDevice(const Profile& p) {
-    // Only the device section. Deliberately NOT gated on isActivatable(): that check
-    // is about a playable instrument, and the device half has no strings to judge.
-    JsonDocument slot;
-    toSlotJson(p, slot);
+bool ProfileStorage::prepareActive(const Profile& p) {
+    if (!ProfileValidator::isActivatable(p)) return false;
     JsonDocument doc;
-    doc["storageFormat"] = kSlotFormat;
-    doc["profileVersion"] = slot["profileVersion"];
-    doc["device"] = slot["device"];
-    return writeJsonAtomic("/device.json", doc, verifyDeviceDoc);
+    toSlotJson(p, doc);   // same split device/instrument form as a slot
+    return prepareJsonAtomic(kActivePath, doc, verifySlotDoc);
 }
 
-bool ProfileStorage::hasDevice() const { return LittleFS.exists("/device.json"); }
+bool ProfileStorage::commitActive() { return commitJsonAtomic(kActivePath); }
 
-bool ProfileStorage::loadDevice(Profile& inout) const {
-    File f = LittleFS.open("/device.json", "r");
-    if (!f) return false;
+void ProfileStorage::discardActive() { discardJsonAtomic(kActivePath); }
+
+ProfileStorage::LoadResult ProfileStorage::loadActive(Profile& out) const {
+    if (!LittleFS.exists(kActivePath)) return LoadResult::Missing;
+    File f = LittleFS.open(kActivePath, "r");
+    if (!f) return LoadResult::Unreadable;
     JsonDocument doc;
     bool parsed = deserializeJson(doc, f) == DeserializationError::Ok;
     f.close();
-    if (!parsed || !doc["device"].is<JsonObjectConst>()) return false;
-    // Re-flatten THIS device's section over the caller's instrument half and hand the
-    // whole thing to the one field parser, so device fields have exactly one decoder.
+    if (!parsed) return LoadResult::Unreadable;
+    return fromSlotJson(doc.as<JsonVariantConst>(), out) ? LoadResult::Ok
+                                                        : LoadResult::Unreadable;
+}
+
+// ---- legacy readers (installs predating /active.json) ------------------------
+//
+// Kept only so an existing machine migrates on its first publish rather than
+// losing its configuration. Both distinguish absent from unreadable for the same
+// reason loadActive() does.
+
+ProfileStorage::LoadResult ProfileStorage::loadLegacyCurrent(Profile& out) const {
+    if (!LittleFS.exists("/current.json")) return LoadResult::Missing;
+    File f = LittleFS.open("/current.json", "r");
+    if (!f) return LoadResult::Unreadable;
+    JsonDocument doc;
+    bool parsed = deserializeJson(doc, f) == DeserializationError::Ok;
+    f.close();
+    if (!parsed) return LoadResult::Unreadable;
+    return fromSlotJson(doc.as<JsonVariantConst>(), out) ? LoadResult::Ok
+                                                        : LoadResult::Unreadable;
+}
+
+ProfileStorage::LoadResult ProfileStorage::loadLegacyDevice(Profile& inout) const {
+    if (!LittleFS.exists("/device.json")) return LoadResult::Missing;
+    File f = LittleFS.open("/device.json", "r");
+    if (!f) return LoadResult::Unreadable;
+    JsonDocument doc;
+    bool parsed = deserializeJson(doc, f) == DeserializationError::Ok;
+    f.close();
+    if (!parsed || !doc["device"].is<JsonObjectConst>()) return LoadResult::Unreadable;
+    // Re-flatten this device's section over the caller's instrument half and hand
+    // the whole thing to the one field parser.
     JsonObjectConst dev = doc["device"];
     JsonDocument flat;
     toJson(inout, flat);
@@ -929,52 +986,11 @@ bool ProfileStorage::loadDevice(Profile& inout) const {
     flat["hardware"] = dev["hardware"];
     flat["network"] = dev["network"];
     Profile merged;
-    if (!fromJson(flat.as<JsonVariantConst>(), merged)) return false;
+    if (!fromJson(flat.as<JsonVariantConst>(), merged)) return LoadResult::Unreadable;
     inout = merged;
-    return true;
+    return LoadResult::Ok;
 }
 
-bool ProfileStorage::saveCurrent(const Profile& p) {
-    if (!ProfileValidator::isActivatable(p)) return false;
-    JsonDocument doc;
-    toSlotJson(p, doc);
-    return writeJsonAtomic("/current.json", doc, verifySlotDoc);
-}
-
-bool ProfileStorage::hasCurrent() const { return LittleFS.exists("/current.json"); }
-
-bool ProfileStorage::loadCurrent(Profile& out) const {
-    File f = LittleFS.open("/current.json", "r");
-    if (!f) return false;
-    JsonDocument doc;
-    bool parsed = deserializeJson(doc, f) == DeserializationError::Ok;
-    f.close();
-    if (!parsed) return false;
-    return fromSlotJson(doc.as<JsonVariantConst>(), out);
-}
-
-bool ProfileStorage::remove(int slot) {
-    if (slot < 0 || slot >= kMaxProfiles) return false;
-    return LittleFS.remove(slotPath(slot).c_str());
-}
-
-int ProfileStorage::startupSlot() const {
-    File f = LittleFS.open("/startup.txt", "r");
-    if (!f) return 0;
-    int slot = f.parseInt();
-    f.close();
-    if (slot < 0 || slot >= kMaxProfiles) return 0;  // bound the stored value
-    return slot;
-}
-
-void ProfileStorage::setStartupSlot(int slot) {
-    if (slot < 0 || slot >= kMaxProfiles) return;  // never store out of range
-    File f = LittleFS.open("/startup.txt", "w");
-    if (f) {
-        f.print(slot);
-        f.close();
-    }
-}
 #else
 // Non-Arduino stubs so the file is analysable off-target.
 bool ProfileStorage::begin() { return false; }
@@ -982,13 +998,19 @@ bool ProfileStorage::format() { return false; }
 std::vector<std::string> ProfileStorage::list() const { return {}; }
 bool ProfileStorage::load(int, Profile&) const { return false; }
 bool ProfileStorage::save(int, const Profile&) { return false; }
+bool ProfileStorage::prepareActive(const Profile&) { return false; }
+bool ProfileStorage::commitActive() { return false; }
+void ProfileStorage::discardActive() {}
+ProfileStorage::LoadResult ProfileStorage::loadActive(Profile&) const {
+    return LoadResult::Missing;
+}
+ProfileStorage::LoadResult ProfileStorage::loadLegacyCurrent(Profile&) const {
+    return LoadResult::Missing;
+}
+ProfileStorage::LoadResult ProfileStorage::loadLegacyDevice(Profile&) const {
+    return LoadResult::Missing;
+}
 bool ProfileStorage::remove(int) { return false; }
-bool ProfileStorage::saveDevice(const Profile&) { return false; }
-bool ProfileStorage::loadDevice(Profile&) const { return false; }
-bool ProfileStorage::hasDevice() const { return false; }
-bool ProfileStorage::saveCurrent(const Profile&) { return false; }
-bool ProfileStorage::loadCurrent(Profile&) const { return false; }
-bool ProfileStorage::hasCurrent() const { return false; }
 int ProfileStorage::startupSlot() const { return 0; }
 void ProfileStorage::setStartupSlot(int) {}
 #endif
