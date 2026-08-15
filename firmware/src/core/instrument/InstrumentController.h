@@ -98,8 +98,8 @@ private:
     std::vector<ActiveMap> active_;
 
     struct PendingNote {
-        uint16_t key;      // same identity as ActiveMap (source+channel+note)
-        uint8_t source;
+        uint16_t key;      // same identity as ActiveMap (origin+channel+note)
+        uint8_t origin;
         uint8_t channel;
         uint8_t note;
         uint8_t velocity;
@@ -130,12 +130,14 @@ private:
     void prepareString(int stringIndex, int fret, uint32_t expiresAtUs);
     // Trigger a previously prepared string for this Note On. Returns false if the
     // string was not prepared for this fret (the caller then starts a fresh note).
-    bool triggerPreparedNote(int stringIndex, int fret, uint8_t source, uint8_t channel,
+    bool triggerPreparedNote(int stringIndex, int fret, uint8_t origin, uint8_t channel,
                              uint8_t note, uint8_t velocity);
-    void startNote(int stringIndex, int fret, uint8_t source, uint8_t channel, uint8_t note,
+    void startNote(int stringIndex, int fret, uint8_t origin, uint8_t channel, uint8_t note,
                    uint8_t velocity);
     void stopString(int stringIndex);
     int findActive(uint16_t key) const;
+    // CC120 / CC123 for one sender (see the call site for why it is not panic()).
+    void allNotesOffFor(uint8_t senderKey);
     void removeActiveByString(int stringIndex);
     void flushChord();
 };

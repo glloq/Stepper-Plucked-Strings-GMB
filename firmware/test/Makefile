@@ -69,8 +69,15 @@ all: build
 
 build: $(BIN)
 
-$(BIN): $(CORE_SRC) $(TEST_SRC)
-	$(CXX) $(CXXFLAGS) $^ -o $(BIN)
+# Headers are prerequisites too. Without this, editing a header rebuilt NOTHING:
+# `make` compared the binary against the .cpp list only, so a header-only change —
+# which in this codebase means most of the pure core, every inline helper and every
+# struct layout — silently ran the previous binary. It made a mutation check report
+# that a guard was covered when the guard had not even been compiled.
+HEADERS := $(shell find $(ROOT)/src -name '*.h') $(wildcard *.h)
+
+$(BIN): $(CORE_SRC) $(TEST_SRC) $(HEADERS)
+	$(CXX) $(CXXFLAGS) $(CORE_SRC) $(TEST_SRC) -o $(BIN)
 
 clean:
 	rm -f $(BIN)

@@ -369,8 +369,20 @@ TEST(sysex_service_notification_after_change) {
 // the same channel is not a corner case — it is what happens the moment someone
 // plugs a DIN cable into a machine that is also on Wi-Fi.
 
+// Stamp source AND origin, exactly as MidiParser::setSource does for a real
+// transport: a DIN cable has one sender, so its events all carry MidiOrigin::kDin.
 static MidiEvent from(MidiEvent e, MidiSource src) {
     e.source = static_cast<uint8_t>(src);
+    e.origin = defaultOriginFor(src);
+    return e;
+}
+
+// Two DIFFERENT network peers on the same transport. This is what the origin
+// exists for: MidiSource::WifiUdp is one transport and the default policy accepts
+// any host, so without a per-peer id two laptops are indistinguishable.
+static MidiEvent fromPeer(MidiEvent e, uint8_t peer) {
+    e.source = static_cast<uint8_t>(MidiSource::WifiUdp);
+    e.origin = static_cast<uint8_t>(MidiOrigin::kFirstNetworkPeer + peer);
     return e;
 }
 
@@ -502,4 +514,102 @@ TEST(cc_selection_is_not_consumed_by_another_source) {
         if (ic.target(i).active) played = static_cast<int>(i);
     CHECK(played >= 0);
     if (played >= 0) CHECK(ic.target(played).fret != 5);
+}
+
+// ---- two senders on the SAME transport --------------------------------------
+//
+// The previous fix keyed a note by its transport, which was enough for DIN vs
+// Wi-Fi. It is not enough for Wi-Fi vs Wi-Fi: the default UDP policy accepts any
+// host, so two laptops both arrive as MidiSource::WifiUdp and the ambiguity comes
+// straight back one level down.
+
+// Counting is NOT enough here, and the first version of this test proved it: with
+// both peers playing the same note, releasing them in LIFO order gives the same
+// COUNT whether the key is the sender or the transport. It passed under a
+// deliberate mutation that keyed on the transport. So assert WHICH string stops —
+// the identity is the thing under test, not the arithmetic.
+static int soleActiveStringOtherThan(const InstrumentController& ic, int excluded) {
+    for (size_t i = 0; i < ic.stringCount(); ++i)
+        if (ic.target(i).active && static_cast<int>(i) != excluded)
+            return static_cast<int>(i);
+    return -1;
+}
+
+TEST(two_network_peers_do_not_release_each_others_notes) {
+    Profile p = ukulele();
+    p.midi.omni = true;
+    p.midi.chordWindowMs = 0;
+    InstrumentController ic;
+    ic.load(p);
+
+    // Note 72 is reachable on every string, so the allocator can give one to each.
+    ic.handleEvent(fromPeer(noteOn(0, 72, 100), 0), 0);
+    ic.tick(1000);
+    int stringA = soleActiveStringOtherThan(ic, -1);
+    CHECK(stringA >= 0);
+    ic.handleEvent(fromPeer(noteOn(0, 72, 100), 1), 1000);
+    ic.tick(2000);
+    int stringB = soleActiveStringOtherThan(ic, stringA);
+    CHECK(stringB >= 0);
+    CHECK(stringA != stringB);
+    CHECK_EQ(ic.soundingCount(), 2);
+
+    // Peer A — the FIRST to play — releases. Its own string must be the one that
+    // stops. Keyed on the transport, this Note Off matches the most recent entry
+    // instead, and peer B's string is damped while A's rings on.
+    ic.handleEvent(fromPeer(noteOff(0, 72), 0), 3000);
+    ic.tick(4000);
+    CHECK_EQ(ic.soundingCount(), 1);
+    if (stringA >= 0 && stringB >= 0) {
+        CHECK(!ic.target(stringA).active);   // A released its own
+        CHECK(ic.target(stringB).active);    // B untouched
+    }
+
+    ic.handleEvent(fromPeer(noteOff(0, 72), 1), 5000);
+    ic.tick(6000);
+    CHECK_EQ(ic.soundingCount(), 0);
+}
+
+// All Notes Off is a message about the sender's own channel, not a stop button.
+// It used to call panic(), so a DIN controller sending CC123 also damped every
+// Wi-Fi note, dropped their pedal and wiped their pending selections.
+TEST(all_notes_off_is_scoped_to_its_sender) {
+    Profile p = ukulele();
+    p.midi.omni = true;
+    p.midi.chordWindowMs = 0;
+    InstrumentController ic;
+    ic.load(p);
+
+    ic.handleEvent(from(noteOn(0, 67, 100), MidiSource::WifiUdp), 0);
+    ic.tick(1000);
+    ic.handleEvent(from(noteOn(0, 69, 100), MidiSource::Din), 1000);
+    ic.tick(2000);
+    CHECK_EQ(ic.soundingCount(), 2);
+
+    // DIN says All Notes Off. Only DIN's note stops.
+    ic.handleEvent(from(cc(0, 123, 0), MidiSource::Din), 3000);
+    ic.tick(4000);
+    CHECK_EQ(ic.soundingCount(), 1);
+
+    // ...and the instrument is still ARMED, not panicked: the Wi-Fi player can
+    // keep going. A real stop is a safety action with its own routes.
+    ic.handleEvent(from(noteOn(0, 64, 100), MidiSource::WifiUdp), 5000);
+    ic.tick(6000);
+    CHECK_EQ(ic.soundingCount(), 2);
+}
+
+// CC120 (All Sound Off) has the same reach as CC123 here.
+TEST(all_sound_off_is_scoped_to_its_sender) {
+    Profile p = ukulele();
+    p.midi.omni = true;
+    p.midi.chordWindowMs = 0;
+    InstrumentController ic;
+    ic.load(p);
+    ic.handleEvent(fromPeer(noteOn(0, 67, 100), 0), 0);
+    ic.handleEvent(fromPeer(noteOn(0, 69, 100), 1), 0);
+    ic.tick(1000);
+    CHECK_EQ(ic.soundingCount(), 2);
+    ic.handleEvent(fromPeer(cc(0, 120, 0), 1), 2000);
+    ic.tick(3000);
+    CHECK_EQ(ic.soundingCount(), 1);
 }

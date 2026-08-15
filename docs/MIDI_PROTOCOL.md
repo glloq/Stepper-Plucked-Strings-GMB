@@ -22,6 +22,49 @@ version, the Wi-Fi inputs can be:
 * a configurable UDP protocol;
 * test commands from the Web interface.
 
+### Who sent it: `origin`
+
+`MidiSource` names a **transport**. That was a sufficient key while each transport
+had one sender — and it stopped being one as soon as the instrument accepted
+several. The default UDP posture accepts any host, so two laptops on the same
+Wi-Fi both arrive as `MidiSource::WifiUdp`, and
+
+```text
+PC A -> NoteOn  ch1 C4
+PC B -> NoteOn  ch1 C4
+PC B -> NoteOff ch1 C4
+```
+
+is ambiguous: the Note Off can release PC A's note, damping their string and
+leaving PC B's pressed with nothing able to release it.
+
+So every event also carries an **origin** — a small id for *the thing that sent
+this* (`core/midi/MidiIdentity.h`):
+
+| Origin | Sender |
+| ------ | ------ |
+| 0 | firmware-internal |
+| 1 | DIN-5 / TRS (one cable, one sender) |
+| 2 | USB-MIDI (one host) |
+| 3 | the web test tools |
+| 4–15 | network peers, one per `IP:port` |
+
+A note is identified by `(origin, channel, note)`, and anything scoped to a sender
+— pending CC selections, the sustain pedal, the last-valid selection, the reach of
+an All Notes Off — by `(origin, channel)`. The network table holds 12 peers and
+recycles the oldest slot beyond that; two peers then share an id, which is exactly
+the behaviour of having no ids at all, so the worst case for a 13th simultaneous
+controller is the old one.
+
+### CC120 / CC123 are messages, not stop buttons
+
+All Sound Off and All Notes Off act on **the sender's own channel**. They used to
+call the instrument-wide panic, so a DIN controller sending CC123 also damped the
+Wi-Fi player's strings, dropped their pedal and wiped their pending selections.
+
+An instrument-wide stop is a *safety* action and has its own routes:
+`POST /api/panic`, the hardware E-stop, and the panic path in `main.cpp`.
+
 All transports produce a **common internal event**:
 
 ```cpp

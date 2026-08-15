@@ -10,6 +10,25 @@ void MidiWifi::begin(uint16_t port) {
 #endif
 }
 
+// The origin id for a sender, allocated on first sight.
+uint8_t MidiWifi::originFor(const UdpSource& src) {
+    for (uint8_t i = 0; i < MidiOrigin::kNetworkPeerCount; ++i)
+        if (peers_[i].used && peers_[i].ip == src.ip && peers_[i].port == src.port)
+            return static_cast<uint8_t>(MidiOrigin::kFirstNetworkPeer + i);
+    for (uint8_t i = 0; i < MidiOrigin::kNetworkPeerCount; ++i) {
+        if (peers_[i].used) continue;
+        peers_[i] = Peer{src.ip, src.port, true};
+        return static_cast<uint8_t>(MidiOrigin::kFirstNetworkPeer + i);
+    }
+    // Full: recycle the oldest slot. Two peers then share an id, which is the
+    // behaviour we had before ids existed — a bounded, understood degradation
+    // rather than an unbounded table on a device with 512 KB of RAM.
+    uint8_t slot = nextPeerSlot_;
+    nextPeerSlot_ = static_cast<uint8_t>((nextPeerSlot_ + 1) % MidiOrigin::kNetworkPeerCount);
+    peers_[slot] = Peer{src.ip, src.port, true};
+    return static_cast<uint8_t>(MidiOrigin::kFirstNetworkPeer + slot);
+}
+
 void MidiWifi::poll(uint32_t nowUs) {
 #if defined(ARDUINO)
     // Process at most kMaxPacketsPerTick packets this pass so a flood cannot
@@ -49,6 +68,8 @@ void MidiWifi::poll(uint32_t nowUs) {
             // in-progress SysEx from a previous packet so one sender can never
             // continue/terminate another sender's message (shared-parser fix).
             parser_.resetStream();
+            // Tag every event with WHICH host sent it, not just "the Wi-Fi".
+            parser_.setOrigin(originFor(src));
             parser_.feed(buf_, static_cast<size_t>(n), nowUs);
             // LockToFirst, no session yet: only a datagram that actually decodes
             // as MIDI (events or SysEx) may adopt this sender as the locked

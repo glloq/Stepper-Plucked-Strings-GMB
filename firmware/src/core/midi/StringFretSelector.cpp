@@ -246,8 +246,8 @@ NoteResolution StringFretSelector::onNoteOn(const MidiEvent& e, uint32_t nowUs) 
                     r.stringIndex = lastValid_[key].stringIndex;
                     r.fret = lastValid_[key].fret;
                     r.noteInstanceId = nextInstanceId_++;
-                    active_.push_back({e.channel, e.data1, r.stringIndex, r.fret,
-                                       r.noteInstanceId});
+                    active_.push_back({noteKey(e), e.channel, e.data1, r.stringIndex,
+                                       r.fret, r.noteInstanceId});
                     return r;
                 }
                 return automaticResolution();
@@ -383,15 +383,18 @@ NoteResolution StringFretSelector::onNoteOn(const MidiEvent& e, uint32_t nowUs) 
     lastValid_[key] = {true, stringIndex, fret};
 
     // Remember for Note Off (spec section 12). Repeated identical pitches stack.
-    active_.push_back({e.channel, e.data1, stringIndex, fret, r.noteInstanceId});
+    active_.push_back({noteKey(e), e.channel, e.data1, stringIndex, fret,
+                       r.noteInstanceId});
     return r;
 }
 
 bool StringFretSelector::onNoteOff(const MidiEvent& e, ActiveNote* out) {
-    // Match the most recent active instance for this channel+note (LIFO stack of
-    // repeated notes, spec section 12).
+    // Match the most recent active instance for this SENDER's channel+note (LIFO
+    // stack of repeated notes, spec section 12). Keyed on origin too, so one
+    // controller's Note Off never removes another's record.
+    const uint16_t key = noteKey(e);
     for (int i = static_cast<int>(active_.size()) - 1; i >= 0; --i) {
-        if (active_[i].midiChannel == e.channel && active_[i].midiNote == e.data1) {
+        if (active_[i].key == key) {
             if (out) *out = active_[i];
             active_.erase(active_.begin() + i);
             return true;

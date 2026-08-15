@@ -84,6 +84,7 @@ void MidiParser::emit(uint32_t nowUs) {
     MidiEvent e;
     e.timestampUs = nowUs;
     e.source = source_;
+    e.origin = origin_;
     e.type = status_ & 0xF0;
     e.channel = status_ & 0x0F;
     e.data1 = data_[0];

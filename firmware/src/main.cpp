@@ -450,6 +450,7 @@ bool doTestNote(uint8_t channel, uint8_t note, uint8_t vel, uint16_t durationMs,
         cc.data2 = value;
         cc.timestampUs = micros();
         cc.source = static_cast<uint8_t>(MidiSource::WebUiTest);
+        cc.origin = MidiOrigin::kWebUiTest;
         g_instrument.handleEvent(cc, cc.timestampUs);
     };
     const SelectorConfig& sel = g_profile.selector;
@@ -461,6 +462,7 @@ bool doTestNote(uint8_t channel, uint8_t note, uint8_t vel, uint16_t durationMs,
     on.channel = channel; on.data1 = note; on.data2 = vel;
     on.timestampUs = micros();
     on.source = static_cast<uint8_t>(MidiSource::WebUiTest);
+    on.origin = MidiOrigin::kWebUiTest;
     g_instrument.handleEvent(on, on.timestampUs);
     uint32_t offAt = nowMs + (durationMs ? durationMs : 500u);
     g_testOffs.push_back({channel, note, offAt});
@@ -1244,6 +1246,7 @@ void loop() {
             // like a different note and the test note would never be released —
             // finger down, string ringing, nothing left to stop it.
             off.source = static_cast<uint8_t>(MidiSource::WebUiTest);
+            off.origin = MidiOrigin::kWebUiTest;
             off.channel = g_testOffs[k].channel; off.data1 = g_testOffs[k].note;
             off.timestampUs = nowUs;
             g_instrument.handleEvent(off, nowUs);

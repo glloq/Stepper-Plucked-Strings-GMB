@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "../../core/midi/MidiIdentity.h"
 #include "../../core/midi/MidiParser.h"
 #include "../../core/midi/MidiTransport.h"
 #include "../../core/net/UdpSourceGate.h"
@@ -90,6 +91,22 @@ private:
     uint32_t droppedEvents_ = 0;
     uint32_t droppedPackets_ = 0;
     UdpSourceGate gate_;  // P1.11 source posture (Open by default -> no behaviour change)
+
+    // ---- per-peer origins ----------------------------------------------------
+    //
+    // MidiSource::WifiUdp names the TRANSPORT, and the default policy accepts any
+    // sender, so two hosts on the same network are otherwise indistinguishable —
+    // and one host's Note Off releases the other's note. Each (IP, port) therefore
+    // gets a small origin id, which is what the note key is actually built from.
+    //
+    // A fixed ring of ids, reused oldest-first when more than kNetworkPeerCount
+    // hosts appear. Recycling an id can only confuse two peers with each other,
+    // which is exactly the behaviour of NOT having ids at all — so the worst case
+    // is the old behaviour, for the 13th simultaneous controller.
+    struct Peer { uint32_t ip = 0; uint16_t port = 0; bool used = false; };
+    Peer peers_[MidiOrigin::kNetworkPeerCount];
+    uint8_t nextPeerSlot_ = 0;
+    uint8_t originFor(const UdpSource& src);
 #if defined(ARDUINO)
     WiFiUDP udp_;
     IPAddress lastSenderIp_;

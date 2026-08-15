@@ -98,7 +98,7 @@ void InstrumentController::prepareString(int stringIndex, int fret, uint32_t exp
 }
 
 bool InstrumentController::triggerPreparedNote(int stringIndex, int fret,
-                                               uint8_t source, uint8_t channel,
+                                               uint8_t origin, uint8_t channel,
                                                uint8_t note, uint8_t velocity) {
     if (stringIndex < 0 || stringIndex >= static_cast<int>(strings_.size()))
         return false;
@@ -116,13 +116,13 @@ bool InstrumentController::triggerPreparedNote(int stringIndex, int fret,
     t.active = true;
     t.velocity = velocity;
     t.intensity = applyVelocityCurve(velocityCurve_, velocity) * attackGain();
-    active_.push_back({noteKey(source, channel, note), channel, note, stringIndex, false});
+    active_.push_back({noteKey(origin, channel, note), channel, note, stringIndex, false});
     preparedFret_[stringIndex] = -1;
     preparedId_[stringIndex] = 0;
     return true;
 }
 
-void InstrumentController::startNote(int stringIndex, int fret, uint8_t source,
+void InstrumentController::startNote(int stringIndex, int fret, uint8_t origin,
                                      uint8_t channel, uint8_t note, uint8_t velocity) {
     if (stringIndex < 0 || stringIndex >= static_cast<int>(strings_.size())) return;
     removeActiveByString(stringIndex);
@@ -143,7 +143,7 @@ void InstrumentController::startNote(int stringIndex, int fret, uint8_t source,
     t.commandId = id;
     t.velocity = velocity;
     t.intensity = applyVelocityCurve(velocityCurve_, velocity) * attackGain();
-    active_.push_back({noteKey(source, channel, note), channel, note, stringIndex, false});
+    active_.push_back({noteKey(origin, channel, note), channel, note, stringIndex, false});
 }
 
 void InstrumentController::stopString(int stringIndex) {
@@ -167,7 +167,16 @@ void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
 
     if (e.isControlChange()) {
         if (e.data1 == 120 || e.data1 == 123) {  // all sound / notes off
-            panic();
+            // Scoped to the SENDER that asked, not the whole instrument.
+            //
+            // panic() here meant a DIN controller sending All Notes Off also cut
+            // the Wi-Fi player's notes, their pedal and their pending selections.
+            // With one controller that read as correct; with several it is one
+            // player silencing another. CC120/CC123 are MIDI messages about that
+            // channel — an instrument-wide stop is a SAFETY action, and it has its
+            // own routes: POST /api/panic, the hardware E-stop, CC on the panic
+            // path in main.cpp.
+            allNotesOffFor(senderKeyOf(e));
             return;
         }
         if (e.data1 == 7) {  // channel volume -> attack gain
@@ -179,15 +188,15 @@ void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
             return;
         }
         if (sustainEnabled_ && e.data1 == sustainCc_) {
-            const uint8_t sk = sourceChannelKey(e);
+            const uint8_t sk = senderKeyOf(e);
             bool down = e.data2 >= 64;
             if (pedalDownFor(sk) && !down) {
                 // Pedal released: drop the notes THIS sender was holding. Another
                 // controller's pedal-held notes are none of its business.
                 for (int i = static_cast<int>(active_.size()) - 1; i >= 0; --i) {
                     if (active_[i].heldByPedal &&
-                        sourceChannelKey(static_cast<uint8_t>(active_[i].key >> 11),
-                                         active_[i].channel) == sk) {
+                        senderKeyOf(originOfKey(active_[i].key),
+                                    active_[i].channel) == sk) {
                         int s = active_[i].stringIndex;
                         active_.erase(active_.begin() + i);
                         stopString(s);
@@ -219,12 +228,12 @@ void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
         if (r.source == ResolveSource::Explicit && explicitPlayable) {
             // Reuse the anticipated move if this string was prepared for this fret;
             // otherwise start a fresh note. Each string is plucked on its own.
-            if (!triggerPreparedNote(r.stringIndex, r.fret, e.source, e.channel,
+            if (!triggerPreparedNote(r.stringIndex, r.fret, e.origin, e.channel,
                                      e.data1, e.data2))
-                startNote(r.stringIndex, r.fret, e.source, e.channel, e.data1, e.data2);
+                startNote(r.stringIndex, r.fret, e.origin, e.channel, e.data1, e.data2);
         } else {
             // Automatic allocation is deferred to group chord notes (§17.2).
-            chordBuffer_.push_back({noteKey(e), e.source, e.channel, e.data1, e.data2, nowUs});
+            chordBuffer_.push_back({noteKey(e), e.origin, e.channel, e.data1, e.data2, nowUs});
             if (chordWindowUs_ == 0) flushChord();
         }
         return;
@@ -247,7 +256,7 @@ void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
 
         int idx = findActive(noteKey(e));
         if (idx < 0) return;
-        if (sustainEnabled_ && pedalDownFor(sourceChannelKey(e))) {
+        if (sustainEnabled_ && pedalDownFor(senderKeyOf(e))) {
             active_[idx].heldByPedal = true;  // keep sounding until pedal up
             return;
         }
@@ -256,6 +265,26 @@ void InstrumentController::handleEvent(const MidiEvent& e, uint32_t nowUs) {
         stopString(stringIndex);
         return;
     }
+}
+
+// All Notes Off / All Sound Off for ONE sender: release the notes it started,
+// drop what it has waiting in the chord buffer, lift its pedal and forget its
+// pending CC selections. Everything belonging to any other sender is untouched.
+void InstrumentController::allNotesOffFor(uint8_t senderKey) {
+    for (int i = static_cast<int>(chordBuffer_.size()) - 1; i >= 0; --i) {
+        if (senderKeyOf(originOfKey(chordBuffer_[i].key), chordBuffer_[i].channel) ==
+            senderKey)
+            chordBuffer_.erase(chordBuffer_.begin() + i);
+    }
+    for (int i = static_cast<int>(active_.size()) - 1; i >= 0; --i) {
+        if (senderKeyOf(originOfKey(active_[i].key), active_[i].channel) != senderKey)
+            continue;
+        int s = active_[i].stringIndex;
+        active_.erase(active_.begin() + i);
+        stopString(s);
+    }
+    setPedalDown(senderKey, false);
+    selector_.forgetSender(senderKey);
 }
 
 void InstrumentController::flushChord() {
