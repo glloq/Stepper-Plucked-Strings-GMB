@@ -29,6 +29,8 @@
 #include <set>
 #include <vector>
 
+#include <WiFiUdp.h>
+
 #include "../../src/platform/esp32/MidiWifi.h"
 
 using namespace gmb;
@@ -44,6 +46,13 @@ static void check(bool cond, const char* what) {
 }
 
 static UdpSource peer(uint32_t ip, uint16_t port) { return UdpSource{ip, port}; }
+
+// poll() handles at most kMaxPacketsPerTick datagrams per pass, so a burst needs
+// several loop turns — exactly as on the device, where the cap exists so a flood
+// cannot stall the control loop. Drain the whole inbox before asserting.
+static void pump(MidiWifi& m, uint32_t nowUs) {
+    for (int i = 0; i < 16 && !gmbUdpInbox().empty(); ++i) m.poll(nowUs);
+}
 
 int main() {
     std::printf("UDP MIDI origin identity check\n");
@@ -176,6 +185,91 @@ int main() {
         for (uint8_t o : seen)
             check(o >= MidiOrigin::kFirstNetworkPeer && o < MidiOrigin::kMaxOrigins,
                   "and every origin is inside the network-peer range");
+    }
+
+    // ---- a junk datagram must claim nothing --------------------------------
+    //
+    // originFor() can EVICT, and an eviction releases whatever that peer left
+    // sounding. Calling it before the datagram is known to be MIDI meant one stray
+    // packet — a port scan, a broadcast — could take a live controller's slot and
+    // damp its strings. These cases drive the REAL poll() over a UDP stub, because
+    // the defect is an ORDER inside it and nothing below poll() can show it.
+    {
+        beginCase("a datagram that is not MIDI claims no origin");
+        MidiWifi m;
+        m.begin(5006);
+        gmbUdpInbox().clear();
+        // Fill every slot with real senders playing real notes.
+        std::vector<uint8_t> noteOn = {0x90, 60, 100};
+        for (int i = 0; i < static_cast<int>(MidiOrigin::kNetworkPeerCount); ++i) {
+            gmbUdpPush(0x0A000001 + static_cast<uint32_t>(i), 5100, noteOn);
+        }
+        pump(m, 1000000);
+        check(m.events().size() == MidiOrigin::kNetworkPeerCount,
+              "every real sender was decoded");
+        m.clear();
+        m.takeReleasedOrigins();
+
+        // A thirteenth host sends rubbish. It must not evict anyone.
+        std::vector<uint8_t> junk = {0x00, 0x01, 0x02, 0x03};
+        gmbUdpPush(0x0BADBEEF, 9999, junk);
+        pump(m, 2000000);
+        check(m.events().empty(), "the junk produced no events");
+        check(m.takeReleasedOrigins().empty(),
+              "and evicted nobody — no notes were released");
+
+        // The same host then sends real MIDI, and NOW it may take a slot.
+        gmbUdpPush(0x0BADBEEF, 9999, noteOn);
+        pump(m, 3000000);
+        check(m.events().size() == 1, "its real message was decoded");
+        check(m.takeReleasedOrigins().size() == 1,
+              "and only now does it cost somebody their slot");
+    }
+
+    // Events carry the origin of the host that actually sent them, stamped after
+    // the parse rather than before it.
+    {
+        beginCase("events are stamped with their sender's origin");
+        MidiWifi m;
+        m.begin(5006);
+        gmbUdpInbox().clear();
+        std::vector<uint8_t> noteOn = {0x90, 60, 100};
+        gmbUdpPush(0x0C000001, 5200, noteOn);
+        gmbUdpPush(0x0C000002, 5200, noteOn);
+        pump(m, 1000000);
+        check(m.events().size() == 2, "both were decoded");
+        if (m.events().size() == 2) {
+            check(m.events()[0].origin != m.events()[1].origin,
+                  "two hosts get two origins");
+            for (const auto& e : m.events())
+                check(e.origin >= MidiOrigin::kFirstNetworkPeer &&
+                          e.origin < MidiOrigin::kMaxOrigins,
+                      "and both are inside the network-peer range");
+        }
+    }
+
+    // ---- expiry happens on its own, not only when somebody new arrives -------
+    //
+    // The reap used to live inside originFor(), so the documented ten minutes was
+    // really "ten minutes AND then only once a new sender turns up". A peer that
+    // vanished mid-set kept its origin for as long as the network stayed quiet.
+    {
+        beginCase("a peer expires with no new sender to trigger it");
+        MidiWifi m;
+        m.begin(5006);
+        gmbUdpInbox().clear();
+        gmbUdpPush(0x0D000001, 5300, {0x90, 60, 100});
+        pump(m, 1000000);
+        uint8_t origin = m.events().empty() ? 0 : m.events()[0].origin;
+        check(origin != 0, "the peer got an origin");
+        m.clear();
+        m.takeReleasedOrigins();
+
+        // Nothing arrives at all — just time passing and the loop running.
+        m.poll(1000000ULL + (MidiWifi::kPeerIdleTimeoutMs + 1000ULL) * 1000ULL);
+        auto released = m.takeReleasedOrigins();
+        check(released.size() == 1 && released[0] == origin,
+              "its slot was reclaimed and reported without any new traffic");
     }
 
     if (g_fail == 0) std::printf("\noriginscheck OK\n");

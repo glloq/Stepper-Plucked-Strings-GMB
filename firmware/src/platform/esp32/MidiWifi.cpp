@@ -23,15 +23,9 @@ uint8_t MidiWifi::originFor(const UdpSource& src, uint32_t nowMs) {
         }
     }
 
-    // Reap anything silent for longer than the idle timeout BEFORE looking for a
-    // free slot. Without this the table only ever fills: a client that reconnects
-    // on a fresh ephemeral port is a new (ip, port) every time, and twelve of those
-    // is an afternoon, not a concert.
-    for (uint8_t i = 0; i < MidiOrigin::kNetworkPeerCount; ++i) {
-        if (!peers_[i].used) continue;
-        if (static_cast<uint32_t>(nowMs - peers_[i].lastSeenMs) < kPeerIdleTimeoutMs) continue;
-        retirePeer(i);
-    }
+    // Reap before looking for a free slot as well as from poll(): a datagram can
+    // arrive after a long quiet spell, in the same pass that would reap.
+    reapIdlePeers(nowMs);
 
     for (uint8_t i = 0; i < MidiOrigin::kNetworkPeerCount; ++i) {
         if (peers_[i].used) continue;
@@ -57,6 +51,17 @@ uint8_t MidiWifi::originFor(const UdpSource& src, uint32_t nowMs) {
 // so its own Note Off can no longer match its own Note On. Whatever it left
 // sounding has to be released here, or it is held until something unrelated
 // happens to reuse that string.
+// Free every slot silent for longer than the idle timeout. Without this the table
+// only ever fills: a client that reconnects on a fresh ephemeral port is a new
+// (ip, port) every time, and twelve of those is an afternoon, not a concert.
+void MidiWifi::reapIdlePeers(uint32_t nowMs) {
+    for (uint8_t i = 0; i < MidiOrigin::kNetworkPeerCount; ++i) {
+        if (!peers_[i].used) continue;
+        if (static_cast<uint32_t>(nowMs - peers_[i].lastSeenMs) < kPeerIdleTimeoutMs) continue;
+        retirePeer(i);
+    }
+}
+
 void MidiWifi::retirePeer(uint8_t slot) {
     if (slot >= MidiOrigin::kNetworkPeerCount || !peers_[slot].used) return;
     peers_[slot] = Peer{};
@@ -64,12 +69,29 @@ void MidiWifi::retirePeer(uint8_t slot) {
 }
 
 void MidiWifi::poll(uint32_t nowUs) {
+    // Reclaim idle slots on every pass, not only when an unknown sender turns up.
+    // The reap used to live inside originFor(), which meant the documented ten
+    // minutes was really "ten minutes, and then only once somebody new arrives" —
+    // a peer that vanished mid-set kept its origin for as long as the network
+    // stayed quiet. Twelve comparisons per loop is not a cost worth a caveat.
+    reapIdlePeers(nowUs / 1000u);
 #if defined(ARDUINO)
     // Process at most kMaxPacketsPerTick packets this pass so a flood cannot
     // stall the control loop; the rest wait for the next poll().
-    int packet = udp_.parsePacket();
+    // Fetch INSIDE the loop, and only when there is room to process what comes
+    // back. The fetch used to sit at the bottom of the body, so the pass that hit
+    // the cap had already called parsePacket() one more time — making a datagram
+    // current that nobody would read. The next poll() calls parsePacket() again,
+    // which on the real socket DISCARDS it: one message silently lost out of every
+    // nine, under exactly the burst the cap exists to survive. A Note Off is as
+    // likely to be the lost one as anything else.
+    //
+    // Invisible until now because the host stub answered "no packet" forever, so
+    // poll() was only ever compiled, never run.
     int handled = 0;
-    while (packet > 0 && handled < kMaxPacketsPerTick) {
+    while (handled < kMaxPacketsPerTick) {
+        int packet = udp_.parsePacket();
+        if (packet <= 0) break;
         IPAddress remoteIp = udp_.remoteIP();
         uint16_t remotePort = udp_.remotePort();
         UdpSource src{static_cast<uint32_t>(remoteIp), remotePort};
@@ -83,7 +105,6 @@ void MidiWifi::poll(uint32_t nowUs) {
         if (!pendingLock && !gate_.accept(src)) {
             udp_.clear();  // discard the refused datagram
             ++handled;
-            packet = udp_.parsePacket();
             continue;
         }
         // Reject an oversized datagram ENTIRELY: reading only the first
@@ -93,7 +114,6 @@ void MidiWifi::poll(uint32_t nowUs) {
             udp_.clear();  // discard the current datagram (flush() is deprecated)
             ++droppedPackets_;
             ++handled;
-            packet = udp_.parsePacket();
             continue;
         }
         int n = udp_.read(buf_, sizeof(buf_));
@@ -102,26 +122,37 @@ void MidiWifi::poll(uint32_t nowUs) {
             // in-progress SysEx from a previous packet so one sender can never
             // continue/terminate another sender's message (shared-parser fix).
             parser_.resetStream();
-            // Tag every event with WHICH host sent it, not just "the Wi-Fi".
-            parser_.setOrigin(originFor(src, nowUs / 1000u));
+            // PARSE FIRST, allocate an origin second.
+            //
+            // originFor() can EVICT another peer to make room, and an eviction
+            // releases everything that peer left sounding. Calling it before the
+            // datagram is known to be MIDI meant one junk packet from an unknown
+            // host — a port scan, a stray broadcast — could take a real
+            // controller's slot and damp its strings mid-phrase. Nothing about a
+            // sender is worth recording until it has said something.
+            //
+            // The origin is therefore provisional here and stamped onto the events
+            // below, once there are events. The lock does the same thing for the
+            // same reason (audit 5); this is that rule applied to the peer table.
+            parser_.setOrigin(MidiOrigin::kInternal);
             parser_.feed(buf_, static_cast<size_t>(n), nowUs);
-            // LockToFirst, no session yet: only a datagram that actually decodes
-            // as MIDI (events or SysEx) may adopt this sender as the locked
-            // session; junk is discarded and counted, and the port stays open for
-            // the real controller (audit 5).
-            if (pendingLock) {
-                if (parser_.events().empty() && parser_.sysex().empty()) {
-                    gate_.noteRejected();
-                    parser_.clear();
-                    ++handled;
-                    packet = udp_.parsePacket();
-                    continue;
-                }
-                gate_.lockTo(src);
+            if (parser_.events().empty() && parser_.sysex().empty()) {
+                // Not MIDI. No slot claimed, no peer evicted, nothing released.
+                if (pendingLock) gate_.noteRejected();
+                parser_.clear();
+                ++handled;
+                continue;
             }
+            // LockToFirst, no session yet: only a datagram that actually decodes
+            // as MIDI may adopt this sender as the locked session, so the port
+            // stays open for the real controller (audit 5).
+            if (pendingLock) gate_.lockTo(src);
+            // It spoke, so now it gets an identity.
+            uint8_t origin = originFor(src, nowUs / 1000u);
             // Move decoded events out (bounded). Count anything dropped so a
             // sustained overflow is visible rather than silent.
             for (auto& e : parser_.events()) {
+                e.origin = origin;  // WHICH host sent it, not just "the Wi-Fi"
                 if (events_.size() < kMaxEventsPerTick) events_.push_back(e);
                 else ++droppedEvents_;
             }
@@ -136,7 +167,6 @@ void MidiWifi::poll(uint32_t nowUs) {
             parser_.clear();
         }
         ++handled;
-        packet = udp_.parsePacket();
     }
 #else
     (void)nowUs;

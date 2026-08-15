@@ -202,6 +202,81 @@ une note en prose — alors que le callback était sorti avant même de poser
 `g_netApplyRequested`. Désormais : écrire, puis adopter, puis appliquer ; et la
 réponse porte `persisted` et `applied` séparément, avec un vrai code d'erreur.
 
+### Le SSID et son mot de passe sont un seul changement
+
+Les secrets vivent en NVS, la config de lien dans `/active.json` sur LittleFS.
+Deux magasins, donc pas d'écriture atomique unique — et la paire ne veut rien
+dire séparée : un SSID sans son mot de passe ne rejoint aucun réseau.
+
+Le problème était présent des deux côtés.
+
+**Côté UI**, l'onglet Network éditait directement `state.profile.network`, et
+enregistrer voulait dire `PUT /api/profile` (qui publie tout le profil, réseau
+compris) **puis** `POST /api/wifi` pour les identifiants. Deux requêtes, deux
+occasions de s'arrêter :
+
+```text
+PUT  /api/profile   → /active.json contient déjà le nouveau SSID
+POST /api/wifi      → perdue : navigateur fermé, Wi-Fi coupé, appareil occupé
+reboot              → nouveau SSID, ancien mot de passe, ne rejoint rien
+```
+
+L'onglet édite maintenant un **brouillon** ; le profil publié n'est pas touché
+tant qu'une **seule** requête ne porte pas les deux moitiés. `/api/wifi` écrit
+lui-même la moitié *device* de l'instantané : il n'y a rien à publier avant.
+
+**Côté firmware**, les secrets partaient dans leurs clés définitives avant même
+que le verrou d'instantané soit pris, et les retours de `putString()` n'étaient
+pas vérifiés — un verrou occupé ou un flash plein répondait « nothing was
+changed » à un appelant dont le mot de passe avait déjà changé. Les secrets sont
+donc **mis en attente** puis promus, comme l'instantané :
+
+```text
+stage    écrit stastage / apstage + un marqueur décrivant l'action
+   ↓
+prepare  /active.json.tmp
+   ↓     ── point de non-retour ──
+promote  recopie sur les clés vives, efface le marqueur
+   ↓
+commit   /active.json
+   ↓
+adopt RAM → apply radio
+```
+
+Le marqueur est ce qui rend une coupure **récupérable au lieu d'une devinette** :
+il dit « une promotion était en cours », donc le boot la termine
+(`promoteStagedWifiSecrets()` est idempotent et tourne à chaque démarrage). Sans
+lui, des clés d'attente abandonnées seraient indiscernables d'une promotion à
+moitié faite.
+
+L'ordre promote-puis-commit est choisi : si le courant tombe entre les deux, les
+identifiants sont en avance sur le SSID stocké — et le repli automatique sur le
+point d'accès garde la machine joignable. L'ordre inverse laisserait un nouveau
+SSID avec un ancien mot de passe et **rien** n'enregistrant qu'un mot de passe
+devait changer.
+
+### « Persisté » n'est pas « actif »
+
+Le commit met le profil sur le flash — c'est donc ce qui démarrera — mais
+l'activation doit encore survivre à `loop()`, où un E-stop verrouillé ou un
+parking qui ne se confirme pas peuvent la refuser. La machine tourne alors sur
+l'ancien profil et démarrera sur le nouveau. C'est un état réel : il a besoin
+d'un nom, pas d'un arrondi.
+
+| `outcome` | Sens |
+| --------- | ---- |
+| `activating` | persisté, mis en file — la réponse normale, et toujours pas « actif » |
+| `storedNotActivated` | persisté, **pas** mis en file — prend effet au prochain boot |
+| `rejected` | rien ne s'est passé nulle part |
+
+`active` est délibérément absent : rien de synchrone ne peut le savoir. C'est
+l'état terminal de la commande, interrogé via `GET /api/commands`.
+
+Le cas `commandId = 0` était d'ailleurs un vrai bug de contrat : l'UI traitait
+« pas d'id » comme « backend mock, appliqué tout de suite », vérifiait un statut
+encore `ready` **pour l'ancien profil**, et annonçait « publié et ACTIF » pour un
+profil que la machine n'avait jamais chargé.
+
 Le tout est vérifié par `firmware/test/runtimecheck` — vrai `publishProfile`, vrai
 `ActivationCoordinator`, vrai `CommandDispatcher`, avec une file qui se remplit
 vraiment et un stockage dont le `prepare` et le `commit` échouent sur commande.

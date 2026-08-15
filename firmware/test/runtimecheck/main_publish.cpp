@@ -207,6 +207,9 @@ int main() {
         check(r.accepted, "the activation is accepted");
         check(r.persisted, "the configuration is persisted");
         check(r.commandId != 0, "a command id is reported");
+        check(std::string(r.outcome) == "activating",
+              "the outcome is `activating` — queued, and deliberately never `active`: "
+              "nothing synchronous can know that");
         check(r.httpStatus == 202, "202 Accepted");
         check(g_committed == "Alpha", "flash holds Alpha");
         auto seen = rig.drainNames();
@@ -373,21 +376,28 @@ int main() {
               "and the route answers 503 — this one IS worth retrying");
     }
 
-    // ---- commit OK, publish FAIL: the policy, exercised ----------------------
+    // ---- commit OK, publish FAIL: persisted is not active --------------------
     //
     // The reservation makes this unreachable in practice, so it is forced here.
-    // The decision: the profile IS on flash, so reporting "not accepted" would tell
-    // the operator their change was discarded when the next boot will run it. It is
-    // reported as accepted-and-persisted with a warning and no command id, which is
-    // the only description that is true in every part.
+    //
+    // The first attempt at a policy reported it as accepted-and-persisted, reasoning
+    // that the profile IS on flash so "not accepted" would understate it. That was
+    // wrong at the other end: `accepted` is what the UI waits on, and with no
+    // command id to follow it fell through to "no id = the mock backend applied it
+    // synchronously", confirmed against a status still Ready FOR THE OLD PROFILE,
+    // and announced "published and ACTIVE" for a profile the machine never loaded.
+    //
+    // So the two facts are reported separately and `outcome` names the state:
+    // persisted, NOT accepted, storedNotActivated. Neither half is rounded.
     {
-        beginCase("a publish that cannot be queued still reports the truth");
+        beginCase("a publish that cannot be queued reports stored, not active");
         resetStorage();
         Rig rig;
         rig.blockPublish = true;
         auto r = rig.publish(activatableProfile("Alpha"));
         check(r.persisted, "it IS persisted — the rename happened");
-        check(r.accepted, "and is reported accepted: the next boot runs it");
+        check(!r.accepted, "but NOT accepted: nothing is going to run it now");
+        check(std::string(r.outcome) == "storedNotActivated", "and the outcome says so");
         check(r.commandId == 0, "with no command id, because there is no command to follow");
         check(r.error != nullptr, "and an explicit warning");
         check(g_committed == "Alpha", "flash holds Alpha");
@@ -395,7 +405,9 @@ int main() {
         // And the transaction was released, so the device is not wedged.
         check(!rig.coord.busy(), "the snapshot lock is free again");
         rig.blockPublish = false;
-        check(rig.publish(activatableProfile("Bravo")).accepted, "the next publish works");
+        auto ok = rig.publish(activatableProfile("Bravo"));
+        check(ok.accepted, "the next publish works");
+        check(std::string(ok.outcome) == "activating", "and reports the normal outcome");
     }
 
     // ---- the snapshot lock covers the OTHER writer too ------------------------

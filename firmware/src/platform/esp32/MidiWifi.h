@@ -156,6 +156,7 @@ private:
     };
     Peer peers_[MidiOrigin::kNetworkPeerCount];
     void retirePeer(uint8_t slot);
+    void reapIdlePeers(uint32_t nowMs);
     // Origins whose peer was evicted or expired since the last call. The owner
     // drains this each loop and releases each one on the instrument; MidiWifi has
     // no business knowing what a note is.

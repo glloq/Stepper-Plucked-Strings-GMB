@@ -317,7 +317,12 @@
     // So the command poll carries the ~30 s budget (double park + arming), and
     // the status poll after it is a short confirmation, not a guess.
     function pollCommand(triesLeft) {
-      if (!commandId) return Promise.resolve('succeeded');  // mock / immediate path
+      // No id = the MOCK / legacy backend, which applies synchronously. On the real
+      // device a publish that reports no command id also reports
+      // outcome:"storedNotActivated", and saveProfile() handles that before ever
+      // getting here — reaching this line with a 0 from the device would confirm
+      // against a status that is still Ready for the OLD profile.
+      if (!commandId) return Promise.resolve('succeeded');
       return GMB.api.commandState(commandId).then(function (r) {
         var st = r && r.state;
         if (st === 'succeeded') return 'succeeded';
@@ -371,6 +376,18 @@
     return GMB.api.putProfile(state.profile).then(function (res) {
       if (res && res.capabilitiesRevision) state.profile.capabilitiesRevision = res.capabilitiesRevision;
       updateMockBadge();
+      // Stored, but the activation was never queued. The profile IS on flash — the
+      // next boot runs it — so the draft is genuinely saved; it is simply not
+      // running yet. This case used to fall into waitForActivation(0), which
+      // shortcuts to "succeeded" and then confirmed against a status that was
+      // still Ready FOR THE OLD PROFILE, so the UI announced "published and
+      // ACTIVE" for a profile the machine had never loaded.
+      if (res && res.outcome === 'storedNotActivated') {
+        markSaved();
+        GMB.toast('Saved, but NOT activated now: it takes effect at the next reboot. ' +
+                  ((res && res.error) || ''), 'warn');
+        return;
+      }
       if (res && res.accepted !== undefined) {
         GMB.toast('Profile accepted — activating…', 'ok');
         return waitForActivation(res.commandId).then(function (r) {
@@ -395,15 +412,22 @@
       GMB.toast('Profile saved (revision ' + (state.profile.capabilitiesRevision) + ').', 'ok');
     }).catch(function (e) {
       var body = e && e.body;
+      // The commit happens BEFORE the activation is queued, so a refusal here is
+      // not "nothing was saved" — the profile is on flash and the next boot runs
+      // it. What failed is the swap on a running machine, which a latched E-stop
+      // or an unconfirmed park can legitimately refuse. Saying "still unsaved"
+      // would send the operator to re-publish something already stored.
+      var storedAnyway = ' The configuration IS stored: it will be active after a ' +
+                         'reboot, or after a successful Reset & re-home.';
       if (e && e.cancelled)
-        GMB.toast('Activation cancelled (panic / E-stop / safety stop) — the draft ' +
-                  'is still unsaved.', 'error');
+        GMB.toast('Activation cancelled (panic / E-stop / safety stop).' + storedAnyway,
+                  'warn');
       else if (e && e.failed)
         GMB.toast('Activation FAILED on the device (parking could not be confirmed ' +
-                  'or arming failed) — check Diagnostics; the draft is still unsaved.',
-                  'error');
+                  'or arming failed) — check Diagnostics.' + storedAnyway, 'error');
       else if (e && e.refused)
-        GMB.toast('Activation refused by the device (safety locked or invalid profile).', 'error');
+        GMB.toast('Activation refused by the device (safety locked).' + storedAnyway,
+                  'warn');
       else if (!(body && body.issues && GMB.reportIssues('Save rejected', body.issues)))
         GMB.toast('Save failed: ' + ((body && body.error) || e.message), 'error');
       throw e;  // the toast is shown; callers still need the real outcome
