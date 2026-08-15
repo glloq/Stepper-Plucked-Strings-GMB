@@ -63,25 +63,82 @@ public:
 
     void begin(int queueLen) {
         queue_ = xQueueCreate(queueLen, sizeof(AppCommand*));
+        capacity_ = queueLen > 0 ? static_cast<uint32_t>(queueLen) : 0;
         resultMutex_ = xSemaphoreCreateMutex();
     }
+
+    // ---- two-phase enqueue -------------------------------------------------
+    //
+    // Some callers cannot afford "the command is now runnable" and "the change is
+    // now on flash" to happen in either order. Publishing a profile is the case:
+    //
+    //   persist then enqueue   a full queue returns 503 while the flash already
+    //                          holds the new configuration — the request failed
+    //                          and the next boot changed anyway
+    //   enqueue then persist   a flash failure leaves the machine running a
+    //                          configuration it will not come back as
+    //
+    // Splitting the write at its commit point fixed the first half. This splits
+    // the queue the same way, so the last window closes too: reserve() claims the
+    // capacity and the id but leaves the command invisible to loop(), the caller
+    // does its own commit, and only publish() makes it runnable. cancel() gives
+    // the slot back. The outcome is always PERSISTED AND ACCEPTED, or NEITHER.
+    //
+    // Reserved capacity is counted so a later publish() cannot fail for want of
+    // room: the accounting is deliberately conservative (a reservation and the
+    // message it becomes are both counted for an instant during publish), which
+    // can refuse one command early but never over-admits.
+    uint32_t reserve() {
+        if (!queue_ || capacity_ == 0) return 0;
+        uint32_t held = reserved_.fetch_add(1) + 1;
+        if (held + depth() > capacity_) {
+            reserved_.fetch_sub(1);
+            return 0;
+        }
+        return nextId_.fetch_add(1);
+    }
+
+    // Make a reserved command runnable, under the id reserve() handed out. Takes
+    // ownership of `in.profile` exactly as enqueue() does.
+    bool publish(uint32_t id, const AppCommand& in) {
+        if (!queue_ || id == 0) return false;
+        AppCommand c = in;
+        c.id = id;
+        AppCommand* h = new AppCommand(c);
+        if (xQueueSend(queue_, &h, 0) != pdTRUE) {
+            delete h->profile;  // transfer failed: don't leak the owned profile
+            delete h;
+            reserved_.fetch_sub(1);
+            return false;
+        }
+        setResult(id, CommandResultRing::Queued);
+        reserved_.fetch_sub(1);  // after the send: never under-count in the window
+        return true;
+    }
+
+    // Release a reservation that will never be published. The id is simply retired;
+    // it was never handed to a client, so there is no outcome to record.
+    void cancel(uint32_t id) {
+        if (id == 0) return;
+        reserved_.fetch_sub(1);
+    }
+
+    // Reservations outstanding (diagnostics / tests).
+    uint32_t reserved() const { return reserved_.load(); }
 
     // Enqueue a copy of `in` (web task). Assigns an id, records it as "queued" and
     // returns the id — 0 if the queue is full, so the caller reports back-pressure
     // instead of silently dropping the request. The owned copy is freed when the
     // command is drained or purged.
+    //
+    // Reserve-then-publish, so the capacity accounting is the SAME for every route:
+    // a direct enqueue that ignored reservations could take the last slot out from
+    // under a publish transaction that had already committed to flash.
     uint32_t enqueue(const AppCommand& in) {
-        if (!queue_) return 0;
-        AppCommand c = in;
-        c.id = nextId_.fetch_add(1);
-        AppCommand* h = new AppCommand(c);
-        if (xQueueSend(queue_, &h, 0) != pdTRUE) {
-            delete h->profile;  // transfer failed: don't leak the owned profile
-            delete h;
-            return 0;
-        }
-        setResult(c.id, CommandResultRing::Queued);
-        return c.id;
+        uint32_t id = reserve();
+        if (id == 0) return 0;
+        if (!publish(id, in)) return 0;
+        return id;
     }
 
     // Drain a BOUNDED number of queued commands (main loop) so a long burst — many
@@ -146,6 +203,8 @@ private:
     QueueHandle_t queue_ = nullptr;
     SemaphoreHandle_t resultMutex_ = nullptr;
     std::atomic<uint32_t> nextId_{1};
+    uint32_t capacity_ = 0;
+    std::atomic<uint32_t> reserved_{0};
     CommandResultRing results_;
 };
 
