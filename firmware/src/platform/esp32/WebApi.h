@@ -45,6 +45,11 @@ struct WebContext {
     Net* net = nullptr;
     SafetyManager* safety = nullptr;
     ProfileStorage* storage = nullptr;
+    // The one lock on /active.json (ActiveSnapshotLock.h). The publish transaction
+    // takes it through the coordinator; routes that touch the snapshot by other
+    // means — the deliberate reformat — must take it directly, or they can act in
+    // the window between a publish's prepare and its commit.
+    ActiveSnapshotLock* snapshotLock = nullptr;
     std::function<void()> onPanic;
     // The enqueue callbacks return the assigned command id (0 = queue full), so
     // the 202 response can carry it and GET /api/commands can report the outcome.
@@ -179,10 +184,25 @@ public:
     // be observed: everything true, or `accepted` and `persisted` both false. There
     // is no longer a state where the machine runs one configuration and boots
     // another, so callers no longer have to warn about one.
+    // PERSISTED and ACTIVE are different facts, and the response says which it
+    // means. Collapsing them into one `accepted` was a promise the firmware cannot
+    // keep: the commit puts the profile on flash — so it IS what boots — while the
+    // activation still has to survive loop(), where a latched E-stop or a park that
+    // will not confirm can refuse it. The machine then runs the old profile and
+    // boots the new one, which is a real state and needs a name rather than a
+    // rounding.
+    //
+    //   activating          persisted, queued — the usual answer, still not "active"
+    //   storedNotActivated  persisted, NOT queued — takes effect at the next boot
+    //   rejected            nothing happened anywhere
+    //
+    // "active" is deliberately absent: nothing synchronous can report it. It is
+    // the command's own terminal state, polled through GET /api/commands.
     struct PublishResult {
         bool accepted = false;    // the activation is queued for loop()
         bool persisted = false;   // /active.json now holds it
         uint32_t commandId = 0;
+        const char* outcome = "rejected";
         const char* error = nullptr;
         int httpStatus = 202;
     };

@@ -5,10 +5,18 @@
 #define WIFI_SCAN_FAILED (-2)
 enum WiFiMode { WIFI_OFF, WIFI_STA, WIFI_AP, WIFI_AP_STA };
 enum WifiAuthMode { WIFI_AUTH_OPEN = 0, WIFI_AUTH_WPA2_PSK = 3 };
+// Carries a real value, like the Arduino type. It used to convert to a constant 0,
+// which made every remote host look like the same host — fine for a compile check,
+// useless for anything that distinguishes senders by (ip, port), which is the whole
+// basis of MIDI origins.
 class IPAddress {
  public:
+  IPAddress() = default;
+  explicit IPAddress(uint32_t v) : v_(v) {}
   String toString() const { return String("0.0.0.0"); }
-  operator uint32_t() const { return 0; }  // real Arduino IPAddress has this
+  operator uint32_t() const { return v_; }  // real Arduino IPAddress has this
+ private:
+  uint32_t v_ = 0;
 };
 class WiFiClassStub {
 public:

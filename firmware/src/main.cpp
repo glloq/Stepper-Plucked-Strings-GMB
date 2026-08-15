@@ -766,6 +766,103 @@ bool writeBootstrapNetworkNvs(const NetworkConfig& cfg) {
     return ok;
 }
 
+// ---- Wi-Fi credentials: staged, then promoted ---------------------------------
+//
+// The secrets live in NVS and the link config lives in /active.json on LittleFS.
+// Two stores means no single atomic write, and the pair is meaningless split: an
+// SSID without its password joins nothing. The old code wrote the secrets first,
+// unconditionally and unchecked, so a busy lock or a failed flash write answered
+// "nothing was changed" to a caller whose password had already changed.
+//
+// So the secrets get the same treatment the snapshot already had — stage, then
+// commit — under staging keys that boot knows how to finish or discard:
+//
+//   stage    write wifipass.new / appass.new (+ a marker naming what to do)
+//   promote  copy them onto the live keys and clear the marker
+//   discard  drop the staging keys; the live ones were never touched
+//
+// The marker is what makes a power cut recoverable rather than a guess: it says
+// "a promotion was in progress", so boot can complete it. Without it, staging keys
+// left over from an abandoned attempt are indistinguishable from a half-done one.
+//
+// Clearing a password is staged the same way, as an explicit "erase" marker —
+// otherwise "no staged value" would mean both "leave it alone" and "remove it".
+namespace wifiSecrets {
+constexpr const char* kStagedSta = "stastage";
+constexpr const char* kStagedAp = "apstage";
+constexpr const char* kMarker = "secmark";   // bit 0: station, bit 1: AP
+constexpr const char* kErase = "secerase";   // same bits: the staged action is ERASE
+}  // namespace wifiSecrets
+
+bool stageWifiSecrets(const WebContext::WifiRequest& rq) {
+    uint8_t touched = 0, erase = 0;
+    Preferences p;
+    p.begin("gmb", false);
+    bool ok = true;
+    // Only stage a password that was actually provided; erasing one is explicit, so
+    // "leave blank to keep" and "really forget it" stay distinct.
+    if (rq.hasStationPassword) {
+        ok = p.putString(wifiSecrets::kStagedSta, String(rq.stationPassword.c_str())) > 0 && ok;
+        touched |= 1;
+    } else if (rq.clearStationPassword) {
+        touched |= 1;
+        erase |= 1;
+    }
+    if (rq.hasApPassword) {
+        ok = p.putString(wifiSecrets::kStagedAp, String(rq.apPassword.c_str())) > 0 && ok;
+        touched |= 2;
+    } else if (rq.clearApPassword) {
+        touched |= 2;
+        erase |= 2;
+    }
+    if (touched) {
+        ok = p.putUChar(wifiSecrets::kErase, erase) > 0 && ok;
+        // The marker LAST: it is what a boot reads to decide the promotion was
+        // real, so it must not exist before the values it refers to.
+        ok = p.putUChar(wifiSecrets::kMarker, touched) > 0 && ok;
+    }
+    p.end();
+    return ok;
+}
+
+void discardStagedWifiSecrets() {
+    Preferences p;
+    p.begin("gmb", false);
+    // The marker first: with it gone, whatever is left is inert.
+    p.remove(wifiSecrets::kMarker);
+    p.remove(wifiSecrets::kErase);
+    p.remove(wifiSecrets::kStagedSta);
+    p.remove(wifiSecrets::kStagedAp);
+    p.end();
+}
+
+// Copy the staged values onto the live keys. Idempotent, so boot can re-run it
+// after a power cut without needing to know how far the previous attempt got.
+bool promoteStagedWifiSecrets() {
+    Preferences p;
+    p.begin("gmb", false);
+    uint8_t touched = p.getUChar(wifiSecrets::kMarker, 0);
+    if (!touched) { p.end(); return true; }   // nothing staged: trivially done
+    uint8_t erase = p.getUChar(wifiSecrets::kErase, 0);
+    bool ok = true;
+    if (touched & 1) {
+        if (erase & 1) p.remove("wifipass");
+        else ok = p.putString("wifipass", p.getString(wifiSecrets::kStagedSta, "")) > 0 && ok;
+    }
+    if (touched & 2) {
+        if (erase & 2) p.remove("appass");
+        else ok = p.putString("appass", p.getString(wifiSecrets::kStagedAp, "")) > 0 && ok;
+    }
+    if (ok) {
+        p.remove(wifiSecrets::kMarker);
+        p.remove(wifiSecrets::kErase);
+        p.remove(wifiSecrets::kStagedSta);
+        p.remove(wifiSecrets::kStagedAp);
+    }
+    p.end();
+    return ok;
+}
+
 // Reconfigure the radio after POST /api/wifi with apply:true. Runs on the main
 // loop, which owns Net; Net::begin() resets the failure counters and any forced-
 // hotspot latch, then re-runs the station attempt / AP with the usual automatic
@@ -847,6 +944,7 @@ WebContext buildWebContext() {
     ctx.net = &g_net;
     ctx.safety = &g_safety;
     ctx.storage = &g_storage;
+    ctx.snapshotLock = &g_snapshotLock;
     // Every mutating callback below only ENQUEUES a command; loop() executes it.
     // The returned bool means "accepted into the queue", not "already done".
     // STOP is never enqueued (it must not be lost behind a full queue): it sets a
@@ -981,16 +1079,27 @@ WebContext buildWebContext() {
     // publishes; nothing guarded it against this route.
     ctx.onSetWifi = [](const WebContext::WifiRequest& rq) -> WifiResult {
         WifiResult res;
-        {
-            Preferences p;
-            p.begin("gmb", false);
-            // Only overwrite a password that was actually provided; erasing one is
-            // explicit, so "leave blank to keep" and "really forget it" stay distinct.
-            if (rq.hasStationPassword) p.putString("wifipass", String(rq.stationPassword.c_str()));
-            else if (rq.clearStationPassword) p.remove("wifipass");
-            if (rq.hasApPassword) p.putString("appass", String(rq.apPassword.c_str()));
-            else if (rq.clearApPassword) p.remove("appass");
-            p.end();
+        // Take the snapshot lock FIRST and hold it across the whole operation. The
+        // credentials and the link config are one change — an SSID without its
+        // password reaches no network — so they must not be able to interleave with
+        // anything else that writes the snapshot, and neither half may land without
+        // the other.
+        ActiveSnapshotLock::Guard snap(g_snapshotLock);
+        if (!snap.held()) {
+            res.error = "another configuration write is in progress — retry in a moment";
+            res.httpStatus = 503;
+            return res;   // nothing touched anywhere
+        }
+        // Secrets are STAGED, not written. They used to go straight into their live
+        // keys before the lock was even taken, so a busy lock or a failed flash
+        // write returned "nothing was changed" to a caller whose password had
+        // already changed — and the putString results were unchecked, so a full NVS
+        // was silently a success.
+        if (!stageWifiSecrets(rq)) {
+            discardStagedWifiSecrets();
+            res.error = "could not stage the Wi-Fi credentials — nothing was changed";
+            res.httpStatus = 507;
+            return res;
         }
         if (rq.hasNetwork) {
             // The link config belongs to the device half of the active snapshot,
@@ -1000,22 +1109,52 @@ WebContext buildWebContext() {
             { StateGuard lock; candidate = g_profile; }
             candidate.network = rq.network;
             if (ProfileValidator::isActivatable(candidate)) {
-                ActiveSnapshotLock::Guard snap(g_snapshotLock);
-                if (!snap.held()) {
-                    res.error = "another configuration write is in progress — "
-                                "retry in a moment";
-                    res.httpStatus = 503;
-                    return res;   // nothing touched: not the flash, not the RAM
-                }
-                bool wrote;
+                // Stage the snapshot too, so BOTH halves are staged before either
+                // is committed. Only then is there a point past which the change
+                // cannot be abandoned.
+                bool staged;
                 { if (g_storageMutex) xSemaphoreTake(g_storageMutex, portMAX_DELAY);
-                  wrote = g_storage.prepareActive(candidate) && g_storage.commitActive();
-                  if (!wrote) g_storage.discardActive();
+                  staged = g_storage.prepareActive(candidate);
                   if (g_storageMutex) xSemaphoreGive(g_storageMutex); }
-                if (!wrote) {
+                if (!staged) {
+                    discardStagedWifiSecrets();
                     res.error = "could not write the network settings to storage — "
                                 "nothing was changed";
                     res.httpStatus = 507;   // Insufficient Storage
+                    return res;
+                }
+                // ---- the commit point --------------------------------------
+                // The secrets go live first and the snapshot second, because THIS
+                // order is the recoverable one. If power is lost between them, the
+                // next boot sees live credentials next to an old SSID and a staged
+                // /active.json.tmp — and finishCredentialPromotion() at boot has
+                // everything it needs to tell that apart. The reverse order leaves
+                // a new SSID with an old password and nothing recording that a
+                // password was ever meant to change.
+                if (!promoteStagedWifiSecrets()) {
+                    { if (g_storageMutex) xSemaphoreTake(g_storageMutex, portMAX_DELAY);
+                      g_storage.discardActive();
+                      if (g_storageMutex) xSemaphoreGive(g_storageMutex); }
+                    discardStagedWifiSecrets();
+                    res.error = "could not store the Wi-Fi credentials — "
+                                "nothing was changed";
+                    res.httpStatus = 507;
+                    return res;
+                }
+                bool wrote;
+                { if (g_storageMutex) xSemaphoreTake(g_storageMutex, portMAX_DELAY);
+                  wrote = g_storage.commitActive();
+                  if (!wrote) g_storage.discardActive();
+                  if (g_storageMutex) xSemaphoreGive(g_storageMutex); }
+                if (!wrote) {
+                    // The credentials ARE live and the SSID is not. Say so exactly:
+                    // the device keeps its old network with a new password for it,
+                    // which is a state the operator can act on, and the AP fallback
+                    // keeps the machine reachable either way.
+                    res.error = "the Wi-Fi credentials were stored but the network "
+                                "settings could not be — the device keeps its "
+                                "previous SSID; retry";
+                    res.httpStatus = 507;
                     return res;
                 }
                 // Any bootstrap/legacy keys are now superseded. Leaving them would
@@ -1023,9 +1162,11 @@ WebContext buildWebContext() {
                 // boot reads them last precisely because they mean "the snapshot
                 // could not hold this yet", and that has stopped being true.
                 clearLegacyNetworkNvs();
-            } else if (!writeBootstrapNetworkNvs(rq.network)) {
+            } else if (!writeBootstrapNetworkNvs(rq.network) ||
+                       !promoteStagedWifiSecrets()) {
                 // CONFIG_SAFE: no snapshot exists to carry it. See
                 // writeBootstrapNetworkNvs() — the fallback store, not a duplicate.
+                discardStagedWifiSecrets();
                 res.error = "could not write the network settings to NVS — "
                             "nothing was changed";
                 res.httpStatus = 507;
@@ -1034,6 +1175,13 @@ WebContext buildWebContext() {
             // Stored. ONLY NOW does the running profile adopt it.
             { StateGuard lock; g_profile.network = rq.network; }
             res.persisted = true;
+        } else if (!promoteStagedWifiSecrets()) {
+            // A password-only change: no snapshot to write, so the promotion is the
+            // whole commit.
+            discardStagedWifiSecrets();
+            res.error = "could not store the Wi-Fi credentials — nothing was changed";
+            res.httpStatus = 507;
+            return res;
         }
         res.ok = true;
         if (rq.apply) {
@@ -1247,6 +1395,25 @@ void setup() {
     // per-string frets, string mapping/order). The block carries its own version
     // byte so a v1-only client can still detect and skip it.
     g_sysex.setUseV2(true);
+
+    // Finish an interrupted credential promotion BEFORE reading anything else.
+    //
+    // POST /api/wifi stages the secrets, promotes them, then commits the snapshot.
+    // Lose power between the promote and the commit and the live secrets are ahead
+    // of the stored SSID — recoverable, because the AP fallback keeps the machine
+    // reachable. Lose it DURING the promote and one of the two keys may be written
+    // and the other not; the marker says a promotion was in flight, so finishing it
+    // is the one action that leaves a defined state. It is idempotent, so running
+    // it on every boot costs a single NVS read when nothing is staged.
+    if (!promoteStagedWifiSecrets()) {
+        // Cannot finish it either: drop the staging rather than leave a marker that
+        // will be retried forever. The live keys are whatever the interrupted
+        // promotion managed, and the operator can set them again over the hotspot.
+        discardStagedWifiSecrets();
+        g_safety.recordFault("storage",
+                             "an interrupted Wi-Fi credential update could not be "
+                             "completed — re-enter the Wi-Fi password", millis());
+    }
 
     // Wi-Fi SECRETS live in NVS, never in the exportable profile (§20). The link
     // config itself lives in the active snapshot's device half — one home, not two.

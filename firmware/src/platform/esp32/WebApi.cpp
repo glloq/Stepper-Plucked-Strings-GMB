@@ -657,8 +657,11 @@ void WebApi::registerRoutes() {
             doc["accepted"] = pr.accepted;
             doc["persisted"] = pr.persisted;
             doc["commandId"] = pr.commandId;
+            doc["outcome"] = pr.outcome;
             if (pr.error) doc["error"] = pr.error;
-            doc["note"] = pr.accepted ? "activation queued and stored" : "not published";
+            doc["note"] = pr.accepted ? "activation queued and stored"
+                        : pr.persisted ? "stored; active after a reboot"
+                                       : "not published";
             sendJson(req, doc, pr.httpStatus);
         });
     putProfile->setMethod(HTTP_PUT);
@@ -794,10 +797,12 @@ void WebApi::registerRoutes() {
             doc["accepted"] = pr.accepted;
             doc["persisted"] = pr.persisted;
             doc["commandId"] = pr.commandId;
+            doc["outcome"] = pr.outcome;
             if (pr.error) doc["error"] = pr.error;
             doc["note"] = pr.accepted
                               ? "instrument activation queued and stored (device config kept)"
-                              : "not published";
+                        : pr.persisted ? "stored; active after a reboot"
+                                       : "not published";
             sendJson(req, doc, pr.httpStatus);
         });
     loadProfile->setMethod(HTTP_POST);
@@ -1137,10 +1142,26 @@ void WebApi::registerRoutes() {
     server_->on("/api/storage/format", HTTP_POST, [this](AsyncWebServerRequest* req) {
         if (!authOk(req)) { JsonDocument d; d["ok"] = false; d["error"] = "unauthorized";
                             sendJson(req, d, 401); return; }
+        JsonDocument doc;
+        // The SNAPSHOT lock as well as the storage lock. A publish holds the
+        // snapshot across two SEPARATE storage-locked sections — prepare, then
+        // commit — so a format that took only the storage lock could slip into the
+        // gap, wipe the filesystem, and leave the commit renaming a temp file that
+        // no longer exists. Rare and deliberate, but destructive enough to refuse
+        // rather than race.
+        //
+        // Acquired, not merely tested: busy() then act is the same check-then-use
+        // hole in miniature.
+        if (ctx_.snapshotLock && !ctx_.snapshotLock->tryAcquire()) {
+            doc["ok"] = false;
+            doc["error"] = "a configuration write is in progress — retry in a moment";
+            sendJson(req, doc, 503);
+            return;
+        }
         bool ok;
         { WebStorageLock sl(ctx_);  // serialise with other LittleFS operations
           ok = ctx_.onFormatStorage && ctx_.onFormatStorage(); }
-        JsonDocument doc;
+        if (ctx_.snapshotLock) ctx_.snapshotLock->release();
         doc["ok"] = ok;
         if (!ok) doc["error"] = "format failed or unavailable";
         sendJson(req, doc, ok ? 200 : 500);
@@ -1324,8 +1345,9 @@ WebApi::PublishResult WebApi::publishProfile(const Profile& p,
     // branch to prove it stays a warning rather than becoming a refusal.
     if (!ctx_.onPublishActivation(token)) {
         r.persisted = true;
-        r.accepted = true;
-        r.commandId = 0;   // there is no command to follow
+        r.accepted = false;      // it is NOT going to run: nothing to wait for
+        r.commandId = 0;         // and no command to follow
+        r.outcome = "storedNotActivated";
         r.error = "stored, but the activation could not be queued — it takes effect "
                   "at the next reboot";
         r.httpStatus = 202;
@@ -1334,6 +1356,7 @@ WebApi::PublishResult WebApi::publishProfile(const Profile& p,
     r.accepted = true;
     r.persisted = true;
     r.commandId = token;
+    r.outcome = "activating";
     r.httpStatus = 202;
     return r;
 }

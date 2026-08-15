@@ -28,12 +28,42 @@
   // edit falls back to "unknown security" and shows the password field again.
   var wifi = { stationPassword: '', apPassword: '', forgetStation: false,
                forgetAp: false, openNetwork: false, pickedSsid: '' };
+
+  // The link fields are edited in a DRAFT, not in the published profile.
+  //
+  // They used to be bound straight to GMB.state.profile.network, and saving meant
+  // PUT /api/profile (which publishes the whole profile, network included) and THEN
+  // POST /api/wifi for the credentials. Two requests, two chances to stop:
+  //
+  //     PUT  /api/profile   -> /active.json already holds the new SSID
+  //     POST /api/wifi      -> lost: browser closed, Wi-Fi dropped, device busy
+  //     reboot              -> new SSID, old password, joins nothing
+  //
+  // An SSID and its password are one change. The draft keeps the published profile
+  // untouched until a SINGLE request carries both, and /api/wifi writes the
+  // snapshot's device half itself, so nothing else needs publishing.
+  var netDraft = null;
+  function networkDraft() {
+    if (!netDraft) netDraft = GMB.deepCopy((GMB.state.profile && GMB.state.profile.network) || {});
+    return netDraft;
+  }
+  // Drop the draft so the tab re-reads the device's real values (after a save, or
+  // when the profile is reloaded under it).
+  function resetNetworkDraft() { netDraft = null; }
   // Wi-Fi scan state: null until a scan ran; { scanning, networks } afterwards.
   var scan = null;
   var scanPollTimer = null;
 
+  // The link half of what was just sent, so the in-memory profile matches the
+  // device without a round trip. Credentials are never mirrored: they are
+  // write-only and the profile has never held them.
+  function payloadNetwork(payload) {
+    return { mode: payload.mode, ssid: payload.ssid, apSsid: payload.apSsid,
+             hostname: payload.hostname };
+  }
+
   function openNetworkSelected() {
-    var net = GMB.state.profile && GMB.state.profile.network;
+    var net = networkDraft();
     return wifi.openNetwork && net && net.ssid === wifi.pickedSsid;
   }
 
@@ -151,7 +181,7 @@
   }
 
   function pickNetwork(entry) {
-    var net = GMB.state.profile.network;
+    var net = networkDraft();
     net.mode = 'station';
     net.ssid = entry.ssid;
     wifi.pickedSsid = entry.ssid;
@@ -183,7 +213,7 @@
   }
 
   function networkTab(host) {
-    var net = GMB.state.profile.network;
+    var net = networkDraft();
 
     host.appendChild(section('Network', h('div.form-grid', [
       GMB.field('Mode', GMB.input(net, 'mode', {
@@ -535,7 +565,7 @@
   // browser is using (hotspot -> station or back), which used to kill the profile
   // PUT that was still queued behind it.
   function save() {
-    var net = GMB.state.profile.network;
+    var net = networkDraft();
     // WPA2 needs 8..63 chars — anything shorter would silently start an OPEN
     // hotspot, so refuse it here too (the API also answers 422).
     if (wifi.apPassword && (wifi.apPassword.length < 8 || wifi.apPassword.length > 63)) {
@@ -556,34 +586,35 @@
       payload.clearStationPassword = true;
     if (wifi.forgetAp) payload.clearApPassword = true;
     var switching = net.mode === 'station';
-    GMB.saveProfile()
-      .then(function () {
-        // Profile safely published: NOW store + apply the network settings.
-        return GMB.api.setWifi(payload).then(function (r) {
-          wifi.stationPassword = ''; wifi.apPassword = '';
-          wifi.forgetStation = false; wifi.forgetAp = false;
-          // Report what the DEVICE says happened, not what we hoped. `persisted`
-          // and `applied` are separate answers now: the device writes the snapshot
-          // first and only asks the radio once that succeeded, so a failure comes
-          // back as an error rather than as a success with a caveat in its note.
-          GMB.toast(r && r.applied
-            ? 'Network settings saved and applied — the device is reconfiguring its radio.'
-            : ('Network settings ' + ((r && r.note) || 'stored — reboot to apply.')),
-            'ok');
-          if (switching && r && r.applied)
-            GMB.toast('If you are connected through the hotspot, the device may now ' +
-                      'switch networks — reconnect on the new network if this page ' +
-                      'stops responding.', 'warn');
-        }, function (e) {
-          var body = e && e.body;
-          GMB.toast('Network save failed: ' + ((body && body.error) || (e && e.message) || e),
-                    'error');
-        });
-      })
-      .catch(function () {
-        // Profile save failed (already toasted): the network change was NOT
-        // stored or applied — fix the draft and save again.
-      });
+    // ONE request. This used to publish the whole profile first and then send the
+    // credentials, so a browser closed between the two — or a Wi-Fi drop, which is
+    // exactly what a network change invites — stored the new SSID with the old
+    // password. /api/wifi writes the snapshot's device half itself, so there is
+    // nothing to publish beforehand and no window to lose.
+    GMB.api.setWifi(payload).then(function (r) {
+      wifi.stationPassword = ''; wifi.apPassword = '';
+      wifi.forgetStation = false; wifi.forgetAp = false;
+      // The device has it now, so re-read rather than keep editing a stale draft.
+      resetNetworkDraft();
+      if (GMB.state.profile && GMB.state.profile.network && r && r.persisted)
+        GMB.state.profile.network = GMB.deepCopy(payloadNetwork(payload));
+      // Report what the DEVICE says happened, not what we hoped. `persisted` and
+      // `applied` are separate answers: the device stages both halves, commits
+      // them together, and only then asks the radio.
+      GMB.toast(r && r.applied
+        ? 'Network settings saved and applied — the device is reconfiguring its radio.'
+        : ('Network settings ' + ((r && r.note) || 'stored — reboot to apply.')),
+        'ok');
+      if (switching && r && r.applied)
+        GMB.toast('If you are connected through the hotspot, the device may now ' +
+                  'switch networks — reconnect on the new network if this page ' +
+                  'stops responding.', 'warn');
+      drawTab();
+    }, function (e) {
+      var body = e && e.body;
+      GMB.toast('Network save failed: ' + ((body && body.error) || (e && e.message) || e),
+                'error');
+    });
   }
 
   function startHotspot() {

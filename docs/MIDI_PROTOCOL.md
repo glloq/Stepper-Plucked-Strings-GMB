@@ -79,6 +79,15 @@ Three rules close it, and all three are needed:
   one chosen rather than an arbitrary one.
 * **Silent slots are reclaimed** after `kPeerIdleTimeoutMs` (10 minutes), so the
   table does not silt up with dead reconnects and start evicting live players.
+  Reaped from `poll()` on every pass, not only when an unknown sender arrives —
+  otherwise the rule was really "ten minutes *and* then only once somebody new
+  turns up", and a peer that vanished mid-set kept its origin for as long as the
+  network stayed quiet.
+* **A slot is claimed only by a datagram that parses as MIDI.** `originFor()` can
+  evict, and an eviction releases whatever that peer left sounding, so calling it
+  before the packet was known to be MIDI meant one junk datagram — a port scan, a
+  stray broadcast — could take a live controller's slot and damp its strings
+  mid-phrase. Parse first, allocate second, stamp the events with the origin.
 * **Losing a slot is reported.** `MidiWifi::takeReleasedOrigins()` hands the owner
   every origin that was evicted or expired, and `main.cpp` calls
   `InstrumentController::releaseOrigin()` on each: notes, chord buffer, sustain

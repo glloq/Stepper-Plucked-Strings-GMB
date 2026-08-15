@@ -98,7 +98,15 @@ $CXX $pubflags "$here/main_publish.cpp" \
 # UDP MIDI origin identity, also off-Arduino: MidiWifi's peer table lives outside
 # the ARDUINO guard, so the property that keeps a Note Off matched to its Note On
 # can be driven without a socket.
-$CXX $pubflags "$here/main_origins.cpp" \
+# WITH -DARDUINO: the origin rule that matters — claim a slot only once the
+# datagram has parsed as MIDI — is an ORDER inside poll(), which is Arduino-gated.
+# Driving it needs a UDP stub that actually delivers datagrams (stubs/WiFiUdp.h);
+# the shared hostcheck one answers "no packet" forever, which type-checks poll()
+# and can never run it.
+originflags="-std=gnu++17 -Wall -Wextra -Werror -Wno-unused-variable \
+  -DARDUINO=300 -DESP_ARDUINO_VERSION_MAJOR=3 \
+  -I$here/stubs -I$here/../hostcheck/stubs"
+$CXX $originflags "$here/main_origins.cpp" \
   "$root/src/platform/esp32/MidiWifi.cpp" \
   $core/midi/MidiParser.cpp \
   $core/Types.cpp \
