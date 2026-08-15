@@ -61,6 +61,30 @@ public:
     bool notifyLastSender(const uint8_t* data, size_t len);
     bool hasLastSender() const { return lastSenderPort_ != 0; }
 
+    // Origins whose peer slot was evicted or expired during the last poll(). The
+    // owner must release each one on the instrument (see releaseOrigin), because
+    // those senders no longer exist and nothing they left active will ever be
+    // matched again. Drained by the call.
+    std::vector<uint8_t> takeReleasedOrigins() {
+        std::vector<uint8_t> out;
+        out.swap(releasedOrigins_);
+        return out;
+    }
+
+    // The origin this (ip, port) has right now, allocating or recycling a slot as
+    // needed and stamping it as seen at `nowMs`. Public because it IS the
+    // transport's identity contract — "the same sender keeps the same origin, and a
+    // sender that loses its slot is reported as released" is the property that
+    // keeps a Note Off matched to its Note On, and a property nothing can call is a
+    // property nothing can check.
+    uint8_t originFor(const UdpSource& src, uint32_t nowMs);
+
+    // How long a silent peer keeps its origin. Long enough that a pause between
+    // pieces is not an eviction, short enough that a laptop closed an hour ago is
+    // not still holding a slot against a live player. Anything it left sounding is
+    // released when the slot goes, so expiry is never how a note gets stuck.
+    static constexpr uint32_t kPeerIdleTimeoutMs = 10u * 60u * 1000u;  // 10 minutes
+
     // Dropped-input counters (oversized datagrams / per-tick event overflow) so a
     // sustained MIDI overflow is observable rather than silent.
     uint32_t droppedEvents() const { return droppedEvents_; }
@@ -99,14 +123,43 @@ private:
     // and one host's Note Off releases the other's note. Each (IP, port) therefore
     // gets a small origin id, which is what the note key is actually built from.
     //
-    // A fixed ring of ids, reused oldest-first when more than kNetworkPeerCount
-    // hosts appear. Recycling an id can only confuse two peers with each other,
-    // which is exactly the behaviour of NOT having ids at all — so the worst case
-    // is the old behaviour, for the 13th simultaneous controller.
-    struct Peer { uint32_t ip = 0; uint16_t port = 0; bool used = false; };
+    // The table is bounded, so ids get REUSED, and the first version of this
+    // reasoned that reuse "can only confuse two peers with each other, which is the
+    // behaviour of not having ids at all". That was wrong, and wrong in the
+    // direction that leaves a finger on a string:
+    //
+    //     PC A  -> NoteOn ch1 C4        recorded as (origin 4, ch1, C4)
+    //     ...   13 more endpoints appear, A's slot is recycled
+    //     PC A  -> NoteOff ch1 C4       A is new again: (origin 7, ch1, C4)
+    //                                   -> no match, the Note Off is lost
+    //
+    // Without ids, A's key was stable — shared with others, but stable. Recycling
+    // changes ONE sender's identity between its own Note On and its Note Off, which
+    // the earlier design could not do. And it does not take 13 simultaneous
+    // players: a client that reconnects on a new ephemeral port each time is a new
+    // (ip, port) every time, and nothing ever expired.
+    //
+    // Three things fix it, and all three are needed:
+    //   * a last-seen stamp, so eviction takes the LEAST RECENTLY USED peer instead
+    //     of the next one round the ring — which could evict a peer that is
+    //     mid-note while an idle slot sat unused;
+    //   * an idle timeout, so slots free themselves and the common case (serial
+    //     reconnects) never reaches eviction at all;
+    //   * releaseOrigin() on the way out: whatever the evicted peer left active is
+    //     released, because that identity is gone. A note that outlives its sender
+    //     is a stuck note whatever the table size.
+    struct Peer {
+        uint32_t ip = 0;
+        uint16_t port = 0;
+        bool used = false;
+        uint32_t lastSeenMs = 0;
+    };
     Peer peers_[MidiOrigin::kNetworkPeerCount];
-    uint8_t nextPeerSlot_ = 0;
-    uint8_t originFor(const UdpSource& src);
+    void retirePeer(uint8_t slot);
+    // Origins whose peer was evicted or expired since the last call. The owner
+    // drains this each loop and releases each one on the instrument; MidiWifi has
+    // no business knowing what a note is.
+    std::vector<uint8_t> releasedOrigins_;
 #if defined(ARDUINO)
     WiFiUDP udp_;
     IPAddress lastSenderIp_;

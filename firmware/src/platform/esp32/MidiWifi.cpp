@@ -11,22 +11,56 @@ void MidiWifi::begin(uint16_t port) {
 }
 
 // The origin id for a sender, allocated on first sight.
-uint8_t MidiWifi::originFor(const UdpSource& src) {
-    for (uint8_t i = 0; i < MidiOrigin::kNetworkPeerCount; ++i)
-        if (peers_[i].used && peers_[i].ip == src.ip && peers_[i].port == src.port)
+uint8_t MidiWifi::originFor(const UdpSource& src, uint32_t nowMs) {
+    // Known sender: refresh its stamp and keep its id. This is the only path that
+    // matters for a note's identity — a sender's origin must not change between its
+    // Note On and its Note Off, and the only way to guarantee that is never to take
+    // a slot away from a peer that is still talking.
+    for (uint8_t i = 0; i < MidiOrigin::kNetworkPeerCount; ++i) {
+        if (peers_[i].used && peers_[i].ip == src.ip && peers_[i].port == src.port) {
+            peers_[i].lastSeenMs = nowMs;
             return static_cast<uint8_t>(MidiOrigin::kFirstNetworkPeer + i);
+        }
+    }
+
+    // Reap anything silent for longer than the idle timeout BEFORE looking for a
+    // free slot. Without this the table only ever fills: a client that reconnects
+    // on a fresh ephemeral port is a new (ip, port) every time, and twelve of those
+    // is an afternoon, not a concert.
+    for (uint8_t i = 0; i < MidiOrigin::kNetworkPeerCount; ++i) {
+        if (!peers_[i].used) continue;
+        if (static_cast<uint32_t>(nowMs - peers_[i].lastSeenMs) < kPeerIdleTimeoutMs) continue;
+        retirePeer(i);
+    }
+
     for (uint8_t i = 0; i < MidiOrigin::kNetworkPeerCount; ++i) {
         if (peers_[i].used) continue;
-        peers_[i] = Peer{src.ip, src.port, true};
+        peers_[i] = Peer{src.ip, src.port, true, nowMs};
         return static_cast<uint8_t>(MidiOrigin::kFirstNetworkPeer + i);
     }
-    // Full: recycle the oldest slot. Two peers then share an id, which is the
-    // behaviour we had before ids existed — a bounded, understood degradation
-    // rather than an unbounded table on a device with 512 KB of RAM.
-    uint8_t slot = nextPeerSlot_;
-    nextPeerSlot_ = static_cast<uint8_t>((nextPeerSlot_ + 1) % MidiOrigin::kNetworkPeerCount);
-    peers_[slot] = Peer{src.ip, src.port, true};
-    return static_cast<uint8_t>(MidiOrigin::kFirstNetworkPeer + slot);
+
+    // Still full: evict the LEAST RECENTLY USED peer, not the next one round a
+    // ring. Round-robin could take the slot of a peer that is mid-note while an
+    // idle one sat untouched — choosing the quietest peer is both fairer and the
+    // one least likely to have anything sounding.
+    uint8_t victim = 0;
+    for (uint8_t i = 1; i < MidiOrigin::kNetworkPeerCount; ++i)
+        if (static_cast<int32_t>(peers_[i].lastSeenMs - peers_[victim].lastSeenMs) < 0)
+            victim = i;
+    retirePeer(victim);
+    peers_[victim] = Peer{src.ip, src.port, true, nowMs};
+    return static_cast<uint8_t>(MidiOrigin::kFirstNetworkPeer + victim);
+}
+
+// Free a slot and record that its origin must be released. The peer it named is
+// gone as far as this device is concerned: its next datagram gets a different id,
+// so its own Note Off can no longer match its own Note On. Whatever it left
+// sounding has to be released here, or it is held until something unrelated
+// happens to reuse that string.
+void MidiWifi::retirePeer(uint8_t slot) {
+    if (slot >= MidiOrigin::kNetworkPeerCount || !peers_[slot].used) return;
+    peers_[slot] = Peer{};
+    releasedOrigins_.push_back(static_cast<uint8_t>(MidiOrigin::kFirstNetworkPeer + slot));
 }
 
 void MidiWifi::poll(uint32_t nowUs) {
@@ -69,7 +103,7 @@ void MidiWifi::poll(uint32_t nowUs) {
             // continue/terminate another sender's message (shared-parser fix).
             parser_.resetStream();
             // Tag every event with WHICH host sent it, not just "the Wi-Fi".
-            parser_.setOrigin(originFor(src));
+            parser_.setOrigin(originFor(src, nowUs / 1000u));
             parser_.feed(buf_, static_cast<size_t>(n), nowUs);
             // LockToFirst, no session yet: only a datagram that actually decodes
             // as MIDI (events or SysEx) may adopt this sender as the locked

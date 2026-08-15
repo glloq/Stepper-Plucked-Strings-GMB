@@ -31,6 +31,7 @@
 #include "../../src/core/configuration/DeviceInstrument.h"
 #include "../../src/core/configuration/Profile.h"
 #include "../../src/platform/esp32/ActivationCoordinator.h"
+#include "../../src/platform/esp32/ActiveSnapshotLock.h"
 #include "../../src/platform/esp32/ProfileStorage.h"
 #include "../../src/platform/esp32/WebApi.h"
 
@@ -134,15 +135,21 @@ static Profile activatableProfile(const char* name) {
 // main.cpp wires it.
 struct Rig {
     CommandDispatcher dispatcher;
+    ActiveSnapshotLock snapshotLock;
     ActivationCoordinator coord;
     ProfileStorage storage;
     WebApi api;
     Profile running;
+    // Set to make onPublishActivation fail even though the token is valid: the
+    // "commit OK, publish FAIL" branch is otherwise unreachable, and an unreachable
+    // branch nobody exercises is a branch nobody knows the behaviour of.
+    bool blockPublish = false;
 
     explicit Rig(int queueLen = 4) {
         running = activatableProfile("Running");
         dispatcher.begin(queueLen);
-        coord.begin(&dispatcher, [this](const Profile& in, bool keepDeviceConfig) {
+        snapshotLock.begin();
+        coord.begin(&dispatcher, &snapshotLock, [this](const Profile& in, bool keepDeviceConfig) {
             if (!keepDeviceConfig) return in;
             return mergeProfile(deviceConfigOf(running), instrumentProfileOf(in), in);
         });
@@ -152,7 +159,10 @@ struct Rig {
         ctx.onReserveActivation = [this](const Profile& p, bool keep, Profile& out) {
             return coord.reserve(p, keep, out);
         };
-        ctx.onPublishActivation = [this](uint32_t t) { return coord.publish(t); };
+        ctx.onPublishActivation = [this](uint32_t t) {
+            if (blockPublish) { coord.cancel(t); return false; }
+            return coord.publish(t);
+        };
         ctx.onCancelActivation = [this](uint32_t t) { coord.cancel(t); };
         api.begin(ctx, 0);
     }
@@ -280,17 +290,17 @@ int main() {
         resetStorage();
         Rig rig;
         Profile merged;
-        uint32_t tokenA = rig.coord.reserve(activatableProfile("Alpha"), false, merged);
-        check(tokenA != 0, "A reserves the transaction");
+        auto a = rig.coord.reserve(activatableProfile("Alpha"), false, merged);
+        check(a.ok(), "A reserves the transaction");
         Profile mergedB;
-        uint32_t tokenB = rig.coord.reserve(activatableProfile("Bravo"), false, mergedB);
-        check(tokenB == 0, "B is refused while A holds it");
+        auto b = rig.coord.reserve(activatableProfile("Bravo"), false, mergedB);
+        check(!b.ok() && b.status == ReserveStatus::Busy, "B is refused as Busy while A holds it");
         // A finishes; the slot is free again and B can go.
-        check(rig.coord.publish(tokenA), "A publishes");
+        check(rig.coord.publish(a.token), "A publishes");
         check(!rig.coord.busy(), "the transaction is released");
-        uint32_t tokenB2 = rig.coord.reserve(activatableProfile("Bravo"), false, mergedB);
-        check(tokenB2 != 0, "B succeeds once A is done");
-        rig.coord.cancel(tokenB2);
+        auto b2 = rig.coord.reserve(activatableProfile("Bravo"), false, mergedB);
+        check(b2.ok(), "B succeeds once A is done");
+        rig.coord.cancel(b2.token);
         auto seen = rig.drainNames();
         check(seen.size() == 1 && seen[0] == "Alpha", "only A ran");
     }
@@ -330,6 +340,85 @@ int main() {
         check(ran.size() == 1 && ran[0].instrument.name == "Mandolin", "and it is what runs");
         check(ran.size() == 1 && ran[0].network.hostname == "bench-01",
               "this machine's hostname survived the load");
+    }
+
+    // ---- the three reserve failures are three different answers ---------------
+    //
+    // They used to share one `0` and one 503 "retry in a moment", which told a user
+    // to keep retrying an instrument that does not fit their machine's pins and
+    // never will.
+    {
+        beginCase("reserve reports WHY it refused");
+        resetStorage();
+        Rig rig(/*queueLen=*/1);
+        Profile merged;
+
+        Profile bad = activatableProfile("Bad");
+        bad.pins.clear();
+        auto invalid = rig.coord.reserve(bad, false, merged);
+        check(invalid.status == ReserveStatus::InvalidProfile, "an unusable profile is InvalidProfile");
+        check(rig.publish(bad).httpStatus == 422, "and the route answers 422, not 503");
+
+        auto held = rig.coord.reserve(activatableProfile("Alpha"), false, merged);
+        check(held.ok(), "Alpha holds the transaction");
+        auto busy = rig.coord.reserve(activatableProfile("Bravo"), false, merged);
+        check(busy.status == ReserveStatus::Busy, "a second one is Busy");
+        check(rig.coord.publish(held.token), "Alpha publishes");
+
+        // The single queue slot is now occupied, so the next reservation runs out of
+        // capacity rather than out of exclusivity.
+        auto full = rig.coord.reserve(activatableProfile("Charlie"), false, merged);
+        check(full.status == ReserveStatus::QueueFull, "a full queue is QueueFull");
+        check(rig.publish(activatableProfile("Charlie")).httpStatus == 503,
+              "and the route answers 503 — this one IS worth retrying");
+    }
+
+    // ---- commit OK, publish FAIL: the policy, exercised ----------------------
+    //
+    // The reservation makes this unreachable in practice, so it is forced here.
+    // The decision: the profile IS on flash, so reporting "not accepted" would tell
+    // the operator their change was discarded when the next boot will run it. It is
+    // reported as accepted-and-persisted with a warning and no command id, which is
+    // the only description that is true in every part.
+    {
+        beginCase("a publish that cannot be queued still reports the truth");
+        resetStorage();
+        Rig rig;
+        rig.blockPublish = true;
+        auto r = rig.publish(activatableProfile("Alpha"));
+        check(r.persisted, "it IS persisted — the rename happened");
+        check(r.accepted, "and is reported accepted: the next boot runs it");
+        check(r.commandId == 0, "with no command id, because there is no command to follow");
+        check(r.error != nullptr, "and an explicit warning");
+        check(g_committed == "Alpha", "flash holds Alpha");
+        check(rig.drainNames().empty(), "loop() got nothing this time");
+        // And the transaction was released, so the device is not wedged.
+        check(!rig.coord.busy(), "the snapshot lock is free again");
+        rig.blockPublish = false;
+        check(rig.publish(activatableProfile("Bravo")).accepted, "the next publish works");
+    }
+
+    // ---- the snapshot lock covers the OTHER writer too ------------------------
+    //
+    // /api/wifi writes the same /active.json, because the link config is in its
+    // device half. Before the lock moved out of the coordinator, that route was a
+    // completely unguarded second writer of the single .tmp file.
+    {
+        beginCase("the snapshot lock excludes a non-publish writer");
+        resetStorage();
+        Rig rig;
+        Profile merged;
+        auto held = rig.coord.reserve(activatableProfile("Alpha"), false, merged);
+        check(held.ok(), "a publish holds the snapshot");
+        {
+            ActiveSnapshotLock::Guard g(rig.snapshotLock);
+            check(!g.held(), "a wifi write cannot take it meanwhile");
+        }
+        rig.coord.cancel(held.token);
+        {
+            ActiveSnapshotLock::Guard g(rig.snapshotLock);
+            check(g.held(), "and can once the publish is done");
+        }
     }
 
     if (g_fail == 0) std::printf("\npublishcheck OK\n");

@@ -562,10 +562,12 @@
         return GMB.api.setWifi(payload).then(function (r) {
           wifi.stationPassword = ''; wifi.apPassword = '';
           wifi.forgetStation = false; wifi.forgetAp = false;
-          // Report what the DEVICE says happened, not what we hoped: `applied`
-          // comes back false on a build that can only store the settings.
+          // Report what the DEVICE says happened, not what we hoped. `persisted`
+          // and `applied` are separate answers now: the device writes the snapshot
+          // first and only asks the radio once that succeeded, so a failure comes
+          // back as an error rather than as a success with a caveat in its note.
           GMB.toast(r && r.applied
-            ? 'Network settings applied — the device is reconfiguring its radio.'
+            ? 'Network settings saved and applied — the device is reconfiguring its radio.'
             : ('Network settings ' + ((r && r.note) || 'stored — reboot to apply.')),
             'ok');
           if (switching && r && r.applied)

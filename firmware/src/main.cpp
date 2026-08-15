@@ -42,6 +42,7 @@
 #include "platform/esp32/MidiWifi.h"
 #include "platform/esp32/Net.h"
 #include "platform/esp32/ActivationCoordinator.h"
+#include "platform/esp32/ActiveSnapshotLock.h"
 #include "platform/esp32/CommandDispatcher.h"
 #include "platform/esp32/PlaybackScheduler.h"
 #include "platform/esp32/ProfileStorage.h"
@@ -183,6 +184,10 @@ bool g_authConfiguredCache = false;
 // Distinct from g_activation above, which tracks an activation that is already
 // RUNNING (park -> swap -> re-home). This one is about whether it may start.
 ActivationCoordinator g_publishTx;
+// The one lock on /active.json. Both writers take it: the publish transaction
+// (through g_publishTx) and POST /api/wifi, which writes the same snapshot because
+// the link config lives in its device half. See ActiveSnapshotLock.h.
+ActiveSnapshotLock g_snapshotLock;
 
 // Enqueue a command (called from the AsyncTCP task). Returns false if the queue
 // is full so the caller can report back-pressure instead of silently dropping.
@@ -747,14 +752,18 @@ void clearLegacyNetworkNvs() {
 // So the keys stay as the store of last resort, read at boot and cleared the moment
 // a real snapshot can hold the value. They never coexist as two live copies: while
 // they exist there is no snapshot to disagree with.
-void writeBootstrapNetworkNvs(const NetworkConfig& cfg) {
+// Returns false if any key failed to write. The caller reports that rather than
+// adopting a value it could not store: on a CONFIG_SAFE machine these keys are the
+// ONLY copy, so "it did not stick" and "it did" have to be distinguishable.
+bool writeBootstrapNetworkNvs(const NetworkConfig& cfg) {
     Preferences p;
     p.begin("gmb", false);
-    p.putString("netmode", cfg.mode == NetworkMode::Station ? "station" : "accessPoint");
-    p.putString("netssid", String(cfg.ssid.c_str()));
-    p.putString("netapssid", String(cfg.apSsid.c_str()));
-    p.putString("nethost", String(cfg.hostname.c_str()));
+    bool ok = p.putString("netmode", cfg.mode == NetworkMode::Station ? "station" : "accessPoint") > 0;
+    ok = p.putString("netssid", String(cfg.ssid.c_str())) > 0 && ok;
+    ok = p.putString("netapssid", String(cfg.apSsid.c_str())) > 0 && ok;
+    ok = p.putString("nethost", String(cfg.hostname.c_str())) > 0 && ok;
     p.end();
+    return ok;
 }
 
 // Reconfigure the radio after POST /api/wifi with apply:true. Runs on the main
@@ -955,46 +964,86 @@ WebContext buildWebContext() {
     // Store the device's network settings and, when asked, apply them live. The
     // handler already validated the request; everything here is persistence plus
     // a flag, because the radio belongs to loop().
-    ctx.onSetWifi = [](const WebContext::WifiRequest& rq) -> std::string {
-        Preferences p;
-        p.begin("gmb", false);
-        // Only overwrite a password that was actually provided; erasing one is
-        // explicit, so "leave blank to keep" and "really forget it" stay distinct.
-        if (rq.hasStationPassword) p.putString("wifipass", String(rq.stationPassword.c_str()));
-        else if (rq.clearStationPassword) p.remove("wifipass");
-        if (rq.hasApPassword) p.putString("appass", String(rq.apPassword.c_str()));
-        else if (rq.clearApPassword) p.remove("appass");
-        p.end();
+    // Write the snapshot FIRST, adopt the value only if the write succeeded, and
+    // report each half separately.
+    //
+    // It used to do the opposite: g_profile.network was mutated before anything was
+    // written, so a LittleFS failure left the running profile on the new network and
+    // the flash on the old one — the exact split the active snapshot exists to
+    // prevent, reached through a different door. And the route reported
+    // `ok:true, applied:true` regardless, with the failure demoted to a prose note,
+    // while the callback had returned before ever setting g_netApplyRequested: the
+    // UI said "applied — reconfiguring the radio" for a request that changed nothing
+    // anywhere.
+    //
+    // It also takes g_snapshotLock, because /active.json has exactly one temp file
+    // and this is its second writer. publishProfile() guarded itself against other
+    // publishes; nothing guarded it against this route.
+    ctx.onSetWifi = [](const WebContext::WifiRequest& rq) -> WifiResult {
+        WifiResult res;
+        {
+            Preferences p;
+            p.begin("gmb", false);
+            // Only overwrite a password that was actually provided; erasing one is
+            // explicit, so "leave blank to keep" and "really forget it" stay distinct.
+            if (rq.hasStationPassword) p.putString("wifipass", String(rq.stationPassword.c_str()));
+            else if (rq.clearStationPassword) p.remove("wifipass");
+            if (rq.hasApPassword) p.putString("appass", String(rq.apPassword.c_str()));
+            else if (rq.clearApPassword) p.remove("appass");
+            p.end();
+        }
         if (rq.hasNetwork) {
             // The link config belongs to the device half of the active snapshot,
             // which is also what boots — so storing it is storing it once, in the
-            // place that already decides. It used to be written to NVS AND mirrored
-            // into the running profile, which is two copies with one writer: publish
-            // an older profile afterwards and the exported network no longer matched
-            // the radio.
-            Profile toStore;
-            { StateGuard lock;
-              g_profile.network = rq.network;
-              toStore = g_profile; }
-            if (ProfileValidator::isActivatable(toStore)) {
-                if (g_storageMutex) xSemaphoreTake(g_storageMutex, portMAX_DELAY);
-                bool wrote = g_storage.saveActive(toStore);
-                if (g_storageMutex) xSemaphoreGive(g_storageMutex);
-                if (!wrote) return "applied in RAM, but could NOT be saved";
+            // place that already decides.
+            Profile candidate;
+            { StateGuard lock; candidate = g_profile; }
+            candidate.network = rq.network;
+            if (ProfileValidator::isActivatable(candidate)) {
+                ActiveSnapshotLock::Guard snap(g_snapshotLock);
+                if (!snap.held()) {
+                    res.error = "another configuration write is in progress — "
+                                "retry in a moment";
+                    res.httpStatus = 503;
+                    return res;   // nothing touched: not the flash, not the RAM
+                }
+                bool wrote;
+                { if (g_storageMutex) xSemaphoreTake(g_storageMutex, portMAX_DELAY);
+                  wrote = g_storage.prepareActive(candidate) && g_storage.commitActive();
+                  if (!wrote) g_storage.discardActive();
+                  if (g_storageMutex) xSemaphoreGive(g_storageMutex); }
+                if (!wrote) {
+                    res.error = "could not write the network settings to storage — "
+                                "nothing was changed";
+                    res.httpStatus = 507;   // Insufficient Storage
+                    return res;
+                }
                 // Any bootstrap/legacy keys are now superseded. Leaving them would
                 // hand the next boot an OLDER network than the one just stored:
                 // boot reads them last precisely because they mean "the snapshot
                 // could not hold this yet", and that has stopped being true.
                 clearLegacyNetworkNvs();
-            } else {
+            } else if (!writeBootstrapNetworkNvs(rq.network)) {
                 // CONFIG_SAFE: no snapshot exists to carry it. See
                 // writeBootstrapNetworkNvs() — the fallback store, not a duplicate.
-                writeBootstrapNetworkNvs(rq.network);
+                res.error = "could not write the network settings to NVS — "
+                            "nothing was changed";
+                res.httpStatus = 507;
+                return res;
             }
+            // Stored. ONLY NOW does the running profile adopt it.
+            { StateGuard lock; g_profile.network = rq.network; }
+            res.persisted = true;
         }
-        if (!rq.apply) return "stored; reboot to apply";
-        g_netApplyRequested.store(true);
-        return "applied now";
+        res.ok = true;
+        if (rq.apply) {
+            g_netApplyRequested.store(true);
+            res.applied = true;
+            res.note = "applied now";
+        } else {
+            res.note = rq.hasNetwork ? "stored; reboot to apply" : "secrets updated";
+        }
+        return res;
     };
     // Write-route authentication: an admin token stored in NVS. Until one is set
     // (first-run bootstrap) writes are allowed; once set, the X-GMB-Token header
@@ -1024,7 +1073,7 @@ WebContext buildWebContext() {
         return n;
     };
     ctx.onReserveActivation = [](const Profile& p, bool keepDeviceConfig,
-                                 Profile& mergedOut) -> uint32_t {
+                                 Profile& mergedOut) -> ReserveResult {
         return g_publishTx.reserve(p, keepDeviceConfig, mergedOut);
     };
     ctx.onPublishActivation = [](uint32_t token) -> bool {
@@ -1050,7 +1099,8 @@ void setup() {
     // E-stop polarity and the declared power hardware of the machine actually
     // running — the radio was not re-initialised, so /api/status reported a network
     // the device was not on, and the E-stop polarity change is worse than cosmetic.
-    g_publishTx.begin(&g_commands, [](const Profile& p, bool keepDeviceConfig) {
+    g_snapshotLock.begin();
+    g_publishTx.begin(&g_commands, &g_snapshotLock, [](const Profile& p, bool keepDeviceConfig) {
         if (!keepDeviceConfig) return p;   // a draft edited FOR THIS MACHINE, taken whole
         StateGuard lock;
         return mergeProfile(deviceConfigOf(g_profile), instrumentProfileOf(p), p);
@@ -1356,6 +1406,15 @@ void loop() {
             if (g_phase == AppPhase::Ready) g_instrument.handleEvent(e, nowUs);
         }
     }
+    // A UDP peer whose origin was recycled or expired during that poll no longer
+    // exists as far as note identity goes: its next datagram carries a different
+    // origin, so its own Note Off can never match its own Note On again. Release
+    // whatever it left active, or the finger stays down on a ringing string.
+    //
+    // Done HERE rather than inside MidiWifi because the transport has no business
+    // knowing what a note is — it reports which identities died, the owner acts.
+    for (uint8_t origin : g_midi.takeReleasedOrigins()) g_instrument.releaseOrigin(origin);
+
     // SysEx carries an IP-addressed reply, so it stays on the concrete UDP transport
     // (USB/DIN replies will be added on their own transports as they land).
     for (auto& sx : g_midi.sysexPackets()) {

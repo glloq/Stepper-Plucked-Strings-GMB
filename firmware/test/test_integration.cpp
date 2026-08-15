@@ -570,6 +570,75 @@ TEST(two_network_peers_do_not_release_each_others_notes) {
     CHECK_EQ(ic.soundingCount(), 0);
 }
 
+// The peer table is bounded, so origins get reused. When one is, the sender it
+// named has effectively ceased to exist: its next datagram carries a DIFFERENT
+// origin, so its own Note Off can no longer match its own Note On.
+//
+// That is not the same as the pre-origin behaviour, where a sender's key was shared
+// but STABLE. Recycling changes one sender's identity between its own two halves,
+// which leaves a finger pressed on a ringing string — the transport must therefore
+// tell the instrument that the identity died, and the instrument must release it.
+TEST(a_recycled_origin_releases_what_it_left_sounding) {
+    Profile p = ukulele();
+    p.midi.omni = true;
+    p.midi.chordWindowMs = 0;
+    InstrumentController ic;
+    ic.load(p);
+
+    ic.handleEvent(fromPeer(noteOn(0, 72, 100), 0), 0);
+    ic.tick(1000);
+    int stringA = soleActiveStringOtherThan(ic, -1);
+    CHECK(stringA >= 0);
+    CHECK_EQ(ic.soundingCount(), 1);
+
+    // A second peer plays too, so the release is shown to be scoped rather than a
+    // dressed-up panic.
+    ic.handleEvent(fromPeer(noteOn(0, 72, 100), 1), 1000);
+    ic.tick(2000);
+    int stringB = soleActiveStringOtherThan(ic, stringA);
+    CHECK(stringB >= 0);
+    CHECK_EQ(ic.soundingCount(), 2);
+
+    // Peer A's slot is recycled: MidiWifi reports origin (kFirstNetworkPeer + 0)
+    // as released, and the owner hands that to the instrument.
+    ic.releaseOrigin(MidiOrigin::kFirstNetworkPeer + 0);
+    ic.tick(3000);
+    CHECK_EQ(ic.soundingCount(), 1);
+    if (stringA >= 0 && stringB >= 0) {
+        CHECK(!ic.target(stringA).active);   // A's string is free again
+        CHECK(ic.target(stringB).active);    // B is untouched
+    }
+
+    // And A, back under a new origin, does not disturb B either.
+    ic.handleEvent(fromPeer(noteOff(0, 72), 0), 4000);
+    ic.tick(5000);
+    CHECK_EQ(ic.soundingCount(), 1);
+    if (stringB >= 0) CHECK(ic.target(stringB).active);
+}
+
+// Releasing an origin covers every channel it used, not just channel 0: a peer that
+// played on channel 5 and held the pedal on channel 5 must be fully released too.
+TEST(releasing_an_origin_covers_all_its_channels) {
+    Profile p = ukulele();
+    p.midi.omni = true;
+    p.midi.chordWindowMs = 0;
+    InstrumentController ic;
+    ic.load(p);
+
+    ic.handleEvent(fromPeer(noteOn(5, 72, 100), 0), 0);
+    ic.tick(1000);
+    CHECK_EQ(ic.soundingCount(), 1);
+    // Sustain down on that channel, so the note would survive a plain Note Off.
+    MidiEvent ped = fromPeer(cc(5, 64, 127), 0);
+    ic.handleEvent(ped, 1000);
+    CHECK(ic.pedalDown());
+
+    ic.releaseOrigin(MidiOrigin::kFirstNetworkPeer + 0);
+    ic.tick(2000);
+    CHECK_EQ(ic.soundingCount(), 0);
+    CHECK(!ic.pedalDown());
+}
+
 // All Notes Off is a message about the sender's own channel, not a stop button.
 // It used to call panic(), so a DIN controller sending CC123 also damped every
 // Wi-Fi note, dropped their pedal and wiped their pending selections.

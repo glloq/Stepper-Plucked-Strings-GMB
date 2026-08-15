@@ -6,6 +6,7 @@
 
 #include "../../core/configuration/Profile.h"
 #include "../../core/gmb/GmbSysExService.h"
+#include "ActivationCoordinator.h"
 #include "../../core/instrument/InstrumentController.h"
 #include "Net.h"
 #include "ServoBank.h"
@@ -21,6 +22,19 @@
 namespace gmb {
 
 class ProfileStorage;
+
+// What POST /api/wifi actually did, field by field. It used to answer
+// `ok: true, applied: true` with the real story in a prose note, so a flash failure
+// produced a success the UI reported as "applied — the device is reconfiguring its
+// radio", and with apply:true the radio had not even been asked.
+struct WifiResult {
+    bool ok = false;
+    bool persisted = false;   // the link config is on flash (or needed no write)
+    bool applied = false;     // the radio was actually asked to reconfigure
+    const char* error = nullptr;
+    const char* note = "";
+    int httpStatus = 200;
+};
 
 struct WebContext {
     Profile* profile = nullptr;
@@ -59,7 +73,7 @@ struct WebContext {
     //   true  — POST /api/profiles/load: load a stored INSTRUMENT onto this
     //           machine. The device half (board, pins, network, E-stop polarity,
     //           fitted hardware) belongs to the machine and must survive.
-    std::function<uint32_t(const Profile&, bool, Profile&)> onReserveActivation;
+    std::function<ReserveResult(const Profile&, bool, Profile&)> onReserveActivation;
     std::function<bool(uint32_t)> onPublishActivation;
     std::function<void(uint32_t)> onCancelActivation;
     // ch, note, vel, ms, then the two optional SELECTION CC values (-1 = none).
@@ -133,9 +147,10 @@ struct WebContext {
         NetworkConfig network;
         bool apply = false;                  // reconfigure the link NOW, not at boot
     };
-    // Returns the note echoed to the caller, so the UI can state what really
-    // happened ("applied now" vs "stored; reboot to apply") instead of guessing.
-    std::function<std::string(const WifiRequest&)> onSetWifi;
+    // Structured, because every field of it is separately observable and the UI
+    // states each one. Returning a prose note meant "could NOT be saved" travelled
+    // inside a 200 that also claimed `applied: true`.
+    std::function<WifiResult(const WifiRequest&)> onSetWifi;
     // Returns true if the supplied token authorises a write (or if no admin
     // token has been configured yet — first-run bootstrap).
     std::function<bool(const std::string&)> checkToken;
@@ -171,6 +186,7 @@ public:
         const char* error = nullptr;
         int httpStatus = 202;
     };
+
 
     // Validate + merge + reserve, write, commit, publish — in that order, with
     // every failure path releasing the reservation. Shared by PUT /api/profile and

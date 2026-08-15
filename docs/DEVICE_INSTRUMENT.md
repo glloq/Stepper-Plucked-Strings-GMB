@@ -188,6 +188,20 @@ L'invariant à préserver en relisant `WebApi::publishProfile` : après un `rese
 réussi, chaque chemin se termine par exactement un `publish` **ou** un `cancel`.
 En perdre un bloquerait toute publication ultérieure jusqu'au redémarrage.
 
+**Un seul verrou, pas un par route.** Cette exclusion vivait d'abord dans
+`ActivationCoordinator`, ce qui n'en faisait qu'un garde-fou des publications
+entre elles : `POST /api/wifi` écrit le **même** `/active.json` — la config de
+lien est dans sa moitié *device* — et n'avait jamais été invité à le prendre.
+`ActiveSnapshotLock` est ce verrou sorti à l'extérieur ; les deux écrivains
+prennent le même.
+
+`/api/wifi` a d'ailleurs été retourné dans le bon ordre. Il modifiait
+`g_profile.network` **avant** de savoir si l'écriture flash avait réussi, et la
+route répondait `ok:true, applied:true` quoi qu'il arrive, l'échec relégué dans
+une note en prose — alors que le callback était sorti avant même de poser
+`g_netApplyRequested`. Désormais : écrire, puis adopter, puis appliquer ; et la
+réponse porte `persisted` et `applied` séparément, avec un vrai code d'erreur.
+
 Le tout est vérifié par `firmware/test/runtimecheck` — vrai `publishProfile`, vrai
 `ActivationCoordinator`, vrai `CommandDispatcher`, avec une file qui se remplit
 vraiment et un stockage dont le `prepare` et le `commit` échouent sur commande.

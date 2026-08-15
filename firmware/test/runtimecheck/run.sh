@@ -95,4 +95,14 @@ $CXX $pubflags "$here/main_publish.cpp" \
   -o "$work/runtimecheck_publish"
 "$work/runtimecheck_publish" || fail=1
 
+# UDP MIDI origin identity, also off-Arduino: MidiWifi's peer table lives outside
+# the ARDUINO guard, so the property that keeps a Note Off matched to its Note On
+# can be driven without a socket.
+$CXX $pubflags "$here/main_origins.cpp" \
+  "$root/src/platform/esp32/MidiWifi.cpp" \
+  $core/midi/MidiParser.cpp \
+  $core/Types.cpp \
+  -o "$work/runtimecheck_origins"
+"$work/runtimecheck_origins" || fail=1
+
 exit $fail

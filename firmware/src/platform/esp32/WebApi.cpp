@@ -102,6 +102,24 @@ const char* safetyStateName(SafetyState s) {
     }
 }
 
+// The transport an event arrived on. Matches the names /api/status uses for
+// `midiSource` and `midiTransports[].name`, so the monitor and the status panel
+// can never disagree about what "din" means.
+const char* midiSourceName(MidiSource s) {
+    switch (s) {
+        case MidiSource::Internal:      return "internal";
+        case MidiSource::WifiWebSocket: return "wifiWebSocket";
+        case MidiSource::WifiRtp:       return "wifiRtp";
+        case MidiSource::WifiUdp:       return "wifiUdp";
+        case MidiSource::WebUiTest:     return "webUiTest";
+        case MidiSource::Ble:           return "ble";
+        case MidiSource::Usb:           return "usb";
+        case MidiSource::Din:           return "din";
+        case MidiSource::Serial:        return "serial";
+        default:                        return "other";
+    }
+}
+
 const char* midiTypeName(uint8_t type) {
     switch (type) {
         case 0x80: return "noteOff";
@@ -1033,10 +1051,18 @@ void WebApi::registerRoutes() {
                 }
             }
 
-            doc["ok"] = true;
-            doc["note"] = ctx_.onSetWifi(rq);
-            doc["applied"] = rq.apply;
-            sendJson(req, doc);
+            // Report what happened, field by field. This used to be a flat
+            // `ok:true` + `applied:<what was asked>` with the outcome buried in a
+            // prose note, so a flash failure came back as a 200 that also claimed
+            // the radio was reconfiguring — and with apply:true it had not even
+            // been asked, because the callback returned before setting the flag.
+            WifiResult wr = ctx_.onSetWifi(rq);
+            doc["ok"] = wr.ok;
+            doc["persisted"] = wr.persisted;
+            doc["applied"] = wr.applied;
+            doc["note"] = wr.note;
+            if (wr.error) doc["error"] = wr.error;
+            sendJson(req, doc, wr.httpStatus);
         });
     setWifi->setMethod(HTTP_POST);
     server_->addHandler(setWifi);
@@ -1171,8 +1197,16 @@ void WebApi::broadcastMidi(const MidiEvent& e) {
     if (midiWs_.count() == 0) return;
     JsonDocument doc;
     doc["timestampUs"] = e.timestampUs;
-    doc["source"] = "wifiUdp";
-    doc["channel"] = e.channel;
+    // The event carries its own transport and its own sender. This used to be the
+    // constant "wifiUdp" for every event, so the one tool for diagnosing a
+    // multi-controller rig labelled DIN, USB and web-test traffic as Wi-Fi — the
+    // exact confusion the monitor exists to resolve.
+    doc["source"] = midiSourceName(static_cast<MidiSource>(e.source));
+    // The ORIGIN as well as the transport, because two laptops on the same Wi-Fi
+    // are the same transport and different senders, and telling them apart is why
+    // origins exist at all.
+    doc["origin"] = e.origin;
+    doc["channel"] = e.channel;          // zero-based on the wire, as MIDI defines it
     doc["type"] = midiTypeName(e.type);
     doc["data1"] = e.data1;
     doc["data2"] = e.data2;
@@ -1231,14 +1265,30 @@ WebApi::PublishResult WebApi::publishProfile(const Profile& p,
     // it is what gets stored. Building it separately here — as the load route used
     // to — is two merges that have to agree.
     Profile merged;
-    uint32_t token = ctx_.onReserveActivation(p, keepDeviceConfig, merged);
-    if (token == 0) {
-        // Invalid profile, no queue capacity, or another publish in flight. All
-        // three mean the same thing to the caller: nothing was changed, try again.
-        r.error = "invalid profile, command queue full, or another publish in progress";
-        r.httpStatus = 503;
+    ReserveResult res = ctx_.onReserveActivation(p, keepDeviceConfig, merged);
+    if (!res.ok()) {
+        // The three reasons are NOT interchangeable, and answering 503 for all of
+        // them told a user to retry something that will fail identically forever.
+        // An instrument that does not fit this machine's pins is a 422: the fix is
+        // to change the profile, not to wait.
+        switch (res.status) {
+            case ReserveStatus::InvalidProfile:
+                r.error = "this profile cannot run on this device — check the pin map "
+                          "and the axis configuration";
+                r.httpStatus = 422;
+                break;
+            case ReserveStatus::QueueFull:
+                r.error = "the command queue is full — retry in a moment";
+                r.httpStatus = 503;
+                break;
+            default:
+                r.error = "another configuration write is in progress — retry in a moment";
+                r.httpStatus = 503;
+                break;
+        }
         return r;
     }
+    uint32_t token = res.token;
 
     bool prepared;
     { WebStorageLock sl(ctx_); prepared = ctx_.storage->prepareActive(merged); }
@@ -1260,13 +1310,25 @@ WebApi::PublishResult WebApi::publishProfile(const Profile& p,
         return r;
     }
 
-    // Past the rename. The stored snapshot IS this profile now, so the activation
-    // must go through; the reservation guaranteed the queue has room for it.
+    // Past the rename. The stored snapshot IS this profile now, and the reservation
+    // guaranteed the queue has room, so the publish cannot fail for capacity — the
+    // only way it returns false is a token this coordinator does not recognise,
+    // i.e. a caller bug rather than a runtime condition.
+    //
+    // It is reported as ACCEPTED anyway, deliberately. The alternative is a third
+    // observable state (persisted, not accepted) that the whole design exists to
+    // eliminate, and it would be a LIE in the direction that matters: the profile
+    // IS on flash, so the machine will come back as it. Saying "not accepted" would
+    // tell the operator their change was discarded when the next boot will run it.
+    // The mismatch is surfaced as a warning instead, and runtimecheck forces this
+    // branch to prove it stays a warning rather than becoming a refusal.
     if (!ctx_.onPublishActivation(token)) {
         r.persisted = true;
-        r.error = "the configuration was stored but the activation could not be "
-                  "published — it will be active after a reboot";
-        r.httpStatus = 500;
+        r.accepted = true;
+        r.commandId = 0;   // there is no command to follow
+        r.error = "stored, but the activation could not be queued — it takes effect "
+                  "at the next reboot";
+        r.httpStatus = 202;
         return r;
     }
     r.accepted = true;
